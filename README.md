@@ -61,5 +61,4 @@ You will be prompted for the passphrase used during encoding.
 ## Limitations
 
 - Supports RGB PNG images only (alpha, grayscale, and palette images are converted automatically on load)
-- The message is read from stdin, so it is never exposed in the process list
 - This is a learning project, not a production security tool

@@ -1,0 +1,7 @@
+*.o
+scattersteg
+cmake-build-debug/
+cmake-build-debug-wsl/
+.idea/
+.claude/
+*.png

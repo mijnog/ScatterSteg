@@ -12,6 +12,6 @@ typedef struct {
 Image *png_load(const char *path);
 void   image_free(Image *img);
 
-void png_save(const Image *img, const char *path);
+int  png_save(const Image *img, const char *path);  /* returns 0 on success, -1 on failure */
 
 #endif /* PNG_IO_H */

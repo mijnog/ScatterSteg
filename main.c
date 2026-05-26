@@ -235,7 +235,12 @@ int main(int argc, char *argv[]) {
         sodium_memzero(payload, payload_len);
         free(payload);
 
-        png_save(img, output);
+        if (png_save(img, output) != 0) {
+            fprintf(stderr, "Error: could not write '%s'\n", output);
+            free(indices);
+            image_free(img);
+            return 1;
+        }
         free(indices);
         image_free(img);
 

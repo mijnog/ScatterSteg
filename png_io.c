@@ -15,8 +15,10 @@ Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
 
-    png_structp png  = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    png_infop   info = png_create_info_struct(png);
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png) { fclose(fp); return NULL; }
+    png_infop info = png_create_info_struct(png);
+    if (!info) { png_destroy_read_struct(&png, NULL, NULL); fclose(fp); return NULL; }
 
     /* libpng uses longjmp for errors — if anything goes wrong it jumps here */
     if (setjmp(png_jmpbuf(png))) {
@@ -79,20 +81,21 @@ Image *png_load(const char *path) {
     return img;
 }
 
-void png_save(const Image *img, const char *path) {
+int png_save(const Image *img, const char *path) {
     FILE *fp = fopen(path, "wb");
-    if (!fp) return;
+    if (!fp) return -1;
 
-    // create pixel data
-    png_structp png  = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    // create metadata
-    png_infop   info = png_create_info_struct(png);
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png) { fclose(fp); remove(path); return -1; }
+    png_infop info = png_create_info_struct(png);
+    if (!info) { png_destroy_write_struct(&png, NULL); fclose(fp); remove(path); return -1; }
 
     // error handling
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_write_struct(&png, &info);
         fclose(fp);
-        return;
+        remove(path);
+        return -1;
     }
 
     // file to write to
@@ -117,6 +120,7 @@ void png_save(const Image *img, const char *path) {
     // cleanup
     png_destroy_write_struct(&png, &info);
     fclose(fp);
+    return 0;
 }
 
 

@@ -14,7 +14,8 @@ The message itself is also encrypted with XSalsa20-Poly1305 (`crypto_secretbox`)
 
 - **Scatter-based LSB embedding** — pixel selection is a ChaCha20-derived Fisher-Yates shuffle, not sequential
 - **Authenticated encryption** — XSalsa20-Poly1305 encrypts and authenticates the message before embedding; wrong passphrase on decode fails with an explicit error
-- **Domain-separated key derivation** — scatter and encryption keys are derived independently from the passphrase using BLAKE2b, so they share no key material
+- **Argon2id key derivation** — passphrase is run through Argon2id (winner of the Password Hashing Competition) before any key material is derived; this makes brute-force attacks expensive in both time and memory
+- **Domain-separated keys** — a single Argon2id call produces 64 bytes split into independent scatter and encryption keys, so the two keys share no material
 - **Random nonce per encode** — identical messages encoded with the same passphrase produce different steg images
 - **Passphrase read from terminal** — passphrase is never passed as a command-line argument (not visible in `ps`), echo is disabled during input, and passphrase memory is zeroed immediately after key derivation
 - **Input validation** — image capacity is checked before embedding; decoded length headers are validated against actual image capacity before any allocation

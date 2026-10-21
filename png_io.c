@@ -1,7 +1,11 @@
+#define _POSIX_C_SOURCE 200809L  /* mkstemp, fchmod, fsync */
 #include "png_io.h"
 #include <png.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /*
 
@@ -85,20 +89,38 @@ Image *png_load(const char *path) {
     return img;
 }
 
+/* Write to a temp file beside `path`, then rename() it into place. The
+   destination is only replaced once the new PNG is complete, so a failed
+   write never truncates or deletes an existing file (e.g. -i a.png -o a.png). */
 int png_save(const Image *img, const char *path) {
-    FILE *fp = fopen(path, "wb");
-    if (!fp) return -1;
+    size_t len = strlen(path);
+    char *tmp = malloc(len + sizeof(".XXXXXX"));
+    if (!tmp) return -1;
+    memcpy(tmp, path, len);
+    memcpy(tmp + len, ".XXXXXX", sizeof(".XXXXXX"));
+
+    int fd = mkstemp(tmp);
+    if (fd < 0) { free(tmp); return -1; }
+
+    /* mkstemp creates the file 0600; give it the usual umask-based mode */
+    mode_t mask = umask(0);
+    umask(mask);
+    fchmod(fd, 0666 & ~mask);
+
+    FILE *fp = fdopen(fd, "wb");
+    if (!fp) { close(fd); remove(tmp); free(tmp); return -1; }
 
     png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png) { fclose(fp); remove(path); return -1; }
+    if (!png) { fclose(fp); remove(tmp); free(tmp); return -1; }
     png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_write_struct(&png, NULL); fclose(fp); remove(path); return -1; }
+    if (!info) { png_destroy_write_struct(&png, NULL); fclose(fp); remove(tmp); free(tmp); return -1; }
 
     // error handling
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_write_struct(&png, &info);
         fclose(fp);
-        remove(path);
+        remove(tmp);
+        free(tmp);
         return -1;
     }
 
@@ -123,11 +145,13 @@ int png_save(const Image *img, const char *path) {
 
     // cleanup — buffered write errors (disk full, quota) only surface here
     png_destroy_write_struct(&png, &info);
-    int write_failed = ferror(fp);
-    if (fclose(fp) != 0 || write_failed) {
-        remove(path);
+    int write_failed = fflush(fp) != 0 || ferror(fp) || fsync(fileno(fp)) != 0;
+    if (fclose(fp) != 0 || write_failed || rename(tmp, path) != 0) {
+        remove(tmp);
+        free(tmp);
         return -1;
     }
+    free(tmp);
     return 0;
 }
 

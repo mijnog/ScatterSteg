@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L  /* mkstemp, fchmod, fsync */
 #include "png_io.h"
 #include <png.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,38 +92,38 @@ Image *png_load(const char *path) {
 
 /* Write to a temp file beside `path`, then rename() it into place. The
    destination is only replaced once the new PNG is complete, so a failed
-   write never truncates or deletes an existing file (e.g. -i a.png -o a.png). */
+   write never truncates or deletes an existing file (e.g. -i a.png -o a.png).
+   On failure, errno describes the cause (0 if libpng failed internally). */
 int png_save(const Image *img, const char *path) {
+    errno = 0;
     size_t len = strlen(path);
     char *tmp = malloc(len + sizeof(".XXXXXX"));
     if (!tmp) return -1;
     memcpy(tmp, path, len);
     memcpy(tmp + len, ".XXXXXX", sizeof(".XXXXXX"));
 
+    FILE *fp = NULL;
+    png_structp png = NULL;
+    png_infop info = NULL;
+
     int fd = mkstemp(tmp);
-    if (fd < 0) { free(tmp); return -1; }
+    if (fd < 0) goto fail;
 
     /* mkstemp creates the file 0600; give it the usual umask-based mode */
     mode_t mask = umask(0);
     umask(mask);
     fchmod(fd, 0666 & ~mask);
 
-    FILE *fp = fdopen(fd, "wb");
-    if (!fp) { close(fd); remove(tmp); free(tmp); return -1; }
+    fp = fdopen(fd, "wb");
+    if (!fp) goto fail;
 
-    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png) { fclose(fp); remove(tmp); free(tmp); return -1; }
-    png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_write_struct(&png, NULL); fclose(fp); remove(tmp); free(tmp); return -1; }
+    png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png) goto fail;
+    info = png_create_info_struct(png);
+    if (!info) goto fail;
 
     // error handling
-    if (setjmp(png_jmpbuf(png))) {
-        png_destroy_write_struct(&png, &info);
-        fclose(fp);
-        remove(tmp);
-        free(tmp);
-        return -1;
-    }
+    if (setjmp(png_jmpbuf(png))) goto fail;
 
     // file to write to
     png_init_io(png, fp);
@@ -145,14 +146,25 @@ int png_save(const Image *img, const char *path) {
 
     // cleanup — buffered write errors (disk full, quota) only surface here
     png_destroy_write_struct(&png, &info);
-    int write_failed = fflush(fp) != 0 || ferror(fp) || fsync(fileno(fp)) != 0;
-    if (fclose(fp) != 0 || write_failed || rename(tmp, path) != 0) {
-        remove(tmp);
-        free(tmp);
-        return -1;
-    }
+    if (fflush(fp) != 0 || ferror(fp) || fsync(fileno(fp)) != 0) goto fail;
+    if (fclose(fp) != 0) { fp = NULL; goto fail; }
+    fp = NULL;
+    if (rename(tmp, path) != 0) goto fail;
     free(tmp);
     return 0;
+
+fail:
+    {
+        /* cleanup calls may clobber errno; keep the one from the failure */
+        int err = errno;
+        if (png) png_destroy_write_struct(&png, info ? &info : NULL);
+        if (fp) fclose(fp);
+        else if (fd >= 0) close(fd);
+        remove(tmp);
+        free(tmp);
+        errno = err;
+        return -1;
+    }
 }
 
 

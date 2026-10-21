@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -239,7 +240,8 @@ int main(int argc, char *argv[]) {
         free(payload);
 
         if (png_save(img, output) != 0) {
-            fprintf(stderr, "Error: could not write '%s'\n", output);
+            fprintf(stderr, "Error: could not write '%s': %s\n", output,
+                    errno ? strerror(errno) : "PNG encoding failed");
             free(indices);
             image_free(img);
             return 1;

@@ -20,8 +20,12 @@ Image *png_load(const char *path) {
     png_infop info = png_create_info_struct(png);
     if (!info) { png_destroy_read_struct(&png, NULL, NULL); fclose(fp); return NULL; }
 
+    /* volatile: assigned after setjmp, so must survive the longjmp intact */
+    Image *volatile img = NULL;
+
     /* libpng uses longjmp for errors — if anything goes wrong it jumps here */
     if (setjmp(png_jmpbuf(png))) {
+        image_free(img);  /* fully allocated by the time png_read_image can fail */
         png_destroy_read_struct(&png, &info, NULL);
         fclose(fp);
         return NULL;
@@ -44,7 +48,7 @@ Image *png_load(const char *path) {
     png_read_update_info(png, info);    /* apply the transforms          */
 
     // Allocate the Image struct and its row pointers
-    Image *img = malloc(sizeof(Image));
+    img = malloc(sizeof(Image));
     if (!img) {
         png_destroy_read_struct(&png, &info, NULL);
         fclose(fp);

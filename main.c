@@ -164,6 +164,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Deriving keys...\n");
         if (derive_enc_key(passphrase, salt, enc_key) != 0) {
             sodium_memzero(passphrase, sizeof(passphrase));
+            sodium_memzero(scatter_key, sizeof(scatter_key));
             fprintf(stderr, "Error: key derivation failed (out of memory)\n");
             return 1;
         }
@@ -171,12 +172,14 @@ int main(int argc, char *argv[]) {
 
         Image *img = png_load(input);
         if (!img) {
+            sodium_memzero(scatter_key, sizeof(scatter_key));
             sodium_memzero(enc_key, sizeof(enc_key));
             fprintf(stderr, "Error: could not load '%s'\n", input);
             return 1;
         }
 
         if (img->width == 0 || img->height > UINT32_MAX / img->width) {
+            sodium_memzero(scatter_key, sizeof(scatter_key));
             sodium_memzero(enc_key, sizeof(enc_key));
             image_free(img);
             fprintf(stderr, "Error: image dimensions overflow\n");

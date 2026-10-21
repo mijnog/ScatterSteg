@@ -117,9 +117,13 @@ int png_save(const Image *img, const char *path) {
     // finalize the file
     png_write_end(png, NULL);
 
-    // cleanup
+    // cleanup — buffered write errors (disk full, quota) only surface here
     png_destroy_write_struct(&png, &info);
-    fclose(fp);
+    int write_failed = ferror(fp);
+    if (fclose(fp) != 0 || write_failed) {
+        remove(path);
+        return -1;
+    }
     return 0;
 }
 

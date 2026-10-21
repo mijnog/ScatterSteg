@@ -52,6 +52,14 @@ Image *png_load(const char *path) {
     png_set_palette_to_rgb(png);  /* indexed color → RGB           */
     png_read_update_info(png, info);    /* apply the transforms          */
 
+    /* Rows are allocated as width*3 below; refuse anything the transforms
+       didn't turn into exactly that, rather than let libpng overrun them */
+    if (png_get_rowbytes(png, info) != (size_t)width * 3) {
+        png_destroy_read_struct(&png, &info, NULL);
+        fclose(fp);
+        return NULL;
+    }
+
     // Allocate the Image struct and its row pointers
     img = malloc(sizeof(Image));
     if (!img) {

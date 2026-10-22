@@ -470,6 +470,36 @@ static void test_save_libpng_failure_keeps_existing(void) {
     remove(p);
 }
 
+static void test_fuzz_regressions(void) {
+    /* Inputs the fuzzer once broke png_load or png_save with. Each must
+       either fail to load, or save and reload with the same pixels. */
+    DIR *d = opendir("tests/fuzz/regressions/png_load");
+    CHECK(d != NULL);
+    if (!d) return;
+    struct dirent *e;
+    int n = 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char in[600];
+        snprintf(in, sizeof(in), "tests/fuzz/regressions/png_load/%s", e->d_name);
+        Image *img = png_load(in);
+        if (img) {
+            const char *out = path_in_dir("regression.png");
+            int saved = png_save(img, out) == 0;
+            CHECK(saved);
+            Image *back = saved ? png_load(out) : NULL;
+            CHECK(back && images_equal(img, back));
+            if (!back || !images_equal(img, back)) fprintf(stderr, "    (%s)\n", e->d_name);
+            image_free(back);
+            image_free(img);
+            remove(out);
+        }
+        n++;
+    }
+    closedir(d);
+    CHECK(n >= 2);
+}
+
 static void test_image_free_null(void) {
     image_free(NULL);
     CHECK(1);
@@ -508,6 +538,7 @@ int main(void) {
     RUN(test_save_missing_dir);
     RUN(test_save_unwritable_dir);
     RUN(test_save_libpng_failure_keeps_existing);
+    RUN(test_fuzz_regressions);
     RUN(test_image_free_null);
 
     rmdir(dir);

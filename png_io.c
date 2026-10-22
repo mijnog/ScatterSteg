@@ -18,6 +18,10 @@
 
 /* Largest decoded pixel buffer png_load will allocate (1 GiB) */
 #define PNG_MAX_PIXEL_BYTES ((size_t)1 << 30)
+/* Largest single chunk (or decompressed text/profile) libpng may allocate.
+   Its built-in default depends on how the distribution compiled it: Ubuntu's
+   libpng allocated a 1.3 GB tEXt chunk from a 290-byte file (found by CI). */
+#define PNG_MAX_CHUNK_BYTES ((png_alloc_size_t)16 << 20)
 
 /* The read struct and info png_load parsed, kept so png_save can copy the
    ancillary chunks out of it with libpng's own getters */
@@ -49,6 +53,8 @@ Image *png_load(const char *path) {
 
     // Tell libpng to read from FILE* fp
     png_init_io(png, fp);
+    png_set_chunk_malloc_max(png, PNG_MAX_CHUNK_BYTES);
+    png_set_chunk_cache_max(png, 1000);  /* at most this many ancillary chunks */
     /* Keep chunks libpng doesn't know, so safe-to-copy ones can be written back */
     png_set_keep_unknown_chunks(png, PNG_HANDLE_CHUNK_ALWAYS, NULL, 0);
     // Read the image header (png_read_info) — this fills width, height, bit depth, color type

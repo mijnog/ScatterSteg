@@ -89,6 +89,7 @@ fuzz: $(FUZZERS)
 	@cd $(FUZZ_DIR) && pids= && \
 	for t in png_load embed png_roundtrip; do \
 		mkdir -p corpus/$$t; \
+		cp ../../fuzz/regressions/$$t/* corpus/$$t/ 2>/dev/null; \
 		$(FUZZ_ENV) ./fuzz_$$t $(FUZZ_ARGS) -print_final_stats=1 -artifact_prefix=crash-$$t- \
 			corpus/$$t > fuzz_$$t.log 2>&1 & pids="$$pids $$!"; \
 	done; \

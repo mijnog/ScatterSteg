@@ -47,7 +47,7 @@ cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault $(TEST_DIR)/jpeg
 		python3 tests/test_cli.py
 
 $(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lsodium
+	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lsodium -lm
 
 $(TEST_DIR)/test_stc: tests/test_stc.c stc.c stc.h tests/test.h | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_stc.c stc.c -o $@ -lm
@@ -139,7 +139,7 @@ COV_OBJS    = $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sod
 
 coverage: $(COV_OBJS) | $(COV_DIR)
 	rm -f $(COV_DIR)/*.gcda
-	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lsodium
+	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lsodium -lm
 	$(CC) $(COV_CFLAGS) tests/test_stc.c $(COV_DIR)/stc.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_stc -lm
 	$(CC) $(COV_CFLAGS) tests/test_prng.c $(COV_DIR)/prng.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_prng -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_png_io.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_png_io -lpng -lz

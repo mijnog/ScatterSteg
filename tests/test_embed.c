@@ -1,11 +1,12 @@
 #include "test.h"
 #include "embed.h"
 #include <sodium.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* The embed functions take a Carrier; these tests use PNG images */
-#define C(img) (&(Carrier){(img), NULL, 0})
+#define C(img) (&(Carrier){.img = (img)})
 
 static Image *make_image(uint32_t w, uint32_t h, uint8_t fill) {
     Image *img = calloc(1, sizeof(Image));
@@ -295,7 +296,10 @@ static void test_exchange_preserves_histogram(void) {
     for (int v = 0; v < 256; v++) moved += before[v] > after[v] ? before[v] - after[v] : 0;
     size_t unpaired = last_stats.changes - last_stats.exchanged;
     CHECK(last_stats.changes > count);              /* ~half of 90,000 samples */
-    CHECK(unpaired * 100 < last_stats.changes);     /* over 99% exchanged */
+    /* The leftovers are the random parity imbalance among the changes, so
+       they scale like sqrt(changes): 1.6 sqrt on average, at most 3.9 sqrt
+       over 300 runs. (A fixed "under 1%" bound failed 23% of the time.) */
+    CHECK(unpaired < 8 * sqrt((double)last_stats.changes));
     CHECK(moved <= unpaired);                       /* only nudges move it */
 
     uint8_t *out = malloc(len);

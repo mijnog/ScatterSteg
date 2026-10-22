@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 200809L  /* mkstemp, fchmod, fsync */
+#define _XOPEN_SOURCE 700  /* mkstemp, fchmod, fchown, fsync, realpath */
 #include "png_io.h"
 #include <png.h>
 #include <errno.h>
@@ -115,11 +115,23 @@ Image *png_load(const char *path) {
    write never truncates or deletes an existing file (e.g. -i a.png -o a.png).
    On failure, errno describes the cause (0 if libpng failed internally). */
 int png_save(const Image *img, const char *path) {
+    /* Write through a symlink to the file it points to rather than replacing
+       the link itself. A new path, or a dangling link, is used as is. */
+    char *target = realpath(path, NULL);
+    const char *dest = target ? target : path;
+    struct stat existing;
+    int replacing = stat(dest, &existing) == 0;
+
     errno = 0;
-    size_t len = strlen(path);
+    size_t len = strlen(dest);
     char *tmp = malloc(len + sizeof(".XXXXXX"));
-    if (!tmp) return -1;
-    memcpy(tmp, path, len);
+    if (!tmp) {
+        int err = errno;
+        free(target);
+        errno = err;
+        return -1;
+    }
+    memcpy(tmp, dest, len);
     memcpy(tmp + len, ".XXXXXX", sizeof(".XXXXXX"));
 
     FILE *fp = NULL;
@@ -131,14 +143,28 @@ int png_save(const Image *img, const char *path) {
     if (fd < 0) {
         int err = errno;
         free(tmp);
+        free(target);
         errno = err;
         return -1;
     }
 
-    /* mkstemp creates the file 0600; give it the usual umask-based mode */
-    mode_t mask = umask(0);
-    umask(mask);
-    fchmod(fd, 0666 & ~mask);
+    /* Replacing a file: keep its permissions and group, so a private image
+       stays private and a shared one stays shared. If its group can't be
+       kept (we're not a member), don't grant its group bits to another.
+       A new file gets the usual umask-based mode (mkstemp makes it 0600). */
+    mode_t mode;
+    if (replacing) {
+        mode = existing.st_mode & 0777;
+        if (fchown(fd, (uid_t)-1, existing.st_gid) != 0) {
+            mode &= ~(mode_t)0070;
+            errno = 0;
+        }
+    } else {
+        mode_t mask = umask(0);
+        umask(mask);
+        mode = 0666 & ~mask;
+    }
+    if (fchmod(fd, mode) != 0) goto fail;
 
     fp = fdopen(fd, "wb");
     if (!fp) goto fail;
@@ -178,8 +204,9 @@ int png_save(const Image *img, const char *path) {
     fp = NULL;
     fd = -1;
     if (closed != 0) goto fail;
-    if (rename(tmp, path) != 0) goto fail;
+    if (rename(tmp, dest) != 0) goto fail;
     free(tmp);
+    free(target);
     return 0;
 
 fail:
@@ -191,6 +218,7 @@ fail:
         else if (fd >= 0) close(fd);
         remove(tmp);
         free(tmp);
+        free(target);
         errno = err;
         return -1;
     }

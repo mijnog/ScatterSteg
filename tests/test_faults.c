@@ -120,6 +120,17 @@ static void test_save_sweep(void) {
             break;
         }
         fired++;
+        if (strcmp(name, "fchown") == 0) {
+            /* Not fatal: the save goes ahead without the old file's group
+               (test_save_fchown_failure_drops_group_access checks the mode) */
+            CHECK(r == 0);
+            Image *back = png_load(out_path);
+            CHECK(back && images_equal(back, img));
+            image_free(back);
+            CHECK(count_dir_entries() == 1);
+            CHECK(count_open_fds() == fds);
+            continue;
+        }
         CHECK(r == -1);
         CHECK(err != 0);   /* every injected fault sets errno; it must survive */
         CHECK(file_is(out_path, "precious"));
@@ -181,6 +192,30 @@ static void test_save_mkstemp_failure_spares_existing_file(void) {
     remove(out_path);
 }
 
+static void test_save_fchown_failure_drops_group_access(void) {
+    /* Replacing a group-shared file whose group we can't keep (not a
+       member): the new file must not pass the group bits to our group */
+    Image *img = make_image(4, 4);
+    for (unsigned n = 1; n < 1000; n++) {
+        write_text(out_path, "shared");
+        chmod(out_path, 0664);
+        fault_arm(n);
+        int r = png_save(img, out_path);
+        int hit = fault_fired();
+        const char *name = fault_fired_name();
+        fault_arm(0);
+        if (!hit) { CHECK(!"fchown never reached"); break; }
+        if (strcmp(name, "fchown") == 0) {
+            struct stat st;
+            CHECK(r == 0);  /* not fatal: the save goes ahead */
+            CHECK(stat(out_path, &st) == 0 && (st.st_mode & 0777) == 0604);
+            break;
+        }
+    }
+    image_free(img);
+    remove(out_path);
+}
+
 int main(void) {
     const char *base = getenv("TMPDIR");
     snprintf(dir, sizeof(dir), "%s/scattersteg-fault-XXXXXX", base ? base : "/tmp");
@@ -191,6 +226,7 @@ int main(void) {
     RUN(test_save_sweep);
     RUN(test_save_fclose_failure_no_double_close);
     RUN(test_save_mkstemp_failure_spares_existing_file);
+    RUN(test_save_fchown_failure_drops_group_access);
 
     rmdir(dir);
     return TEST_SUMMARY();

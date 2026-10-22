@@ -306,6 +306,72 @@ static void test_save_mode_follows_umask(void) {
     remove(p);
 }
 
+static mode_t mode_of(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 ? st.st_mode & 0777 : (mode_t)-1;
+}
+
+static void test_save_keeps_existing_mode(void) {
+    /* A private image must stay private, a shared one shared, whatever
+       the umask; only new files take their mode from the umask */
+    mode_t old = umask(022);
+    Image *img = make_image(2, 2);
+    const char *p = path_in_dir("private.png");
+    write_bytes(p, "x", 1);
+    chmod(p, 0600);
+    CHECK(png_save(img, p) == 0);
+    CHECK(mode_of(p) == 0600);
+
+    umask(077);
+    chmod(p, 0664);
+    CHECK(png_save(img, p) == 0);
+    CHECK(mode_of(p) == 0664);
+
+    umask(old);
+    image_free(img);
+    remove(p);
+}
+
+static void test_save_through_symlink(void) {
+    /* -o pointing at a symlink updates the file it points to (here in
+       another directory) and leaves the link in place */
+    char sub[512], target[600], link[600];
+    snprintf(sub, sizeof(sub), "%s/elsewhere", dir);
+    mkdir(sub, 0700);
+    snprintf(target, sizeof(target), "%s/real.png", sub);
+    snprintf(link, sizeof(link), "%s/link.png", dir);
+    write_bytes(target, "old", 3);
+    chmod(target, 0640);
+    CHECK(symlink(target, link) == 0);
+
+    Image *img = make_image(3, 3);
+    CHECK(png_save(img, link) == 0);
+    struct stat st;
+    CHECK(lstat(link, &st) == 0 && S_ISLNK(st.st_mode));
+    Image *back = png_load(target);
+    CHECK(back && images_equal(img, back));
+    CHECK(mode_of(target) == 0640);
+    CHECK(count_dir_entries() == 2);  /* elsewhere/ and link.png: no temp file */
+
+    image_free(back);
+    image_free(img);
+    remove(link);
+    remove(target);
+    rmdir(sub);
+}
+
+static void test_save_dangling_symlink(void) {
+    /* A link to nothing has no file to write through to: it is replaced */
+    const char *link = path_in_dir("dangling.png");
+    CHECK(symlink("/nonexistent/scattersteg-target.png", link) == 0);
+    Image *img = make_image(2, 2);
+    CHECK(png_save(img, link) == 0);
+    struct stat st;
+    CHECK(lstat(link, &st) == 0 && S_ISREG(st.st_mode));
+    image_free(img);
+    remove(link);
+}
+
 static void test_save_missing_dir(void) {
     Image *img = make_image(2, 2);
     CHECK(png_save(img, path_in_dir("no/such/dir/x.png")) == -1);
@@ -387,6 +453,9 @@ int main(void) {
     RUN(test_save_roundtrip);
     RUN(test_save_overwrites);
     RUN(test_save_mode_follows_umask);
+    RUN(test_save_keeps_existing_mode);
+    RUN(test_save_through_symlink);
+    RUN(test_save_dangling_symlink);
     RUN(test_save_missing_dir);
     RUN(test_save_unwritable_dir);
     RUN(test_save_libpng_failure_keeps_existing);

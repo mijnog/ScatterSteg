@@ -101,6 +101,11 @@ int fault_close(int fd) {
     return r;
 }
 
+int fault_fchown(int fd, uid_t owner, gid_t group) {
+    if (fault_should_fail("fchown")) { errno = EPERM; return -1; }
+    return fchown(fd, owner, group);
+}
+
 int fault_rename(const char *from, const char *to) {
     if (fault_should_fail("rename")) { errno = EXDEV; return -1; }
     return rename(from, to);

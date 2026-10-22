@@ -13,6 +13,7 @@ import os
 import pty
 import select
 import signal
+import stat
 import struct
 import sys
 import tempfile
@@ -499,6 +500,20 @@ class CliTest(CliBase):
         code, log = run(["encode", "-x", "-i", self.cover])
         self.assertEqual(code, 1)
         self.assertIn("Usage:", log)
+
+    def test_output_keeps_mode_and_symlink(self):
+        out = self.path("private.png")
+        with open(out, "wb") as f:
+            f.write(b"x")
+        os.chmod(out, 0o600)
+        self.assertEqual(self.encode(b"private", out)[0], 0)
+        self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o600)
+
+        link = self.path("link.png")
+        os.symlink(out, link)
+        self.assertEqual(self.encode(b"via link", link)[0], 0)
+        self.assertTrue(os.path.islink(link))
+        self.assertDecodes(out, "via link")
 
     def test_signal_at_prompt_restores_echo(self):
         # Killed while echo is off, the terminal must get echo back, and the

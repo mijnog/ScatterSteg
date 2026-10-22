@@ -6,7 +6,8 @@
    fault.c. Arming fault N makes the Nth such call fail as the real one can,
    so a sweep over N walks every error path one at a time. */
 
-#define _POSIX_C_SOURCE 200809L  /* same value the sources define */
+#define _POSIX_C_SOURCE 200809L  /* same values the sources define */
+#define _XOPEN_SOURCE 700
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -21,6 +22,7 @@ int   fault_fsync(int fd);
 int   fault_fclose(FILE *fp);
 int   fault_close(int fd);
 int   fault_rename(const char *from, const char *to);
+int   fault_fchown(int fd, uid_t owner, gid_t group);
 /* In fault_sodium.c, linked only into builds that use libsodium */
 int   fault_crypto_pwhash(unsigned char *out, unsigned long long outlen,
                           const char *passwd, unsigned long long passwdlen,
@@ -50,6 +52,7 @@ unsigned    fault_bad_closes(void);
 #define fclose  fault_fclose
 #define close   fault_close
 #define rename  fault_rename
+#define fchown  fault_fchown
 #define crypto_pwhash fault_crypto_pwhash
 #endif
 

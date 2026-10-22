@@ -1,8 +1,8 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c17 -g
-LIBS    = -lsodium -lpng
+LIBS    = -lsodium -lpng -ljpeg
 
-SRCS    = main.c prng.c embed.c png_io.c atomic_write.c
+SRCS    = main.c prng.c embed.c png_io.c jpeg_io.c atomic_write.c
 OBJS    = $(SRCS:.c=.o)
 TARGET  = scattersteg
 
@@ -27,8 +27,8 @@ $(TARGET): $(OBJS)
 TEST_DIR    = tests/build
 TEST_CFLAGS = $(CFLAGS) -I. -Itests -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_ENV    = ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_faults
-HDRS        = png_io.h prng.h embed.h atomic_write.h
+UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_jpeg_io $(TEST_DIR)/test_faults
+HDRS        = png_io.h jpeg_io.h prng.h embed.h atomic_write.h
 
 # Fault-injection build: the sources force-include tests/fault.h, so a test
 # can make the Nth malloc/fopen/fclose/rename/... fail (see tests/fault.c)
@@ -37,12 +37,13 @@ FAULT_OBJS  = $(SRCS:%.c=$(FAULT_DIR)/%.o) $(FAULT_DIR)/fault.o $(FAULT_DIR)/fau
 
 test: unit-test cli-test
 
-unit-test: $(UNIT_TESTS)
+unit-test: $(UNIT_TESTS) $(TEST_DIR)/jpeg_fixture
 	@for t in $(UNIT_TESTS); do echo "== $$t"; $(TEST_ENV) $$t || exit 1; done
 
-cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault
+cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault $(TEST_DIR)/jpeg_fixture
 	@echo "== tests/test_cli.py"
 	$(TEST_ENV) SCATTERSTEG=$(TEST_DIR)/scattersteg SCATTERSTEG_FAULT=$(TEST_DIR)/scattersteg-fault \
+		JPEG_FIXTURE=$(TEST_DIR)/jpeg_fixture \
 		python3 tests/test_cli.py
 
 $(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
@@ -53,6 +54,13 @@ $(TEST_DIR)/test_prng: tests/test_prng.c prng.c tests/test.h $(HDRS) | $(TEST_DI
 
 $(TEST_DIR)/test_png_io: tests/test_png_io.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_png_io.c png_io.c atomic_write.c -o $@ -lpng -lz
+
+$(TEST_DIR)/test_jpeg_io: tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
+	$(CC) $(TEST_CFLAGS) tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c -o $@ -ljpeg -lsodium
+
+# Writes test JPEGs (no sanitizers: it's a tool, not code under test)
+$(TEST_DIR)/jpeg_fixture: tests/jpeg_fixture.c | $(TEST_DIR)
+	$(CC) $(CFLAGS) tests/jpeg_fixture.c -o $@ -ljpeg
 
 $(TEST_DIR)/test_faults: tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o tests/test.h | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o -o $@ -lpng
@@ -82,25 +90,34 @@ FUZZ_TIME  ?= 60
 # A single allocation over the 1 GiB pixel cap still counts as a failure.
 FUZZ_ENV    = ASAN_OPTIONS=quarantine_size_mb=16:allocator_release_to_os_interval_ms=100
 FUZZ_ARGS   = -max_total_time=$(FUZZ_TIME) -rss_limit_mb=4096 -malloc_limit_mb=1100 -close_fd_mask=2
-FUZZERS     = $(FUZZ_DIR)/fuzz_png_load $(FUZZ_DIR)/fuzz_embed $(FUZZ_DIR)/fuzz_png_roundtrip
+FUZZERS     = $(FUZZ_DIR)/fuzz_png_load $(FUZZ_DIR)/fuzz_jpeg_load $(FUZZ_DIR)/fuzz_embed $(FUZZ_DIR)/fuzz_png_roundtrip
+FUZZ_TARGETS = png_load jpeg_load embed png_roundtrip
 
-fuzz: $(FUZZERS)
+fuzz: $(FUZZERS) $(TEST_DIR)/jpeg_fixture
 	@test -d $(FUZZ_DIR)/corpus/png_load || python3 tests/fuzz/make_seeds.py $(FUZZ_DIR)/corpus/png_load
+	@test -d $(FUZZ_DIR)/corpus/jpeg_load || { mkdir -p $(FUZZ_DIR)/corpus/jpeg_load && \
+		for v in "16 16 3 85" "40 24 1 70" "33 17 3 90 progressive" "24 24 3 75 arith" \
+		         "48 32 3 85 restart markers" "32 32 3 95 444 optimize"; do \
+			$(TEST_DIR)/jpeg_fixture "$(FUZZ_DIR)/corpus/jpeg_load/$$(echo $$v | tr ' ' _).jpg" $$v; \
+		done; }
 	@cd $(FUZZ_DIR) && pids= && \
-	for t in png_load embed png_roundtrip; do \
+	for t in $(FUZZ_TARGETS); do \
 		mkdir -p corpus/$$t; \
 		cp ../../fuzz/regressions/$$t/* corpus/$$t/ 2>/dev/null; \
 		$(FUZZ_ENV) ./fuzz_$$t $(FUZZ_ARGS) -print_final_stats=1 -artifact_prefix=crash-$$t- \
 			corpus/$$t > fuzz_$$t.log 2>&1 & pids="$$pids $$!"; \
 	done; \
 	fail=0; for p in $$pids; do wait $$p || fail=1; done; \
-	for t in png_load embed png_roundtrip; do \
+	for t in $(FUZZ_TARGETS); do \
 		printf '%-14s %s runs\n' $$t "$$(sed -n 's/^stat::number_of_executed_units: *//p' fuzz_$$t.log)"; \
 	done; \
 	if [ $$fail != 0 ]; then grep -h -A5 -E '^==[0-9]+==|^SUMMARY' fuzz_*.log; ls crash-* 2>/dev/null; exit 1; fi
 
 $(FUZZ_DIR)/fuzz_png_load: tests/fuzz/fuzz_png_load.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_load.c png_io.c atomic_write.c -o $@ -lpng -lz
+
+$(FUZZ_DIR)/fuzz_jpeg_load: tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic_write.c -o $@ -ljpeg -lsodium
 
 $(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_embed.c embed.c prng.c -o $@ -lsodium
@@ -119,14 +136,16 @@ coverage: $(COV_OBJS) | $(COV_DIR)
 	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_prng.c $(COV_DIR)/prng.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_prng -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_png_io.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_png_io -lpng -lz
+	$(CC) $(COV_CFLAGS) tests/test_jpeg_io.c $(COV_DIR)/jpeg_io.o $(COV_DIR)/embed.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_jpeg_io -ljpeg -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_faults.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_faults -lpng
 	$(CC) $(COV_CFLAGS) $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sodium.o -o $(COV_DIR)/scattersteg $(LIBS)
-	for t in test_embed test_prng test_png_io test_faults; do $(COV_DIR)/$$t > /dev/null 2>&1 || exit 1; done
-	SCATTERSTEG=$(COV_DIR)/scattersteg SCATTERSTEG_FAULT=$(COV_DIR)/scattersteg \
+	$(MAKE) --no-print-directory $(TEST_DIR)/jpeg_fixture
+	for t in test_embed test_prng test_png_io test_jpeg_io test_faults; do $(COV_DIR)/$$t > /dev/null 2>&1 || exit 1; done
+	SCATTERSTEG=$(COV_DIR)/scattersteg SCATTERSTEG_FAULT=$(COV_DIR)/scattersteg JPEG_FIXTURE=$(TEST_DIR)/jpeg_fixture \
 		python3 tests/test_cli.py > /dev/null 2>&1 || { echo "tests failed; coverage still reported"; }
 	@gcov -o $(COV_DIR) $(SRCS) 2>/dev/null | \
 		awk '/^File .*\.c/ {f=$$2} /^Lines executed/ && f !~ /tests|\/usr/ {print f, $$0; f=""}'
-	@mv *.c.gcov $(COV_DIR)/
+	@mv *.c.gcov $(COV_DIR)/; rm -f *.h.gcov
 	@echo "annotated sources: $(COV_DIR)/*.c.gcov (lines marked ##### never ran)"
 
 $(COV_DIR)/%.o: %.c tests/fault.h $(HDRS) | $(COV_DIR)

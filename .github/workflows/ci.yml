@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev zlib1g-dev clang python3
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev clang python3
 
       # The runner kernel's high mmap randomization breaks ASan's shadow
       # memory layout ("AddressSanitizer:DEADLYSIGNAL" at startup)

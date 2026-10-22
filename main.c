@@ -11,7 +11,9 @@
 #include <sys/prctl.h>
 #endif
 #include <sodium.h>
+#include <strings.h>
 #include "png_io.h"
+#include "jpeg_io.h"
 #include "prng.h"
 #include "embed.h"
 
@@ -340,6 +342,54 @@ static int decode_v1(const Carrier *c, const char *passphrase,
     return r;
 }
 
+/* A loaded cover in either format, and the carrier its bits go into */
+typedef struct {
+    Image *png;
+    JpegImage *jpeg;
+    Carrier carrier;
+} Cover;
+
+/* Loads a PNG or JPEG (by its first bytes). Prints why and returns -1 if
+   it can't. png_load caps images at 1 GiB, so positions fit in 32 bits. */
+static int cover_load(const char *path, Cover *c) {
+    memset(c, 0, sizeof(*c));
+    if (is_jpeg_file(path)) {
+        c->jpeg = jpeg_load(path);
+        if (c->jpeg) c->carrier = jpeg_carrier(c->jpeg);
+    } else {
+        c->png = png_load(path);
+        if (c->png) c->carrier = carrier_of_image(c->png);
+    }
+    if (!c->png && !c->jpeg) {
+        fprintf(stderr, "Error: could not load '%s'\n", path);
+        return -1;
+    }
+    return 0;
+}
+
+static int cover_save(const Cover *c, const char *path) {
+    return c->png ? png_save(c->png, path) : jpeg_save(c->jpeg, path);
+}
+
+static void cover_free(Cover *c) {
+    image_free(c->png);
+    jpeg_free(c->jpeg);
+}
+
+/* The output has the cover's format; refuse a name that says otherwise */
+static int output_name_matches(const char *input, const char *output) {
+    const char *ext = strrchr(output, '.');
+    if (!ext) return 1;
+    int says_jpeg = !strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg");
+    int says_png = !strcasecmp(ext, ".png");
+    if (is_jpeg_file(input) ? says_png : says_jpeg) {
+        fprintf(stderr, "Error: the output is a %s, like the cover; give it a %s name\n",
+                is_jpeg_file(input) ? "JPEG" : "PNG", is_jpeg_file(input) ? ".jpg" : ".png");
+        return 0;
+    }
+    return 1;
+}
+
 /* Read the entire contents of stdin into a sodium_malloc buffer.
    Prints a prompt first if stdin is a terminal. Caller must sodium_free. */
 static char *read_message(void) {
@@ -398,8 +448,8 @@ static void protect_process(void) {
 }
 
 static void usage(const char *prog) {
-    fprintf(stderr, "Usage: %s encode -i <input.png> -o <output.png>\n", prog);
-    fprintf(stderr, "       %s decode -i <input.png>\n", prog);
+    fprintf(stderr, "Usage: %s encode -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
+    fprintf(stderr, "       %s decode -i <image.png|jpg>\n", prog);
     fprintf(stderr, "       %s passphrase\n", prog);
     fprintf(stderr, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
 }
@@ -439,6 +489,7 @@ int main(int argc, char *argv[]) {
             usage(argv[0]);
             return 1;
         }
+        if (!output_name_matches(input, output)) return 1;
 
         char *passphrase = read_passphrase("Passphrase: ");
         if (!passphrase) return 1;
@@ -461,36 +512,37 @@ int main(int argc, char *argv[]) {
         }
         free_passphrase(confirm);
 
-        Image *img = png_load(input);
-        if (!img) {
+        Cover cover;
+        if (cover_load(input, &cover) != 0) {
             free_passphrase(passphrase);
-            fprintf(stderr, "Error: could not load '%s'\n", input);
             return 1;
         }
 
-        /* The output is 8-bit RGB or gray: any other cover would come out in
-           a visibly different format, which gives it away */
-        if (img->unsuitable) {
+        /* A PNG output is 8-bit RGB or gray: any other cover would come out
+           in a visibly different format, which gives it away */
+        if (cover.png && cover.png->unsuitable) {
             free_passphrase(passphrase);
             fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
                             "use an 8-bit RGB or grayscale PNG without transparency "
-                            "as the cover\n", input, img->unsuitable);
-            image_free(img);
+                            "as the cover\n", input, cover.png->unsuitable);
+            cover_free(&cover);
             return 1;
         }
 
-        if (img->width == 0 || img->height > UINT32_MAX / img->width) {
+        if (cover.jpeg && jpeg_check_writable(cover.jpeg) != 0) {
             free_passphrase(passphrase);
-            image_free(img);
-            fprintf(stderr, "Error: image dimensions overflow\n");
+            fprintf(stderr, "Error: '%s' is a JPEG that can't be rewritten losslessly; "
+                            "use another cover\n", input);
+            cover_free(&cover);
             return 1;
         }
-        Carrier carrier = carrier_of_image(img);
+
+        Carrier carrier = cover.carrier;
         uint32_t count = carrier_positions(&carrier);
         uint32_t k = salt_pixel_count(carrier_channels(&carrier));
         if (count < k + header_pixels(carrier_channels(&carrier))) {
             free_passphrase(passphrase);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: image too small to hide a message\n");
             return 1;
         }
@@ -500,7 +552,7 @@ int main(int argc, char *argv[]) {
         Keys *keys = derive_keys_v2(passphrase, salt);
         free_passphrase(passphrase);
         if (!keys) {
-            image_free(img);
+            cover_free(&cover);
             return 1;
         }
 
@@ -510,7 +562,7 @@ int main(int argc, char *argv[]) {
             order = payload_order(keys->scatter, count, salt_px, k);
         if (!order) {
             sodium_free(keys);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
             return 1;
         }
@@ -519,7 +571,7 @@ int main(int argc, char *argv[]) {
         if (!message) {
             sodium_free(keys);
             free(order);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: could not read message\n");
             return 1;
         }
@@ -529,7 +581,7 @@ int main(int argc, char *argv[]) {
             sodium_free(keys);
             sodium_free(message);
             free(order);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Message is empty; nothing written\n");
             return 0;
         }
@@ -541,7 +593,7 @@ int main(int argc, char *argv[]) {
             sodium_free(keys);
             sodium_free(message);
             free(order);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
             return 1;
         }
@@ -560,26 +612,26 @@ int main(int argc, char *argv[]) {
         free(order);
         if (plan && embedded != 0) {
             embed_plan_free(plan);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: message too long for this image\n");
             return 1;
         }
         if (!plan || embed_write_raw(&carrier, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
             embed_apply(plan, NULL) != 0) {
             embed_plan_free(plan);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
             return 1;
         }
         embed_plan_free(plan);
 
-        if (png_save(img, output) != 0) {
+        if (cover_save(&cover, output) != 0) {
             fprintf(stderr, "Error: could not write '%s': %s\n", output,
                     errno ? strerror(errno) : "PNG encoding failed");
-            image_free(img);
+            cover_free(&cover);
             return 1;
         }
-        image_free(img);
+        cover_free(&cover);
 
     } else if (strcmp(argv[1], "decode") == 0) {
         if (!input) {
@@ -591,23 +643,15 @@ int main(int argc, char *argv[]) {
         char *passphrase = read_passphrase("Passphrase: ");
         if (!passphrase) return 1;
 
-        Image *img = png_load(input);
-        if (!img) {
+        Cover cover;
+        if (cover_load(input, &cover) != 0) {
             free_passphrase(passphrase);
-            fprintf(stderr, "Error: could not load '%s'\n", input);
             return 1;
         }
-
-        if (img->width == 0 || img->height > UINT32_MAX / img->width) {
-            free_passphrase(passphrase);
-            image_free(img);
-            fprintf(stderr, "Error: image dimensions overflow\n");
-            return 1;
-        }
-        Carrier carrier = carrier_of_image(img);
+        Carrier carrier = cover.carrier;
         if (carrier_positions(&carrier) < header_pixels(carrier_channels(&carrier))) {
             free_passphrase(passphrase);
-            image_free(img);
+            cover_free(&cover);
             fprintf(stderr, "Error: image too small to contain a message\n");
             return 1;
         }
@@ -622,7 +666,7 @@ int main(int argc, char *argv[]) {
                                 "the passphrase less well; re-encode it\n");
         }
         free_passphrase(passphrase);
-        image_free(img);
+        cover_free(&cover);
         if (r == NO_MATCH)
             fprintf(stderr, "Error: decryption failed — wrong passphrase, "
                             "or no message in this image\n");

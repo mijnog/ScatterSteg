@@ -1,6 +1,6 @@
 # ScatterSteg
 
-A command-line steganography tool that hides encrypted messages inside PNG images.
+A command-line steganography tool that hides encrypted messages inside PNG and JPEG images.
 
 ## Rationale
 
@@ -16,6 +16,7 @@ The message itself is also encrypted with XSalsa20-Poly1305 (`crypto_secretbox`)
 
 - **Scatter-based LSB embedding** — pixel selection is a ChaCha20-derived Fisher-Yates shuffle, not sequential
 - **LSB matching** — bits are embedded by a random ±1 change rather than by overwriting the LSB, so no sample changes by more than 1 and the pair statistics that classic steganalysis relies on are left intact
+- **PNG and JPEG covers** — in a JPEG the message goes into the quantized DCT coefficients, which are read and written losslessly: no pixels are decoded and recompressed, a JPEG that isn't modified comes back byte for byte, and the output keeps the cover's quantization, subsampling, progressive or baseline coding, restart interval and markers (EXIF, ICC profile, comments)
 - **Histogram-preserving exchange** — when two samples that both need their LSB flipped hold values one apart, they swap values instead (the idea behind steghide; Hetzl & Mutzel, 2005). On photos over 99% of changes pair up, so the histogram is unchanged apart from a parity shift that no LSB method can avoid
 - **Authenticated encryption** — XSalsa20-Poly1305 encrypts and authenticates the message before embedding; wrong passphrase on decode fails with an explicit error
 - **Argon2id key derivation** — one Argon2id run (winner of the Password Hashing Competition; 256 MiB, 3 passes) with a random per-image salt derives a master key, split into independent scatter and encryption keys. Nothing about the message, not even where it is, can be checked without paying for Argon2id, so every passphrase guess costs about 0.2 s and 256 MiB
@@ -30,11 +31,12 @@ The message itself is also encrypted with XSalsa20-Poly1305 (`crypto_secretbox`)
 
 - [libsodium](https://doc.libsodium.org/) — ChaCha20, BLAKE2b, XSalsa20-Poly1305
 - [libpng](http://www.libpng.org/pub/png/libpng.html) — PNG read/write
+- [libjpeg-turbo](https://libjpeg-turbo.org/) (or libjpeg) — JPEG coefficient read/write
 
 On Ubuntu/Debian:
 
 ```bash
-sudo apt install libsodium-dev libpng-dev
+sudo apt install libsodium-dev libpng-dev libjpeg-dev
 ```
 
 ## Building
@@ -55,7 +57,7 @@ GitHub Actions runs the build, `make test` and a minute of fuzzing per target on
 
 ## Usage
 
-**Encode** a message into a PNG:
+**Encode** a message into a PNG or JPEG (the output is in the cover's format):
 
 ```bash
 # pipe from a file
@@ -63,6 +65,9 @@ echo "your message" | ./scattersteg encode -i cover.png -o steg.png
 
 # or type interactively (Ctrl+D when done)
 ./scattersteg encode -i cover.png -o steg.png
+
+# JPEG covers work the same way
+echo "your message" | ./scattersteg encode -i photo.jpg -o steg.jpg
 ```
 
 You will be prompted to enter and confirm a passphrase of at least 12 bytes. To generate a strong one (about 124 bits):
@@ -71,7 +76,7 @@ You will be prompted to enter and confirm a passphrase of at least 12 bytes. To 
 ./scattersteg passphrase
 ```
 
-**Decode** a message from a PNG:
+**Decode** a message:
 
 ```bash
 ./scattersteg decode -i steg.png
@@ -87,12 +92,16 @@ There is no header or version marker in the image, since one would give the imag
 2. **Keys** — `master = Argon2id(passphrase, salt, opslimit 3, memlimit 256 MiB)`; the scatter key and encryption key are `crypto_kdf` subkeys 1 and 2 of `master`, context `ScatStg2`.
 3. **Payload** — a 32-bit little-endian length, then `nonce (24) || crypto_secretbox(message)`, in the order of `prng_permutation(scatter key)` with the salt pixels removed.
 
+**JPEG** uses the same layout over a different kind of position: each *carrier* is one AC coefficient with |value| ≥ 2, taken in component, block-row, block and coefficient order, and carries one bit. So the salt takes the first 128 carriers of the public order. DC coefficients, zeros and ±1 are never used, and embedding keeps every carrier at |value| ≥ 2 and within ±1023, so the decoder finds the same carriers and the encoder can write them.
+
 `prng_permutation(key, n)` is a forward Fisher–Yates shuffle (for `i` from 0 to n−2, swap slot `i` with `i + uniform(n − i)`), with `uniform` drawing little-endian 32-bit words from the ChaCha20-IETF keystream of `key` (zero nonce, counter from 0) and rejecting values below `2³² mod bound`. Decode tries v2 first and falls back to the v1 format of earlier versions.
 
 ## Limitations
 
 - Covers must be 8-bit RGB or 8-bit grayscale PNGs without transparency, and the output keeps that format. Covers with transparency, 16-bit color, a color palette or fewer than 8 bits per sample are refused, since the output would come out in a visibly different format. A grayscale cover holds a third as much as an RGB one.
 - Against the classic detectors, the chi-square attack and sample pair analysis, embedding was not detectable in testing on photographs: chi-square stayed negative even at full capacity, and sample pair analysis stayed within about 0.1 of the cover's own estimate at every payload (with LSB overwriting it tracks the payload, e.g. about 0.5 at half capacity). Modern machine-learning steganalysis can detect LSB matching at lower payloads and hasn't been tested. Keep messages small relative to the cover; a few KB in a photo-sized image uses well under 1% of its capacity.
+- JPEG covers carry far less than PNGs (one bit per AC coefficient with |value| ≥ 2: about 0.12–0.15 bits per pixel on the photos tested, e.g. ~68 KB in a 4.5-megapixel photo), and are more detectable per bit. JPEG coefficients are much more often 2 than 3, 4 than 5 and so on, and random message bits even that out: on a photo, the ratio of 2s to 3s went from 2.10 to 2.02 at 5% of capacity and 1.71 at 25%. Calibration-based JPEG steganalysis estimates that ratio for the image and would notice; keep JPEG messages small. (The classic chi-square attack on coefficients did not fire at any payload.)
+- A JPEG is re-encoded from the same coefficients, so the image data is unchanged except where bits were embedded, but the file isn't byte for byte the cover: optimized Huffman tables are optimized afresh, and a progressive file gets libjpeg's standard scan sequence. JPEGs libjpeg can decode but not re-encode (found by fuzzing: some redefine quantization tables between scans), 12-bit, lossless and over-large JPEGs are refused as covers.
 - Images written before format v2 still decode, with a warning. In that old format most wrong passphrases could be rejected without running Argon2id (about 100× cheaper per guess on small images), so re-encode them.
 - The exchange keeps the histogram except for one shift: carrier samples end up half even and half odd, because the encrypted message bits are random. Histogram-based detectors such as HCF-COM still see that shift, so exchange improved them only modestly in testing.
 - Covers with gaps in their histogram (posterized images, or ones with few distinct values) hide data badly: changes there create values the image never had, and there's no neighbouring value to exchange with.

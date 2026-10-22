@@ -97,10 +97,11 @@ static int nudged(int kind, int v, Coins *coins) {
         if (v == 0)   return 1;
         if (v == 255) return 254;
     } else {
+        /* Stay within what a JPEG encoder can write (|AC| <= 1023) */
         if (v == 2)      return 3;
         if (v == -2)     return -3;
-        if (v == 32767)  return 32766;
-        if (v == -32768) return -32767;
+        if (v >= 1023)   return v - 1;
+        if (v <= -1023)  return v + 1;
     }
     return flip(coins) ? v + 1 : v - 1;
 }

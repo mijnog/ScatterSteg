@@ -29,6 +29,32 @@ TIMEOUT = 60  # seconds per run; Argon2id takes a fraction of that
 
 
 FAULT_BINARY = os.environ.get("SCATTERSTEG_FAULT")  # built with tests/fault.h
+JPEG_FIXTURE = os.environ.get(
+    "JPEG_FIXTURE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "build", "jpeg_fixture"))
+
+
+def make_jpeg(path, w, h, comps=3, quality=85, *options):
+    """A test JPEG from tests/jpeg_fixture.c (see there for the options)"""
+    import subprocess
+    subprocess.run([JPEG_FIXTURE, path, str(w), str(h), str(comps), str(quality), *options],
+                   check=True)
+
+
+def jpeg_segments(path):
+    """[(marker, payload), ...] for the header segments before the first scan"""
+    with open(path, "rb") as f:
+        data = f.read()
+    assert data[:2] == b"\xff\xd8"
+    out, pos = [], 2
+    while pos + 4 <= len(data) and data[pos] == 0xFF:
+        marker = data[pos + 1]
+        length = int.from_bytes(data[pos + 2:pos + 4], "big")
+        out.append((marker, data[pos + 4:pos + 2 + length]))
+        if marker == 0xDA:  # start of scan: entropy-coded data follows
+            break
+        pos += 2 + length
+    return out
 
 
 def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None):
@@ -1055,6 +1081,98 @@ class CrossCheckTest(CliBase):
                 self.assertIn(msg + b"\n", log.encode(errors="surrogateescape"))
 
 
+@unittest.skipUnless(os.access(JPEG_FIXTURE, os.X_OK), "jpeg_fixture not built")
+class JpegTest(CliBase):
+    """JPEG covers: data goes into DCT coefficients, read and written
+    losslessly, and the output is a JPEG like the cover"""
+
+    def setUp(self):
+        super().setUp()
+        self.jpeg = self.path("cover.jpg")
+        make_jpeg(self.jpeg, 256, 192)
+
+    def test_roundtrip(self):
+        out = self.path("steg.jpg")
+        code, log = self.encode(b"in the coefficients", out, src=self.jpeg)
+        self.assertEqual(code, 0, log)
+        self.assertDecodes(out, "in the coefficients")
+        code, log = self.decode(out, "wrong horse!")
+        self.assertEqual(code, 1, log)
+        self.assertNotIn("in the coefficients", log)
+
+    def test_random_messages(self):
+        import random
+        rng = random.Random(7)
+        for case in range(4):
+            msg = bytes(rng.choice(range(32, 127)) for _ in range(rng.randint(1, 300)))
+            with self.subTest(case=case, length=len(msg)):
+                out = self.path("steg.jpg")
+                self.assertEqual(self.encode(msg, out, src=self.jpeg)[0], 0)
+                self.assertDecodes(out, msg.decode())
+
+    def test_format_and_markers_kept(self):
+        src = self.path("fancy.jpg")
+        make_jpeg(src, 200, 150, 3, 80, "progressive", "markers", "restart")
+        out = self.path("steg.jpg")
+        self.assertEqual(self.encode(b"keep it all", out, src=src)[0], 0)
+        before, after = jpeg_segments(src), jpeg_segments(out)
+        app_and_com = lambda segs: [s for s in segs if 0xE1 <= s[0] <= 0xEF or s[0] == 0xFE]
+        self.assertEqual(app_and_com(before), app_and_com(after))
+        markers = [m for m, _ in after]
+        self.assertIn(0xC2, markers)  # still progressive
+        self.assertIn(0xDD, markers)  # still has a restart interval
+        self.assertDecodes(out, "keep it all")
+
+    def test_gray(self):
+        src = self.path("gray.jpg")
+        make_jpeg(src, 200, 150, 1)
+        out = self.path("steg.jpg")
+        self.assertEqual(self.encode(b"gray jpeg", out, src=src)[0], 0)
+        sof = dict(jpeg_segments(out))[0xC0]
+        self.assertEqual(sof[5], 1)  # one component
+        self.assertDecodes(out, "gray jpeg")
+
+    def test_too_long_and_too_small(self):
+        out = self.path("steg.jpg")
+        code, log = self.encode(b"x" * 100000, out, src=self.jpeg)
+        self.assertEqual(code, 1, log)
+        self.assertIn("too long", log)
+        self.assertFalse(os.path.exists(out))
+        tiny = self.path("tiny.jpg")
+        make_jpeg(tiny, 8, 8, 1, 50)  # one block: nowhere near 160 carriers
+        code, log = self.encode(b"x", out, src=tiny)
+        self.assertEqual(code, 1, log)
+        self.assertIn("too small", log)
+
+    def test_output_name_must_match_format(self):
+        code, log = self.encode(b"x", self.path("out.png"), src=self.jpeg)
+        self.assertEqual(code, 1, log)
+        self.assertIn("give it a .jpg name", log)
+        code, log = self.encode(b"x", self.path("out.jpeg"))  # PNG cover
+        self.assertEqual(code, 1, log)
+        self.assertIn("give it a .png name", log)
+        self.assertEqual(sorted(os.listdir(self.dir)), ["cover.jpg", "cover.png"])
+
+    def test_unrewritable_jpeg_refused(self):
+        # A JPEG libjpeg decodes but won't re-encode (found by fuzzing):
+        # refused up front, before any key derivation
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fuzz", "regressions", "jpeg_load", "oversampled-progressive.jpg")
+        out = self.path("steg.jpg")
+        code, log = self.encode(b"x", out, src=src)
+        self.assertEqual(code, 1, log)
+        self.assertIn("can't be rewritten losslessly", log)
+        self.assertNotIn("Deriving keys", log)
+        self.assertFalse(os.path.exists(out))
+
+    def test_decode_cover_without_message(self):
+        out = self.path("steg.jpg")
+        self.assertEqual(self.encode(b"m", out, src=self.jpeg)[0], 0)
+        code, log = self.decode(self.jpeg)  # the cover holds nothing
+        self.assertEqual(code, 1, log)
+        self.assertIn("Error:", log)
+
+
 SANITIZER_MARKERS = ("AddressSanitizer", "LeakSanitizer", "runtime error:")
 
 
@@ -1161,6 +1279,36 @@ class FaultSweepTest(CliBase):
 
         faults = self.sweep(["decode", "-i", steg], b"", ["correct horse"], check)
         self.assertGreater(faults, 5)
+
+    @unittest.skipUnless(os.access(JPEG_FIXTURE, os.X_OK), "jpeg_fixture not built")
+    def test_encode_and_decode_sweep_jpeg(self):
+        src = self.path("cover.jpg")
+        make_jpeg(src, 128, 96)
+        out = self.path("steg.jpg")
+        with open(out, "wb") as f:
+            f.write(b"precious")
+
+        def check_encode(code, log):
+            if code == 0:
+                self.assertDecodes(out, "jpeg sweep")
+            else:
+                with open(out, "rb") as f:
+                    self.assertEqual(f.read(), b"precious")
+            self.assertEqual(sorted(os.listdir(self.dir)), ["cover.jpg", "cover.png", "steg.jpg"])
+            with open(out, "wb") as f:
+                f.write(b"precious")
+
+        faults = self.sweep(["encode", "-i", src, "-o", out], b"jpeg sweep",
+                            ["correct horse"] * 2, check_encode)
+        self.assertGreater(faults, 10)
+
+        self.assertEqual(self.encode(b"jpeg sweep", out, src=src)[0], 0)
+
+        def check_decode(code, log):
+            if code == 0:
+                self.assertIn("jpeg sweep\n", log)
+
+        self.assertGreater(self.sweep(["decode", "-i", out], b"", ["correct horse"], check_decode), 5)
 
     def test_sweep_reaches_key_derivation(self):
         # Argon2id's 256 MiB allocation happens inside libsodium; the sweep

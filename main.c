@@ -206,6 +206,15 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         uint32_t msg_len = (uint32_t)strlen(message);
+        /* Empty message: nothing to hide, so write nothing */
+        if (msg_len == 0) {
+            sodium_memzero(enc_key, sizeof(enc_key));
+            free(message);
+            free(indices);
+            image_free(img);
+            fprintf(stderr, "Message is empty; nothing written\n");
+            return 0;
+        }
         uint8_t nonce[crypto_secretbox_NONCEBYTES];
         randombytes_buf(nonce, sizeof(nonce));
 
@@ -300,9 +309,10 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         uint32_t max_payload_len = (uint32_t)((bits - 32) / 8);
+        /* No +1: an empty message (from older encoders) still authenticates */
         uint32_t min_payload_len = crypto_pwhash_SALTBYTES +
                                    crypto_secretbox_NONCEBYTES +
-                                   crypto_secretbox_MACBYTES + 1;
+                                   crypto_secretbox_MACBYTES;
 
         uint32_t payload_len = embed_peek_len(img, indices, count);
         if (payload_len > max_payload_len || payload_len < min_payload_len) {
@@ -369,7 +379,8 @@ int main(int argc, char *argv[]) {
         free(payload);
 
         plaintext[pt_len] = '\0';
-        printf("%s\n", (char *)plaintext);
+        if (pt_len > 0)  /* empty message: print nothing */
+            printf("%s\n", (char *)plaintext);
 
         sodium_memzero(plaintext, pt_len);
         free(plaintext);

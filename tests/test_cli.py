@@ -12,9 +12,11 @@ import hashlib
 import os
 import pty
 import select
+import signal
 import struct
 import sys
 import tempfile
+import termios
 import time
 import unittest
 import zlib
@@ -497,6 +499,29 @@ class CliTest(CliBase):
         code, log = run(["encode", "-x", "-i", self.cover])
         self.assertEqual(code, 1)
         self.assertIn("Usage:", log)
+
+    def test_signal_at_prompt_restores_echo(self):
+        # Killed while echo is off, the terminal must get echo back, and the
+        # process must still die from that signal
+        for name, how in (("Ctrl+C", b"\x03"), ("Ctrl+\\", b"\x1c"),
+                          ("SIGTERM", signal.SIGTERM), ("SIGHUP", signal.SIGHUP)):
+            with self.subTest(signal=name):
+                pid, master = pty.fork()
+                if pid == 0:
+                    os.execv(BINARY, [BINARY, "decode", "-i", self.cover])
+                out, deadline = b"", time.monotonic() + TIMEOUT
+                while b"Passphrase: " not in out and time.monotonic() < deadline:
+                    if select.select([master], [], [], 0.5)[0]:
+                        out += os.read(master, 1024)
+                self.assertFalse(termios.tcgetattr(master)[3] & termios.ECHO)
+                if isinstance(how, bytes):
+                    os.write(master, how)
+                else:
+                    os.kill(pid, how)
+                _, status = os.waitpid(pid, 0)
+                self.assertTrue(termios.tcgetattr(master)[3] & termios.ECHO)
+                self.assertTrue(os.WIFSIGNALED(status))
+                os.close(master)
 
     def test_wrong_passphrase(self):
         out = self.path("steg.png")

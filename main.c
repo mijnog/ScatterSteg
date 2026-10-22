@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,21 @@ static void free_passphrase(char *passphrase) {
     free(passphrase);
 }
 
+/* Terminal settings to put back if a signal kills us while echo is off */
+static int tty_restore_fd = -1;
+static struct termios tty_restore;
+
+static const int restore_signals[] = {SIGINT, SIGQUIT, SIGTERM, SIGHUP};
+#define N_RESTORE_SIGNALS (sizeof(restore_signals) / sizeof(restore_signals[0]))
+
+/* Restore echo, then die from the same signal. SA_RESETHAND has already
+   reinstated the default action, which runs once this handler returns. */
+static void restore_tty_and_die(int sig) {
+    tcsetattr(tty_restore_fd, TCSANOW, &tty_restore);
+    if (write(tty_restore_fd, "\n", 1) < 0) { /* nothing to do */ }
+    raise(sig);
+}
+
 /* Read a passphrase from the terminal with echo off. Returns it in a heap
    buffer for free_passphrase; on EOF or error, prints why and returns NULL. */
 static char *read_passphrase(const char *prompt) {
@@ -40,6 +56,15 @@ static char *read_passphrase(const char *prompt) {
         fprintf(stderr, "Error: could not read passphrase\n");
         return NULL;
     }
+
+    /* Ctrl+C and friends would otherwise leave the terminal without echo */
+    tty_restore_fd = fd;
+    tty_restore = old;
+    struct sigaction on_signal = {.sa_handler = restore_tty_and_die, .sa_flags = SA_RESETHAND};
+    struct sigaction saved[N_RESTORE_SIGNALS];
+    sigemptyset(&on_signal.sa_mask);
+    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++)
+        sigaction(restore_signals[i], &on_signal, &saved[i]);
 
     silent = old;
     silent.c_lflag &= ~ECHO;
@@ -67,6 +92,8 @@ static char *read_passphrase(const char *prompt) {
     }
 
     tcsetattr(fd, TCSAFLUSH, &old);
+    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++)
+        sigaction(restore_signals[i], &saved[i], NULL);
     fputs("\n", tty);
     fclose(tty);
 

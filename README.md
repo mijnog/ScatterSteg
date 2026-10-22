@@ -37,6 +37,16 @@ sudo apt install libsodium-dev libpng-dev
 make
 ```
 
+## Testing
+
+```bash
+make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~10 s)
+make fuzz       # libFuzzer on the PNG loader and embedder (needs clang; FUZZ_TIME=60 per target)
+make coverage   # line coverage over the whole suite; annotated sources in tests/build/cov
+```
+
+`make test` needs Python 3 (standard library only). The CLI tests drive the binary through a pseudo-terminal, since the passphrase is read from `/dev/tty`. The fault-injection tests make each `malloc`, `fopen`, `fclose`, `rename` and similar call fail in turn, and check that every error path fails cleanly.
+
 ## Usage
 
 **Encode** a message into a PNG:

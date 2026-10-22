@@ -5,3 +5,5 @@ cmake-build-debug-wsl/
 .idea/
 .claude/
 *.png
+tests/build/
+__pycache__/

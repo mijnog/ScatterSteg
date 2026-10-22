@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev zlib1g-dev clang python3
+
+      # The runner kernel's high mmap randomization breaks ASan's shadow
+      # memory layout ("AddressSanitizer:DEADLYSIGNAL" at startup)
+      - name: Let AddressSanitizer run
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build (hardened release)
+        run: make
+
+      - name: Unit, CLI and fault-injection tests
+        run: make test
+
+      - name: Fuzz each target for a minute
+        run: make fuzz FUZZ_TIME=60
+
+      - name: Keep fuzzer crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: tests/build/fuzz/crash-*
+          if-no-files-found: ignore

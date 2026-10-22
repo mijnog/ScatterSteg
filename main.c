@@ -4,8 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <termios.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <sodium.h>
 #include "png_io.h"
 #include "prng.h"
@@ -15,12 +19,17 @@
 /* The terminal's line editor holds 4095 bytes per line and silently drops
    the rest, so a line that long may have been cut short: refuse it. */
 #define PASSPHRASE_MAX_LEN 4094
+/* Shorter passphrases are refused on encode (decode accepts any, for old
+   images). Length is a crude measure, so `passphrase` generates good ones. */
+#define PASSPHRASE_MIN_LEN 12
+
+/* Secrets (passphrase, message, keys, plaintext) live in sodium_malloc
+   memory: locked so it can't be swapped to disk, fenced by guard pages, and
+   wiped by sodium_free. */
 
 /* Wipe and free a passphrase from read_passphrase. NULL is fine. */
 static void free_passphrase(char *passphrase) {
-    if (!passphrase) return;
-    sodium_memzero(passphrase, strlen(passphrase));
-    free(passphrase);
+    sodium_free(passphrase);
 }
 
 /* Terminal settings to put back if a signal kills us while echo is off */
@@ -75,15 +84,14 @@ static char *read_passphrase(const char *prompt) {
 
     size_t cap = PASSPHRASE_CHUNK;
     size_t len = 0;
-    char *buf = malloc(cap);
+    char *buf = sodium_malloc(cap);
     int c = EOF;
     while (buf && (c = fgetc(tty)) != EOF && c != '\n') {
         if (len + 1 >= cap) {
-            /* Not realloc: it could leave the old copy behind in freed memory */
-            char *bigger = malloc(cap + PASSPHRASE_CHUNK);
+            /* Grow by copying; sodium_free wipes the old buffer */
+            char *bigger = sodium_malloc(cap + PASSPHRASE_CHUNK);
             if (bigger) memcpy(bigger, buf, len);
-            sodium_memzero(buf, cap);
-            free(buf);
+            sodium_free(buf);
             buf = bigger;
             cap += PASSPHRASE_CHUNK;
             if (!buf) break;
@@ -98,13 +106,12 @@ static char *read_passphrase(const char *prompt) {
     fclose(tty);
 
     if (!buf || (c == EOF && len == 0)) {  /* out of memory, or Ctrl+D */
-        free(buf);
+        sodium_free(buf);
         fprintf(stderr, "Error: could not read passphrase\n");
         return NULL;
     }
     if (len > PASSPHRASE_MAX_LEN) {
-        sodium_memzero(buf, len);
-        free(buf);
+        sodium_free(buf);
         fprintf(stderr, "Error: passphrase too long (max %d bytes)\n", PASSPHRASE_MAX_LEN);
         return NULL;
     }
@@ -148,17 +155,24 @@ typedef struct {
 } Keys;
 
 /* v2: both keys from one Argon2id run, so every passphrase guess costs one.
-   Returns 0, or -1 if Argon2id ran out of memory. */
-static int derive_keys_v2(const char *passphrase, const uint8_t salt[SALT_BYTES], Keys *keys) {
-    uint8_t master[crypto_kdf_KEYBYTES];
-    if (crypto_pwhash(master, sizeof(master), passphrase, strlen(passphrase), salt,
+   Returns them for sodium_free, or prints why and returns NULL. */
+static Keys *derive_keys_v2(const char *passphrase, const uint8_t salt[SALT_BYTES]) {
+    Keys *keys = sodium_malloc(sizeof(Keys));
+    uint8_t *master = sodium_malloc(crypto_kdf_KEYBYTES);
+    fprintf(stderr, "Deriving keys...\n");
+    if (!keys || !master ||
+        crypto_pwhash(master, crypto_kdf_KEYBYTES, passphrase, strlen(passphrase), salt,
                       crypto_pwhash_OPSLIMIT_MODERATE, crypto_pwhash_MEMLIMIT_MODERATE,
-                      crypto_pwhash_ALG_ARGON2ID13) != 0)
-        return -1;
+                      crypto_pwhash_ALG_ARGON2ID13) != 0) {
+        sodium_free(keys);
+        sodium_free(master);
+        fprintf(stderr, "Error: key derivation failed (out of memory)\n");
+        return NULL;
+    }
     crypto_kdf_derive_from_key(keys->scatter, sizeof(keys->scatter), 1, V2_KDF_CONTEXT, master);
     crypto_kdf_derive_from_key(keys->enc, sizeof(keys->enc), 2, V2_KDF_CONTEXT, master);
-    sodium_memzero(master, sizeof(master));
-    return 0;
+    sodium_free(master);
+    return keys;
 }
 
 /* Where v2 keeps the salt: public, so the decoder can find it before it has
@@ -235,7 +249,7 @@ static int read_payload(const Image *img, const uint32_t *order, uint32_t n,
 static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
                     uint8_t **plaintext, uint32_t *pt_len) {
     *pt_len = box_len - V2_OVERHEAD;
-    *plaintext = malloc(*pt_len + 1);
+    *plaintext = sodium_malloc(*pt_len + 1);
     if (!*plaintext) {
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
@@ -243,7 +257,7 @@ static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
     const uint8_t *nonce = box, *ct = box + crypto_secretbox_NONCEBYTES;
     if (crypto_secretbox_open_easy(*plaintext, ct, box_len - crypto_secretbox_NONCEBYTES,
                                    nonce, key) != 0) {
-        free(*plaintext);
+        sodium_free(*plaintext);
         *plaintext = NULL;
         return NO_MATCH;
     }
@@ -262,15 +276,11 @@ static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
     }
     embed_read_raw(img, salt_px, V2_SALT_PIXELS, salt, SALT_BYTES);
 
-    Keys keys;
-    fprintf(stderr, "Deriving keys...\n");
-    if (derive_keys_v2(passphrase, salt, &keys) != 0) {
-        fprintf(stderr, "Error: key derivation failed (out of memory)\n");
-        return FAILED;
-    }
-    uint32_t *order = payload_order(keys.scatter, count, salt_px);
+    Keys *keys = derive_keys_v2(passphrase, salt);
+    if (!keys) return FAILED;
+    uint32_t *order = payload_order(keys->scatter, count, salt_px);
     if (!order) {
-        sodium_memzero(&keys, sizeof(keys));
+        sodium_free(keys);
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
@@ -280,8 +290,8 @@ static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
     int r = read_payload(img, order, count - V2_SALT_PIXELS, V2_OVERHEAD, &payload, &len);
     free(order);
     if (r == DECODED)
-        r = open_box(payload, len, keys.enc, plaintext, pt_len);
-    sodium_memzero(&keys, sizeof(keys));
+        r = open_box(payload, len, keys->enc, plaintext, pt_len);
+    sodium_free(keys);
     if (payload) sodium_memzero(payload, len);
     free(payload);
     return r;
@@ -305,37 +315,40 @@ static int decode_v1(const Image *img, uint32_t count, const char *passphrase,
     if (r != DECODED) return r;
 
     /* v1 payload = [salt | nonce | secretbox] */
-    uint8_t enc_key[crypto_secretbox_KEYBYTES];
-    if (derive_enc_key_v1(passphrase, payload, enc_key) != 0) {
+    uint8_t *enc_key = sodium_malloc(crypto_secretbox_KEYBYTES);
+    if (!enc_key || derive_enc_key_v1(passphrase, payload, enc_key) != 0) {
         fprintf(stderr, "Error: key derivation failed (out of memory)\n");
         r = FAILED;
     } else {
         r = open_box(payload + SALT_BYTES, len - SALT_BYTES, enc_key, plaintext, pt_len);
     }
-    sodium_memzero(enc_key, sizeof(enc_key));
+    sodium_free(enc_key);
     sodium_memzero(payload, len);
     free(payload);
     return r;
 }
 
-/* Read the entire contents of stdin into a heap-allocated buffer.
-   Prints a prompt first if stdin is a terminal. Caller must free. */
+/* Read the entire contents of stdin into a sodium_malloc buffer.
+   Prints a prompt first if stdin is a terminal. Caller must sodium_free. */
 static char *read_message(void) {
     if (isatty(STDIN_FILENO))
         fprintf(stderr, "Message (Ctrl+D when done):\n");
 
     size_t cap = 1024;
     size_t len = 0;
-    char *buf = malloc(cap);
+    char *buf = sodium_malloc(cap);
     if (!buf) return NULL;
 
     int c;
     while ((c = getchar()) != EOF) {
         if (len + 1 >= cap) {
+            /* Grow by copying; sodium_free wipes the old buffer */
+            char *bigger = sodium_malloc(cap * 2);
+            if (!bigger) { sodium_free(buf); return NULL; }
+            memcpy(bigger, buf, len);
+            sodium_free(buf);
+            buf = bigger;
             cap *= 2;
-            char *tmp = realloc(buf, cap);
-            if (!tmp) { free(buf); return NULL; }
-            buf = tmp;
         }
         buf[len++] = (char)c;
     }
@@ -346,13 +359,41 @@ static char *read_message(void) {
     return buf;
 }
 
+/* Print a random passphrase: 5 groups of 5 characters from a 31-character
+   alphabet without look-alikes (0/o, 1/l/i), about 124 bits in all */
+static void generate_passphrase(void) {
+    static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
+    char out[30];
+    size_t n = 0;
+    for (int group = 0; group < 5; group++) {
+        if (group) out[n++] = '-';
+        for (int i = 0; i < 5; i++)
+            out[n++] = alphabet[randombytes_uniform(sizeof(alphabet) - 1)];
+    }
+    out[n] = '\0';
+    printf("%s\n", out);
+    sodium_memzero(out, sizeof(out));
+}
+
+/* Keep secrets out of core dumps, and (Linux) stop other processes of the
+   same user from attaching a debugger to read them */
+static void protect_process(void) {
+    struct rlimit none = {0, 0};
+    setrlimit(RLIMIT_CORE, &none);
+#ifdef __linux__
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+#endif
+}
+
 static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s encode -i <input.png> -o <output.png>\n", prog);
     fprintf(stderr, "       %s decode -i <input.png>\n", prog);
-    fprintf(stderr, "Message is read from stdin.\n");
+    fprintf(stderr, "       %s passphrase\n", prog);
+    fprintf(stderr, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
 }
 
 int main(int argc, char *argv[]) {
+    protect_process();
     if (sodium_init() < 0) {
         fprintf(stderr, "Error: failed to initialise libsodium\n");
         return 1;
@@ -377,7 +418,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (strcmp(argv[1], "encode") == 0) {
+    if (strcmp(argv[1], "passphrase") == 0) {
+        generate_passphrase();
+
+    } else if (strcmp(argv[1], "encode") == 0) {
         if (!input || !output) {
             fprintf(stderr, "Error: encode requires -i and -o\n");
             usage(argv[0]);
@@ -386,6 +430,12 @@ int main(int argc, char *argv[]) {
 
         char *passphrase = read_passphrase("Passphrase: ");
         if (!passphrase) return 1;
+        if (strlen(passphrase) < PASSPHRASE_MIN_LEN) {
+            free_passphrase(passphrase);
+            fprintf(stderr, "Error: passphrase too short (min %d bytes); "
+                            "`scattersteg passphrase` generates a strong one\n", PASSPHRASE_MIN_LEN);
+            return 1;
+        }
         char *confirm = read_passphrase("Confirm passphrase: ");
         if (!confirm) {
             free_passphrase(passphrase);
@@ -432,22 +482,19 @@ int main(int argc, char *argv[]) {
 
         uint8_t salt[SALT_BYTES];
         randombytes_buf(salt, sizeof(salt));
-        Keys keys;
-        fprintf(stderr, "Deriving keys...\n");
-        int derived = derive_keys_v2(passphrase, salt, &keys);
+        Keys *keys = derive_keys_v2(passphrase, salt);
         free_passphrase(passphrase);
-        if (derived != 0) {
+        if (!keys) {
             image_free(img);
-            fprintf(stderr, "Error: key derivation failed (out of memory)\n");
             return 1;
         }
 
         uint32_t salt_px[V2_SALT_PIXELS];
         uint32_t *order = NULL;
         if (salt_pixels(count, salt_px) == 0)
-            order = payload_order(keys.scatter, count, salt_px);
+            order = payload_order(keys->scatter, count, salt_px);
         if (!order) {
-            sodium_memzero(&keys, sizeof(keys));
+            sodium_free(keys);
             image_free(img);
             fprintf(stderr, "Error: allocation failed\n");
             return 1;
@@ -455,7 +502,7 @@ int main(int argc, char *argv[]) {
 
         char *message = read_message();
         if (!message) {
-            sodium_memzero(&keys, sizeof(keys));
+            sodium_free(keys);
             free(order);
             image_free(img);
             fprintf(stderr, "Error: could not read message\n");
@@ -464,8 +511,8 @@ int main(int argc, char *argv[]) {
         uint32_t msg_len = (uint32_t)strlen(message);
         /* Empty message: nothing to hide, so write nothing */
         if (msg_len == 0) {
-            sodium_memzero(&keys, sizeof(keys));
-            free(message);
+            sodium_free(keys);
+            sodium_free(message);
             free(order);
             image_free(img);
             fprintf(stderr, "Message is empty; nothing written\n");
@@ -476,9 +523,8 @@ int main(int argc, char *argv[]) {
         uint32_t payload_len = V2_OVERHEAD + msg_len;
         uint8_t *payload = malloc(payload_len);
         if (!payload) {
-            sodium_memzero(&keys, sizeof(keys));
-            sodium_memzero(message, msg_len);
-            free(message);
+            sodium_free(keys);
+            sodium_free(message);
             free(order);
             image_free(img);
             fprintf(stderr, "Error: allocation failed\n");
@@ -486,10 +532,9 @@ int main(int argc, char *argv[]) {
         }
         randombytes_buf(payload, crypto_secretbox_NONCEBYTES);
         crypto_secretbox_easy(payload + crypto_secretbox_NONCEBYTES, (const uint8_t *)message,
-                              msg_len, payload, keys.enc);
-        sodium_memzero(&keys, sizeof(keys));
-        sodium_memzero(message, msg_len);
-        free(message);
+                              msg_len, payload, keys->enc);
+        sodium_free(keys);
+        sodium_free(message);
 
         int embedded = embed_encode(img, order, count - V2_SALT_PIXELS, payload, payload_len);
         sodium_memzero(payload, payload_len);
@@ -559,8 +604,7 @@ int main(int argc, char *argv[]) {
 
         if (pt_len > 0)  /* empty message: print nothing */
             printf("%s\n", (char *)plaintext);
-        sodium_memzero(plaintext, pt_len);
-        free(plaintext);
+        sodium_free(plaintext);
 
     } else {
         fprintf(stderr, "Error: unknown command '%s'\n", argv[1]);

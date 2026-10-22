@@ -6,13 +6,21 @@ SRCS    = main.c prng.c embed.c png_io.c
 OBJS    = $(SRCS:.c=.o)
 TARGET  = scattersteg
 
+# Release hardening, for the normal build only (test builds use sanitizers,
+# which don't mix with _FORTIFY_SOURCE). Flags the compiler doesn't support
+# are dropped, e.g. -fcf-protection off x86.
+cc-option      = $(shell $(CC) $(1) -Werror -x c -c /dev/null -o /dev/null 2>/dev/null && echo $(1))
+HARDEN_CFLAGS  = -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIE \
+                 $(call cc-option,-fstack-clash-protection) $(call cc-option,-fcf-protection)
+HARDEN_LDFLAGS = -pie -Wl,-z,relro,-z,now,-z,noexecstack
+
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(OBJS) -o $(TARGET) $(LIBS)
+	$(CC) $(OBJS) -o $(TARGET) $(HARDEN_LDFLAGS) $(LIBS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+%.o: %.c $(wildcard *.h)
+	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) -c $< -o $@
 
 # Tests build every source with ASan/UBSan into tests/build, separate from
 # the normal objects, so leaks and memory errors in error paths fail the run.

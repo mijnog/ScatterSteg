@@ -28,6 +28,7 @@ int   fault_crypto_pwhash(unsigned char *out, unsigned long long outlen,
                           const char *passwd, unsigned long long passwdlen,
                           const unsigned char *salt, unsigned long long opslimit,
                           size_t memlimit, int alg);
+void *fault_sodium_malloc(size_t size);
 
 /* For wrappers: count a call, true if it is the one to fail */
 int fault_should_fail(const char *name);
@@ -54,6 +55,7 @@ unsigned    fault_bad_closes(void);
 #define rename  fault_rename
 #define fchown  fault_fchown
 #define crypto_pwhash fault_crypto_pwhash
+#define sodium_malloc fault_sodium_malloc
 #endif
 
 #endif /* FAULT_H */

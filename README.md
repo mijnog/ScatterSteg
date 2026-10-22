@@ -20,7 +20,9 @@ The message itself is also encrypted with XSalsa20-Poly1305 (`crypto_secretbox`)
 - **Argon2id key derivation** — one Argon2id run (winner of the Password Hashing Competition; 256 MiB, 3 passes) with a random per-image salt derives a master key, split into independent scatter and encryption keys. Nothing about the message, not even where it is, can be checked without paying for Argon2id, so every passphrase guess costs about 0.2 s and 256 MiB
 - **Unbiased, portable pixel order** — the shuffle draws its random numbers without modulo bias and reads them in a fixed byte order, so an image decodes the same on any machine
 - **Random nonce per encode** — identical messages encoded with the same passphrase produce different steg images
-- **Passphrase read from terminal** — passphrase is never passed as a command-line argument (not visible in `ps`), echo is disabled during input, and passphrase memory is zeroed immediately after key derivation
+- **Passphrase read from terminal** — passphrase is never passed as a command-line argument (not visible in `ps`), echo is disabled during input and restored even if the program is interrupted, and new images need at least 12 bytes; `scattersteg passphrase` generates a strong one
+- **Secrets kept in protected memory** — the passphrase, message, keys and decrypted text live in libsodium's guarded memory (locked against swapping, fenced by guard pages, wiped on release); core dumps are disabled and, on Linux, other processes can't attach a debugger
+- **Hardened build** — the release binary is built with `_FORTIFY_SOURCE=3`, stack protection, PIE and full RELRO
 - **Input validation** — image capacity is checked before embedding; decoded length headers are validated against actual image capacity before any allocation
 
 ## Dependencies
@@ -43,12 +45,12 @@ make
 ## Testing
 
 ```bash
-make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~10 s)
+make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~1 min)
 make fuzz       # libFuzzer on the PNG loader and embedder (needs clang; FUZZ_TIME=60 per target)
 make coverage   # line coverage over the whole suite; annotated sources in tests/build/cov
 ```
 
-`make test` needs Python 3 (standard library only). The CLI tests drive the binary through a pseudo-terminal, since the passphrase is read from `/dev/tty`. The fault-injection tests make each `malloc`, `fopen`, `fclose`, `rename` and similar call fail in turn, and check that every error path fails cleanly.
+GitHub Actions runs the build, `make test` and a minute of fuzzing per target on every push. `make test` needs Python 3 (standard library only). The CLI tests drive the binary through a pseudo-terminal, since the passphrase is read from `/dev/tty`. The fault-injection tests make each `malloc`, `fopen`, `fclose`, `rename` and similar call fail in turn, and check that every error path fails cleanly.
 
 ## Usage
 
@@ -62,7 +64,11 @@ echo "your message" | ./scattersteg encode -i cover.png -o steg.png
 ./scattersteg encode -i cover.png -o steg.png
 ```
 
-You will be prompted to enter and confirm a passphrase.
+You will be prompted to enter and confirm a passphrase of at least 12 bytes. To generate a strong one (about 124 bits):
+
+```bash
+./scattersteg passphrase
+```
 
 **Decode** a message from a PNG:
 

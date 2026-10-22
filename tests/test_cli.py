@@ -611,11 +611,64 @@ class CliTest(CliBase):
                 self.assertIn("passphrase too long", log)
 
     def test_passphrase_charset(self):
-        for pw in ("with spaces  inside", "ünïcødé ✓ 秘密", "tab\there", "x"):
+        for pw in ("with spaces  inside", "ünïcødé ✓ 秘密", "tab\there and more", "exactly12byt"):
             with self.subTest(passphrase=pw):
                 out = self.path("steg.png")
                 self.assertEqual(self.encode(b"charset", out, passphrase=pw)[0], 0)
                 self.assertDecodes(out, "charset", passphrase=pw)
+
+    def test_short_passphrase_refused(self):
+        out = self.path("steg.png")
+        code, log = self.encode(b"m", out, passphrase="elevenbytes")
+        self.assertEqual(code, 1, log)
+        self.assertIn("passphrase too short (min 12 bytes)", log)
+        self.assertNotIn("Confirm", log)  # refused before asking again
+        self.assertFalse(os.path.exists(out))
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_short_passphrase_still_decodes_old_images(self):
+        # The minimum is for new images; old ones may have shorter passphrases
+        out = self.path("v1.png")
+        forge_v1(self.cover, out, b"short and old", "pw")
+        code, log = self.decode(out, "pw")
+        self.assertEqual(code, 0, log)
+        self.assertIn("short and old\n", log)
+
+    def test_generated_passphrase(self):
+        import re
+        seen = set()
+        for _ in range(3):
+            code, log = run(["passphrase"])
+            self.assertEqual(code, 0, log)
+            pw = log.strip()
+            self.assertRegex(pw, r"^[a-hjkmnp-z2-9]{5}(-[a-hjkmnp-z2-9]{5}){4}$")
+            seen.add(pw)
+        self.assertEqual(len(seen), 3)
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"generated", out, passphrase=pw)[0], 0)
+        self.assertDecodes(out, "generated", passphrase=pw)
+
+    def test_process_protected_while_holding_secrets(self):
+        # At the prompt: no core dumps, and (as a non-root user) /proc files
+        # owned by root because the process is not dumpable, which also
+        # stops same-user debuggers from attaching
+        pid, master = pty.fork()
+        if pid == 0:
+            os.execv(BINARY, [BINARY, "decode", "-i", self.cover])
+        out, deadline = b"", time.monotonic() + TIMEOUT
+        while b"Passphrase: " not in out and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.5)[0]:
+                out += os.read(master, 1024)
+        try:
+            with open(f"/proc/{pid}/limits") as f:
+                core = [l for l in f if l.startswith("Max core file size")][0].split()
+            self.assertEqual(core[4:6], ["0", "0"])
+            if os.geteuid() != 0:
+                self.assertEqual(os.stat(f"/proc/{pid}/environ").st_uid, 0)
+        finally:
+            os.kill(pid, signal.SIGTERM)
+            os.waitpid(pid, 0)
+            os.close(master)
 
     # -- failures
 
@@ -837,7 +890,7 @@ class CrossCheckTest(CliBase):
         # translation is undone on output) and no trailing newline (stripped)
         msg = bytes(rng.choice([b for b in range(1, 256) if b != 13]) for _ in range(n))
         msg = msg.rstrip(b"\n") or b"z"
-        pw = "".join(rng.choice("abcxyz019 !é✓") for _ in range(rng.randint(1, 60)))
+        pw = "".join(rng.choice("abcxyz019 !é✓") for _ in range(rng.randint(12, 60)))
         return w, h, msg, pw
 
     def cover_for(self, w, h, rng):
@@ -971,7 +1024,7 @@ class FaultSweepTest(CliBase):
         code, log = None, ""
         for n in range(1, 500):
             code, log = run(["encode", "-i", self.cover, "-o", self.path("o.png")], b"m",
-                            ["p", "p"], env={**self.ENV, "FAULT_AT": str(n)}, binary=FAULT_BINARY)
+                            ["p" * 12] * 2, env={**self.ENV, "FAULT_AT": str(n)}, binary=FAULT_BINARY)
             if "FAULT_FIRED crypto_pwhash" in log or "FAULT_NOT_REACHED" in log:
                 break
         self.assertIn("FAULT_FIRED crypto_pwhash", log)

@@ -12,3 +12,8 @@ int fault_crypto_pwhash(unsigned char *out, unsigned long long outlen,
     if (fault_should_fail("crypto_pwhash")) { errno = ENOMEM; return -1; }
     return crypto_pwhash(out, outlen, passwd, passwdlen, salt, opslimit, memlimit, alg);
 }
+
+void *fault_sodium_malloc(size_t size) {
+    if (fault_should_fail("sodium_malloc")) { errno = ENOMEM; return NULL; }
+    return sodium_malloc(size);
+}

@@ -18,10 +18,24 @@
 
 /* Largest decoded pixel buffer png_load will allocate (1 GiB) */
 #define PNG_MAX_PIXEL_BYTES ((size_t)1 << 30)
-/* Largest single chunk (or decompressed text/profile) libpng may allocate.
-   Its built-in default depends on how the distribution compiled it: Ubuntu's
-   libpng allocated a 1.3 GB tEXt chunk from a 290-byte file (found by CI). */
+/* Largest single chunk (or decompressed text/profile) libpng may allocate */
 #define PNG_MAX_CHUNK_BYTES ((png_alloc_size_t)16 << 20)
+/* Largest single allocation libpng itself may make. Its biggest legitimate
+   one is a row buffer: at most ~8 MB at its 1,000,000-pixel width limit.
+   The chunk limit above isn't enough on its own: how libpng honours it
+   depends on the version and build, and Ubuntu's 1.6.43 still allocated
+   a 1.3 GB tEXt buffer from a 290-byte file (found by CI's fuzzer). */
+#define PNG_MAX_LIB_ALLOC ((png_alloc_size_t)64 << 20)
+
+static png_voidp capped_malloc(png_structp png, png_alloc_size_t size) {
+    (void)png;
+    return size <= PNG_MAX_LIB_ALLOC ? malloc(size) : NULL;  /* NULL: png_error */
+}
+
+static void capped_free(png_structp png, png_voidp p) {
+    (void)png;
+    free(p);
+}
 
 /* The read struct and info png_load parsed, kept so png_save can copy the
    ancillary chunks out of it with libpng's own getters */
@@ -34,7 +48,8 @@ Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
 
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    png_structp png = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL,
+                                               NULL, capped_malloc, capped_free);
     if (!png) { fclose(fp); return NULL; }
     png_infop info = png_create_info_struct(png);
     if (!info) { png_destroy_read_struct(&png, NULL, NULL); fclose(fp); return NULL; }

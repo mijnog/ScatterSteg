@@ -151,23 +151,174 @@ _sodium_path = ctypes.util.find_library("sodium")
 sodium = ctypes.CDLL(_sodium_path) if _sodium_path else None
 if sodium:
     sodium.sodium_init()
-    sodium.crypto_pwhash_opslimit_interactive.restype = ctypes.c_ulonglong
-    sodium.crypto_pwhash_memlimit_interactive.restype = ctypes.c_size_t
+    for level in ("interactive", "moderate"):
+        getattr(sodium, "crypto_pwhash_opslimit_" + level).restype = ctypes.c_ulonglong
+        getattr(sodium, "crypto_pwhash_memlimit_" + level).restype = ctypes.c_size_t
     sodium.crypto_pwhash.argtypes = [
         ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_ulonglong,
         ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_size_t, ctypes.c_int]
     sodium.crypto_stream_chacha20.argtypes = [
         ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
+    sodium.crypto_stream_chacha20_ietf.argtypes = [
+        ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
+    sodium.crypto_kdf_derive_from_key.argtypes = [
+        ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_char_p]
     sodium.crypto_secretbox_easy.argtypes = [
         ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
     sodium.crypto_secretbox_open_easy.argtypes = [
         ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
 
 SALT, NONCE, MAC = 16, 24, 16
+SALT_PIXELS = 43  # v2: 128 salt bits, 3 per pixel
+V2_OVERHEAD = NONCE + MAC
 
 
-def scatter_order(pw, count):
-    """The pixel order: Fisher-Yates driven by ChaCha20 keyed on BLAKE2b(pw)"""
+def argon2id(pw, salt, level):
+    key = ctypes.create_string_buffer(32)
+    assert sodium.crypto_pwhash(
+        key, 32, pw, len(pw), salt,
+        getattr(sodium, "crypto_pwhash_opslimit_" + level)(),
+        getattr(sodium, "crypto_pwhash_memlimit_" + level)(), 2) == 0  # ALG_ARGON2ID13
+    return key.raw
+
+
+def embed_bits(rows, w, order, bits):
+    for pos, bit in enumerate(bits):
+        p = order[pos // 3]
+        i = (p % w) * 3 + pos % 3
+        rows[p // w][i] = (rows[p // w][i] & 0xFE) | bit
+
+
+def read_bits(rows, w, order, start, n):
+    out = 0
+    for b in range(n):
+        p = order[(start + b) // 3]
+        out |= (rows[p // w][(p % w) * 3 + (start + b) % 3] & 1) << b
+    return out
+
+
+def to_bits(data):
+    return [(byte >> b) & 1 for byte in data for b in range(8)]
+
+
+def length_prefixed(payload):
+    return [(len(payload) >> b) & 1 for b in range(32)] + to_bits(payload)
+
+
+def open_box(box, key):
+    nonce, ct = box[:NONCE], box[NONCE:]
+    pt = ctypes.create_string_buffer(max(1, len(ct) - MAC))
+    if sodium.crypto_secretbox_open_easy(pt, ct, len(ct), nonce, key) != 0:
+        return None
+    return pt.raw[:len(ct) - MAC]
+
+
+def seal(message, key):
+    nonce = os.urandom(NONCE)
+    ct = ctypes.create_string_buffer(MAC + len(message))
+    sodium.crypto_secretbox_easy(ct, message, len(message), nonce, key)
+    return nonce + ct.raw
+
+
+def read_payload(rows, w, order, min_len):
+    n = read_bits(rows, w, order, 0, 32)
+    if n < min_len or 32 + n * 8 > len(order) * 3:
+        return None
+    return bytes(read_bits(rows, w, order, 32 + i * 8, 8) for i in range(n))
+
+
+# -- v2 (the format encode writes)
+
+class KeyStream:
+    """ChaCha20-IETF keystream (zero nonce) read as little-endian uint32s"""
+
+    def __init__(self, key):
+        self.key, self.data, self.pos = key, b"", 0
+
+    def u32(self):
+        if self.pos + 4 > len(self.data):
+            n = max(4096, 2 * len(self.data))
+            buf = ctypes.create_string_buffer(n)
+            sodium.crypto_stream_chacha20_ietf(buf, n, bytes(12), self.key)
+            self.data = buf.raw
+        v = int.from_bytes(self.data[self.pos:self.pos + 4], "little")
+        self.pos += 4
+        return v
+
+    def uniform(self, bound):
+        floor = (2**32 - bound) % bound
+        while True:
+            r = self.u32()
+            if r >= floor:
+                return r % bound
+
+
+def permutation_v2(key, count):
+    """Forward Fisher-Yates with unbiased draws: prng_permutation"""
+    a, s = list(range(count)), KeyStream(key)
+    for i in range(count - 1):
+        j = i + s.uniform(count - i)
+        a[i], a[j] = a[j], a[i]
+    return a
+
+
+def salt_pixels_v2(count):
+    key = hashlib.blake2b(b"ScatterSteg v2 salt positions", digest_size=32).digest()
+    return permutation_v2(key, count)[:SALT_PIXELS]
+
+
+def keys_v2(pw, salt):
+    master = argon2id(pw, salt, "moderate")
+    subkeys = []
+    for subkey_id in (1, 2):  # scatter, encryption
+        k = ctypes.create_string_buffer(32)
+        sodium.crypto_kdf_derive_from_key(k, 32, subkey_id, b"ScatStg2", master)
+        subkeys.append(k.raw)
+    return subkeys
+
+
+def payload_order_v2(scatter_key, count, salt_px):
+    taken = set(salt_px)
+    return [p for p in permutation_v2(scatter_key, count) if p not in taken]
+
+
+def layout_v2(rows, w, h, pw):
+    """(salt pixels, payload order, encryption key) for an image and passphrase"""
+    salt_px = salt_pixels_v2(w * h)
+    salt = read_bits(rows, w, salt_px, 0, SALT * 8).to_bytes(SALT, "little")
+    scatter_key, enc_key = keys_v2(pw, salt)
+    return salt_px, payload_order_v2(scatter_key, w * h, salt_px), enc_key
+
+
+def forge(src, dst, message, passphrase):
+    """Embed `message` as v2, the way scattersteg encode does, without its
+    checks (so an empty message is allowed). Overwrites LSBs; decoding
+    can't tell the difference from LSB matching."""
+    w, h, rows = read_png(src)
+    rows = [bytearray(r) for r in rows]
+    pw = passphrase.encode()
+    salt = os.urandom(SALT)
+    salt_px = salt_pixels_v2(w * h)
+    scatter_key, enc_key = keys_v2(pw, salt)
+    embed_bits(rows, w, salt_px, to_bits(salt))
+    embed_bits(rows, w, payload_order_v2(scatter_key, w * h, salt_px),
+               length_prefixed(seal(message, enc_key)))
+    write_png(dst, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
+
+
+def reveal(src, passphrase):
+    """Extract and decrypt a v2 message independently of the binary.
+    Returns the plaintext bytes, or None if it does not authenticate."""
+    w, h, rows = read_png(src)
+    _, order, enc_key = layout_v2(rows, w, h, passphrase.encode())
+    payload = read_payload(rows, w, order, V2_OVERHEAD)
+    return None if payload is None else open_box(payload, enc_key)
+
+
+# -- v1 (legacy, decode only in the binary)
+
+def scatter_order_v1(pw, count):
+    """Fisher-Yates driven by ChaCha20 keyed on BLAKE2b(pw), with modulo bias"""
     scatter_key = hashlib.blake2b(pw, key=b"scatter", digest_size=32).digest()
     stream = ctypes.create_string_buffer(count * 4)
     sodium.crypto_stream_chacha20(stream, count * 4, bytes(8), scatter_key)
@@ -178,57 +329,20 @@ def scatter_order(pw, count):
     return idx
 
 
-def enc_key(pw, salt):
-    key = ctypes.create_string_buffer(32)
-    assert sodium.crypto_pwhash(
-        key, 32, pw, len(pw), salt,
-        sodium.crypto_pwhash_opslimit_interactive(),
-        sodium.crypto_pwhash_memlimit_interactive(), 2) == 0  # ALG_ARGON2ID13
-    return key.raw
-
-
-def forge(src, dst, message, passphrase):
-    """Embed `message` into src the way scattersteg encode does, without
-    its checks (so an empty message is allowed)."""
+def forge_v1(src, dst, message, passphrase):
+    """Embed `message` in the v1 format older versions wrote"""
     w, h, rows = read_png(src)
     rows = [bytearray(r) for r in rows]
     pw = passphrase.encode()
-    idx = scatter_order(pw, w * h)
-
-    salt, nonce = os.urandom(SALT), os.urandom(NONCE)
-    ct = ctypes.create_string_buffer(MAC + len(message))
-    sodium.crypto_secretbox_easy(ct, message, len(message), nonce, enc_key(pw, salt))
-    payload = salt + nonce + ct.raw
-
-    bits = [(len(payload) >> b) & 1 for b in range(32)]
-    bits += [(byte >> b) & 1 for byte in payload for b in range(8)]
-    for pos, bit in enumerate(bits):
-        p = idx[pos // 3]
-        i = (p % w) * 3 + pos % 3
-        rows[p // w][i] = (rows[p // w][i] & 0xFE) | bit
+    salt = os.urandom(SALT)
+    payload = salt + seal(message, argon2id(pw, salt, "interactive"))
+    embed_bits(rows, w, scatter_order_v1(pw, w * h), length_prefixed(payload))
     write_png(dst, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
 
 
-def reveal(src, passphrase):
-    """Extract and decrypt the message, independently of the binary.
-    Returns the plaintext bytes, or None if it does not authenticate."""
-    w, h, rows = read_png(src)
-    pw = passphrase.encode()
-    idx = scatter_order(pw, w * h)
-
-    def bit(pos):
-        p = idx[pos // 3]
-        return rows[p // w][(p % w) * 3 + pos % 3] & 1
-
-    n = sum(bit(b) << b for b in range(32))
-    if n < SALT + NONCE + MAC or 32 + n * 8 > w * h * 3:
-        return None
-    payload = bytes(sum(bit(32 + i * 8 + b) << b for b in range(8)) for i in range(n))
-    salt, nonce, ct = payload[:SALT], payload[SALT:SALT + NONCE], payload[SALT + NONCE:]
-    pt = ctypes.create_string_buffer(max(1, len(ct) - MAC))
-    if sodium.crypto_secretbox_open_easy(pt, ct, len(ct), nonce, enc_key(pw, salt)) != 0:
-        return None
-    return pt.raw[:len(ct) - MAC]
+def capacity_v2(w, h):
+    """Largest message encode accepts for a w x h cover"""
+    return ((w * h - SALT_PIXELS) * 3 - 32) // 8 - V2_OVERHEAD
 
 
 def cover_pixel(x, y):
@@ -300,13 +414,14 @@ class CliTest(CliBase):
         self.assertDecodes(target, "in place")
 
     def test_near_capacity(self):
-        # 64x64 = 4096 px * 3 bits = 12288 bits; header 32 -> 1532 payload
-        # bytes; minus salt 16 + nonce 24 + MAC 16 = 1476 message bytes.
+        # 64x64: 4096 - 43 salt pixels = 4053 px * 3 bits; minus the 32-bit
+        # header -> 1515 payload bytes; minus nonce 24 + MAC 16 = 1475
+        self.assertEqual(capacity_v2(64, 64), 1475)
         out = self.path("full.png")
-        msg = ("x" * 1476).encode()
+        msg = ("x" * 1475).encode()
         code, log = self.encode(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertDecodes(out, "x" * 1476)
+        self.assertDecodes(out, "x" * 1475)
 
     def test_samples_change_by_at_most_one(self):
         out = self.path("steg.png")
@@ -383,6 +498,47 @@ class CliTest(CliBase):
         self.assertTrue(log.endswith("Deriving keys...\n"), repr(log))
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_v1_image_decodes_with_warning(self):
+        # Images written before format v2 still decode, with a nudge to re-encode
+        out = self.path("v1.png")
+        forge_v1(self.cover, out, b"from the old days", "correct horse")
+        code, log = self.decode(out)
+        self.assertEqual(code, 0, log)
+        self.assertIn("from the old days\n", log)
+        self.assertIn("old v1 format", log)
+        code, log = self.decode(out, "wrong horse")
+        self.assertEqual(code, 1, log)
+        self.assertNotIn("from the old days", log)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_v1_empty_message_prints_nothing(self):
+        out = self.path("v1empty.png")
+        forge_v1(self.cover, out, b"", "correct horse")
+        code, log = self.decode(out)
+        self.assertEqual(code, 0, log)
+        self.assertTrue(log.rstrip("\n").endswith("re-encode it"), repr(log))
+
+    def test_v2_image_has_no_v1_message(self):
+        # A v2 image read the v1 way must not decode: the formats don't overlap
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"v2 only", out)[0], 0)
+        code, log = self.decode(out)
+        self.assertNotIn("old v1 format", log)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_salt_at_public_positions(self):
+        # The salt is readable by anyone from the public positions, and the
+        # encryption key derived from it opens the message
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"salted", out)[0], 0)
+        w, h, rows = read_png(out)
+        salt_px, order, enc_key = layout_v2(rows, w, h, b"correct horse")
+        self.assertEqual(len(set(salt_px)), SALT_PIXELS)
+        self.assertFalse(set(salt_px) & set(order))
+        self.assertEqual(len(order), w * h - SALT_PIXELS)
+        self.assertEqual(open_box(read_payload(rows, w, order, V2_OVERHEAD), enc_key), b"salted")
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_decode_empty_message_wrong_passphrase(self):
         # Still authenticated: a wrong passphrase must not "succeed" silently
         out = self.path("empty.png")
@@ -392,10 +548,10 @@ class CliTest(CliBase):
         self.assertIn("Error:", log)
 
     def test_large_image_full_capacity(self):
-        # 800x600: 1.44M bits -> 179,944 message bytes, through stdin, the
+        # 800x600: 1.44M bits -> 179,928 message bytes, through stdin, the
         # pty and the 1 KiB-doubling read buffer
         write_png(self.cover, 800, 600, cover_pixel)
-        cap = (800 * 600 * 3 - 32) // 8 - 56
+        cap = capacity_v2(800, 600)
         msg = bytes(65 + i % 26 for i in range(cap))
         out = self.path("big.png")
         code, log = self.encode(msg, out)
@@ -479,9 +635,9 @@ class CliTest(CliBase):
         self.assertEqual(self.encode(b"authenticated", out)[0], 0)
         w, h, rows = read_png(out)
         rows = [bytearray(r) for r in rows]
-        idx = scatter_order(b"correct horse", w * h)
-        pos = 32 + (SALT + NONCE + MAC + 3) * 8  # a bit of the 4th plaintext byte
-        p = idx[pos // 3]
+        _, order, _ = layout_v2(rows, w, h, b"correct horse")
+        pos = 32 + (NONCE + MAC + 3) * 8  # a bit of the 4th plaintext byte
+        p = order[pos // 3]
         rows[p // w][(p % w) * 3 + pos % 3] ^= 1
         write_png(out, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
         code, log = self.decode(out)
@@ -598,7 +754,7 @@ class CliTest(CliBase):
 
     def test_message_too_long(self):
         out = self.path("steg.png")
-        code, log = self.encode(("x" * 1477).encode(), out)
+        code, log = self.encode(("x" * 1476).encode(), out)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         self.assertFalse(os.path.exists(out))
@@ -633,8 +789,13 @@ class CliTest(CliBase):
 
     def test_image_too_small(self):
         tiny = self.path("tiny.png")
-        write_png(tiny, 4, 4, cover_pixel)  # 48 bits: no room for any payload
+        write_png(tiny, 4, 4, cover_pixel)  # 16 px: not even room for the salt
         code, log = self.encode(b"hi", self.path("out.png"), src=tiny)
+        self.assertEqual(code, 1)
+        self.assertIn("too small", log)
+        small = self.path("small.png")
+        write_png(small, 9, 9, cover_pixel)  # 81 px: salt + header, 4 payload bytes
+        code, log = self.encode(b"hi", self.path("out.png"), src=small)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         code, log = self.decode(tiny)
@@ -670,7 +831,7 @@ class CrossCheckTest(CliBase):
 
     def random_case(self, rng):
         w, h = rng.randint(16, 72), rng.randint(16, 72)
-        capacity = (w * h * 3 - 32) // 8 - (SALT + NONCE + MAC)
+        capacity = capacity_v2(w, h)
         n = rng.choice([1, 2, rng.randint(1, capacity), capacity])
         # No NUL (printing stops there), no CR (the pty's \n -> \r\n
         # translation is undone on output) and no trailing newline (stripped)
@@ -805,7 +966,7 @@ class FaultSweepTest(CliBase):
         self.sweep(["encode", "-i", self.cover, "-o", out], b"grow", [pw, pw], check)
 
     def test_sweep_reaches_key_derivation(self):
-        # Argon2id's 64 MiB allocation happens inside libsodium; the sweep
+        # Argon2id's 256 MiB allocation happens inside libsodium; the sweep
         # fails crypto_pwhash as a whole to cover running out of memory there
         code, log = None, ""
         for n in range(1, 500):

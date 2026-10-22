@@ -112,30 +112,210 @@ static char *read_passphrase(const char *prompt) {
     return buf;
 }
 
-/* Derive the scatter key from the passphrase alone using BLAKE2b.
-   A fast hash is fine here: scatter key only determines pixel order,
-   not message secrecy. Brute-force is still bottlenecked by the
-   Argon2id step needed to derive the encryption key. */
-static void derive_scatter_key(const char *passphrase,
-                                uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES]) {
+/* ---- File format ----------------------------------------------------------
+
+   v2 (written by encode):
+     salt     16 random bytes, in the LSBs of the first 43 pixels of a public
+              permutation (prng_permutation keyed with BLAKE2b of
+              V2_SALT_LABEL), so it is spread over the image
+     keys     master = Argon2id(passphrase, salt, "moderate": 3 passes,
+              256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
+              and 2 of master, context V2_KDF_CONTEXT
+     payload  32-bit little-endian length, then [nonce 24 | secretbox], in
+              the order of prng_permutation(scatter key) with the salt
+              pixels removed
+
+   v1 (decode only): scatter key = keyed BLAKE2b of the passphrase alone,
+     which let a wrong passphrase be rejected without Argon2id; payload =
+     length, then [salt 16 | nonce 24 | secretbox] in prng_scatter order;
+     encryption key = Argon2id(passphrase, salt, "interactive").
+
+   Every pixel carries 3 bits (R, G, B LSBs), written by LSB matching. There
+   is no version marker, which would itself give the image away: decode
+   tries v2, then v1. */
+
+#define SALT_BYTES      crypto_pwhash_SALTBYTES             /* 16 */
+#define V2_SALT_PIXELS  ((SALT_BYTES * 8 + 2) / 3)          /* 43 */
+#define HEADER_PIXELS   11                                  /* 32-bit length */
+#define V2_SALT_LABEL   "ScatterSteg v2 salt positions"
+#define V2_KDF_CONTEXT  "ScatStg2"                          /* exactly 8 chars */
+#define V2_OVERHEAD     (crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES)
+#define V1_OVERHEAD     (SALT_BYTES + V2_OVERHEAD)
+
+typedef struct {
+    uint8_t scatter[crypto_stream_chacha20_ietf_KEYBYTES];
+    uint8_t enc[crypto_secretbox_KEYBYTES];
+} Keys;
+
+/* v2: both keys from one Argon2id run, so every passphrase guess costs one.
+   Returns 0, or -1 if Argon2id ran out of memory. */
+static int derive_keys_v2(const char *passphrase, const uint8_t salt[SALT_BYTES], Keys *keys) {
+    uint8_t master[crypto_kdf_KEYBYTES];
+    if (crypto_pwhash(master, sizeof(master), passphrase, strlen(passphrase), salt,
+                      crypto_pwhash_OPSLIMIT_MODERATE, crypto_pwhash_MEMLIMIT_MODERATE,
+                      crypto_pwhash_ALG_ARGON2ID13) != 0)
+        return -1;
+    crypto_kdf_derive_from_key(keys->scatter, sizeof(keys->scatter), 1, V2_KDF_CONTEXT, master);
+    crypto_kdf_derive_from_key(keys->enc, sizeof(keys->enc), 2, V2_KDF_CONTEXT, master);
+    sodium_memzero(master, sizeof(master));
+    return 0;
+}
+
+/* Where v2 keeps the salt: public, so the decoder can find it before it has
+   any key. Returns 0, or -1 on allocation failure. */
+static int salt_pixels(uint32_t count, uint32_t out[V2_SALT_PIXELS]) {
+    uint8_t key[crypto_stream_chacha20_ietf_KEYBYTES];
+    crypto_generichash(key, sizeof(key), (const uint8_t *)V2_SALT_LABEL,
+                       strlen(V2_SALT_LABEL), NULL, 0);
+    return prng_sample(key, count, V2_SALT_PIXELS, out);
+}
+
+static int cmp_u32(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return (x > y) - (x < y);
+}
+
+/* The v2 message order: the secret permutation with the salt pixels taken
+   out, count - V2_SALT_PIXELS entries. NULL on allocation failure. */
+static uint32_t *payload_order(const uint8_t *scatter_key, uint32_t count,
+                               const uint32_t salt_px[V2_SALT_PIXELS]) {
+    uint32_t sorted[V2_SALT_PIXELS];
+    memcpy(sorted, salt_px, sizeof(sorted));
+    qsort(sorted, V2_SALT_PIXELS, sizeof(uint32_t), cmp_u32);
+
+    uint32_t *order = prng_permutation(scatter_key, count);
+    if (!order) return NULL;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (!bsearch(&order[i], sorted, V2_SALT_PIXELS, sizeof(uint32_t), cmp_u32))
+            order[n++] = order[i];
+    return order;
+}
+
+/* v1 (decode only). The scatter key comes from the passphrase alone, so
+   guesses can be checked against the length header without Argon2id. */
+static void derive_scatter_key_v1(const char *passphrase,
+                                  uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES]) {
     crypto_generichash(scatter_key, crypto_stream_chacha20_KEYBYTES,
                        (const uint8_t *)passphrase, strlen(passphrase),
                        (const uint8_t *)"scatter", 7);
 }
 
-/* Derive the encryption key from passphrase + salt using Argon2id.
-   Argon2id is intentionally slow and memory-hard, making brute-force
-   attacks on the passphrase expensive. Returns 0 on success, -1 if
-   out of memory. */
-static int derive_enc_key(const char *passphrase,
-                          const uint8_t salt[crypto_pwhash_SALTBYTES],
-                          uint8_t enc_key[crypto_secretbox_KEYBYTES]) {
+static int derive_enc_key_v1(const char *passphrase, const uint8_t salt[SALT_BYTES],
+                             uint8_t enc_key[crypto_secretbox_KEYBYTES]) {
     return crypto_pwhash(enc_key, crypto_secretbox_KEYBYTES,
-                         passphrase, strlen(passphrase),
-                         salt,
+                         passphrase, strlen(passphrase), salt,
                          crypto_pwhash_OPSLIMIT_INTERACTIVE,
                          crypto_pwhash_MEMLIMIT_INTERACTIVE,
                          crypto_pwhash_ALG_ARGON2ID13);
+}
+
+/* Outcome of trying to decode with one format */
+enum { DECODED, NO_MATCH, FAILED };
+
+/* Read the length-prefixed payload in `order` (n pixels). NO_MATCH if the
+   length is out of range, as it is for a wrong passphrase or format;
+   FAILED (with a message) if out of memory. */
+static int read_payload(const Image *img, const uint32_t *order, uint32_t n,
+                        uint32_t min_len, uint8_t **payload, uint32_t *len) {
+    if (n < HEADER_PIXELS) return NO_MATCH;
+    uint32_t max_len = (uint32_t)(((uint64_t)n * 3 - 32) / 8);
+    *len = embed_peek_len(img, order, n);
+    if (*len < min_len || *len > max_len) return NO_MATCH;
+    *payload = malloc(*len);
+    if (!*payload) {
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
+    embed_decode(img, order, n, *payload, *len);
+    return DECODED;
+}
+
+/* Open [nonce | secretbox] with key. NO_MATCH if it doesn't authenticate. */
+static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
+                    uint8_t **plaintext, uint32_t *pt_len) {
+    *pt_len = box_len - V2_OVERHEAD;
+    *plaintext = malloc(*pt_len + 1);
+    if (!*plaintext) {
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
+    const uint8_t *nonce = box, *ct = box + crypto_secretbox_NONCEBYTES;
+    if (crypto_secretbox_open_easy(*plaintext, ct, box_len - crypto_secretbox_NONCEBYTES,
+                                   nonce, key) != 0) {
+        free(*plaintext);
+        *plaintext = NULL;
+        return NO_MATCH;
+    }
+    (*plaintext)[*pt_len] = '\0';
+    return DECODED;
+}
+
+static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
+                     uint8_t **plaintext, uint32_t *pt_len) {
+    if (count < V2_SALT_PIXELS + HEADER_PIXELS) return NO_MATCH;
+    uint32_t salt_px[V2_SALT_PIXELS];
+    uint8_t salt[SALT_BYTES];
+    if (salt_pixels(count, salt_px) != 0) {
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
+    embed_read_raw(img, salt_px, V2_SALT_PIXELS, salt, SALT_BYTES);
+
+    Keys keys;
+    fprintf(stderr, "Deriving keys...\n");
+    if (derive_keys_v2(passphrase, salt, &keys) != 0) {
+        fprintf(stderr, "Error: key derivation failed (out of memory)\n");
+        return FAILED;
+    }
+    uint32_t *order = payload_order(keys.scatter, count, salt_px);
+    if (!order) {
+        sodium_memzero(&keys, sizeof(keys));
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
+
+    uint8_t *payload = NULL;
+    uint32_t len = 0;
+    int r = read_payload(img, order, count - V2_SALT_PIXELS, V2_OVERHEAD, &payload, &len);
+    free(order);
+    if (r == DECODED)
+        r = open_box(payload, len, keys.enc, plaintext, pt_len);
+    sodium_memzero(&keys, sizeof(keys));
+    if (payload) sodium_memzero(payload, len);
+    free(payload);
+    return r;
+}
+
+static int decode_v1(const Image *img, uint32_t count, const char *passphrase,
+                     uint8_t **plaintext, uint32_t *pt_len) {
+    uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES];
+    derive_scatter_key_v1(passphrase, scatter_key);
+    uint32_t *order = prng_scatter(scatter_key, count);
+    sodium_memzero(scatter_key, sizeof(scatter_key));
+    if (!order) {
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
+
+    uint8_t *payload = NULL;
+    uint32_t len = 0;
+    int r = read_payload(img, order, count, V1_OVERHEAD, &payload, &len);
+    free(order);
+    if (r != DECODED) return r;
+
+    /* v1 payload = [salt | nonce | secretbox] */
+    uint8_t enc_key[crypto_secretbox_KEYBYTES];
+    if (derive_enc_key_v1(passphrase, payload, enc_key) != 0) {
+        fprintf(stderr, "Error: key derivation failed (out of memory)\n");
+        r = FAILED;
+    } else {
+        r = open_box(payload + SALT_BYTES, len - SALT_BYTES, enc_key, plaintext, pt_len);
+    }
+    sodium_memzero(enc_key, sizeof(enc_key));
+    sodium_memzero(payload, len);
+    free(payload);
+    return r;
 }
 
 /* Read the entire contents of stdin into a heap-allocated buffer.
@@ -219,25 +399,9 @@ int main(int argc, char *argv[]) {
         }
         free_passphrase(confirm);
 
-        uint8_t salt[crypto_pwhash_SALTBYTES];
-        randombytes_buf(salt, sizeof(salt));
-
-        uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES];
-        uint8_t enc_key[crypto_secretbox_KEYBYTES];
-        derive_scatter_key(passphrase, scatter_key);
-        fprintf(stderr, "Deriving keys...\n");
-        if (derive_enc_key(passphrase, salt, enc_key) != 0) {
-            free_passphrase(passphrase);
-            sodium_memzero(scatter_key, sizeof(scatter_key));
-            fprintf(stderr, "Error: key derivation failed (out of memory)\n");
-            return 1;
-        }
-        free_passphrase(passphrase);
-
         Image *img = png_load(input);
         if (!img) {
-            sodium_memzero(scatter_key, sizeof(scatter_key));
-            sodium_memzero(enc_key, sizeof(enc_key));
+            free_passphrase(passphrase);
             fprintf(stderr, "Error: could not load '%s'\n", input);
             return 1;
         }
@@ -245,8 +409,7 @@ int main(int argc, char *argv[]) {
         /* The output is 8-bit RGB: a cover that would lose something in that
            conversion comes out visibly different, which gives it away */
         if (img->dropped) {
-            sodium_memzero(scatter_key, sizeof(scatter_key));
-            sodium_memzero(enc_key, sizeof(enc_key));
+            free_passphrase(passphrase);
             fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
                             "use an 8-bit RGB PNG as the cover\n", input, img->dropped);
             image_free(img);
@@ -254,27 +417,46 @@ int main(int argc, char *argv[]) {
         }
 
         if (img->width == 0 || img->height > UINT32_MAX / img->width) {
-            sodium_memzero(scatter_key, sizeof(scatter_key));
-            sodium_memzero(enc_key, sizeof(enc_key));
+            free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image dimensions overflow\n");
             return 1;
         }
         uint32_t count = img->width * img->height;
-        uint32_t *indices = prng_scatter(scatter_key, count);
-        sodium_memzero(scatter_key, sizeof(scatter_key));
-        if (!indices) {
-            sodium_memzero(enc_key, sizeof(enc_key));
+        if (count < V2_SALT_PIXELS + HEADER_PIXELS) {
+            free_passphrase(passphrase);
             image_free(img);
-            fprintf(stderr, "Error: image too small or allocation failed\n");
+            fprintf(stderr, "Error: image too small to hide a message\n");
             return 1;
         }
 
-        /* Encrypt: payload = [salt | nonce | MAC+ciphertext] */
+        uint8_t salt[SALT_BYTES];
+        randombytes_buf(salt, sizeof(salt));
+        Keys keys;
+        fprintf(stderr, "Deriving keys...\n");
+        int derived = derive_keys_v2(passphrase, salt, &keys);
+        free_passphrase(passphrase);
+        if (derived != 0) {
+            image_free(img);
+            fprintf(stderr, "Error: key derivation failed (out of memory)\n");
+            return 1;
+        }
+
+        uint32_t salt_px[V2_SALT_PIXELS];
+        uint32_t *order = NULL;
+        if (salt_pixels(count, salt_px) == 0)
+            order = payload_order(keys.scatter, count, salt_px);
+        if (!order) {
+            sodium_memzero(&keys, sizeof(keys));
+            image_free(img);
+            fprintf(stderr, "Error: allocation failed\n");
+            return 1;
+        }
+
         char *message = read_message();
         if (!message) {
-            sodium_memzero(enc_key, sizeof(enc_key));
-            free(indices);
+            sodium_memzero(&keys, sizeof(keys));
+            free(order);
             image_free(img);
             fprintf(stderr, "Error: could not read message\n");
             return 1;
@@ -282,54 +464,50 @@ int main(int argc, char *argv[]) {
         uint32_t msg_len = (uint32_t)strlen(message);
         /* Empty message: nothing to hide, so write nothing */
         if (msg_len == 0) {
-            sodium_memzero(enc_key, sizeof(enc_key));
+            sodium_memzero(&keys, sizeof(keys));
             free(message);
-            free(indices);
+            free(order);
             image_free(img);
             fprintf(stderr, "Message is empty; nothing written\n");
             return 0;
         }
-        uint8_t nonce[crypto_secretbox_NONCEBYTES];
-        randombytes_buf(nonce, sizeof(nonce));
 
-        uint32_t ct_len      = crypto_secretbox_MACBYTES + msg_len;
-        uint32_t payload_len = crypto_pwhash_SALTBYTES + crypto_secretbox_NONCEBYTES + ct_len;
+        /* payload = [nonce | secretbox(message)] */
+        uint32_t payload_len = V2_OVERHEAD + msg_len;
         uint8_t *payload = malloc(payload_len);
         if (!payload) {
-            sodium_memzero(enc_key, sizeof(enc_key));
+            sodium_memzero(&keys, sizeof(keys));
+            sodium_memzero(message, msg_len);
             free(message);
-            free(indices);
+            free(order);
             image_free(img);
             fprintf(stderr, "Error: allocation failed\n");
             return 1;
         }
-
-        uint8_t *p = payload;
-        memcpy(p, salt, crypto_pwhash_SALTBYTES);           p += crypto_pwhash_SALTBYTES;
-        memcpy(p, nonce, crypto_secretbox_NONCEBYTES);      p += crypto_secretbox_NONCEBYTES;
-        crypto_secretbox_easy(p, (const uint8_t *)message, msg_len, nonce, enc_key);
-        sodium_memzero(enc_key, sizeof(enc_key));
+        randombytes_buf(payload, crypto_secretbox_NONCEBYTES);
+        crypto_secretbox_easy(payload + crypto_secretbox_NONCEBYTES, (const uint8_t *)message,
+                              msg_len, payload, keys.enc);
+        sodium_memzero(&keys, sizeof(keys));
+        sodium_memzero(message, msg_len);
         free(message);
 
-        if (embed_encode(img, indices, count, payload, payload_len) != 0) {
-            fprintf(stderr, "Error: message too long for this image\n");
-            sodium_memzero(payload, payload_len);
-            free(payload);
-            free(indices);
-            image_free(img);
-            return 1;
-        }
+        int embedded = embed_encode(img, order, count - V2_SALT_PIXELS, payload, payload_len);
         sodium_memzero(payload, payload_len);
         free(payload);
+        free(order);
+        if (embedded != 0) {
+            image_free(img);
+            fprintf(stderr, "Error: message too long for this image\n");
+            return 1;
+        }
+        embed_write_raw(img, salt_px, V2_SALT_PIXELS, salt, SALT_BYTES);
 
         if (png_save(img, output) != 0) {
             fprintf(stderr, "Error: could not write '%s': %s\n", output,
                     errno ? strerror(errno) : "PNG encoding failed");
-            free(indices);
             image_free(img);
             return 1;
         }
-        free(indices);
         image_free(img);
 
     } else if (strcmp(argv[1], "decode") == 0) {
@@ -356,103 +534,31 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         uint32_t count = img->width * img->height;
-
-        /* Scatter key depends only on the passphrase, so we can derive it
-           immediately and use it to read the payload (which contains the salt). */
-        uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES];
-        derive_scatter_key(passphrase, scatter_key);
-
-        uint32_t *indices = prng_scatter(scatter_key, count);
-        sodium_memzero(scatter_key, sizeof(scatter_key));
-        if (!indices) {
+        if (count < HEADER_PIXELS) {
             free_passphrase(passphrase);
-            image_free(img);
-            fprintf(stderr, "Error: image too small or allocation failed\n");
-            return 1;
-        }
-
-        uint64_t bits = (uint64_t)count * 3;
-        if (bits < 32) {
-            free_passphrase(passphrase);
-            free(indices);
             image_free(img);
             fprintf(stderr, "Error: image too small to contain a message\n");
             return 1;
         }
-        uint32_t max_payload_len = (uint32_t)((bits - 32) / 8);
-        /* No +1: an empty message (from older encoders) still authenticates */
-        uint32_t min_payload_len = crypto_pwhash_SALTBYTES +
-                                   crypto_secretbox_NONCEBYTES +
-                                   crypto_secretbox_MACBYTES;
 
-        uint32_t payload_len = embed_peek_len(img, indices, count);
-        if (payload_len > max_payload_len || payload_len < min_payload_len) {
-            free_passphrase(passphrase);
-            free(indices);
-            image_free(img);
-            fprintf(stderr, "Error: invalid message length in image\n");
-            return 1;
-        }
-
-        uint8_t *payload = malloc(payload_len);
-        if (!payload) {
-            free_passphrase(passphrase);
-            free(indices);
-            image_free(img);
-            fprintf(stderr, "Error: allocation failed\n");
-            return 1;
-        }
-
-        embed_decode(img, indices, count, payload, payload_len);
-        free(indices);
-        image_free(img);
-
-        /* Salt is the first bytes of the payload — use it to derive enc key. */
-        uint8_t salt[crypto_pwhash_SALTBYTES];
-        memcpy(salt, payload, crypto_pwhash_SALTBYTES);
-
-        uint8_t enc_key[crypto_secretbox_KEYBYTES];
-        fprintf(stderr, "Deriving keys...\n");
-        if (derive_enc_key(passphrase, salt, enc_key) != 0) {
-            free_passphrase(passphrase);
-            sodium_memzero(payload, payload_len);
-            free(payload);
-            fprintf(stderr, "Error: key derivation failed (out of memory)\n");
-            return 1;
+        uint8_t *plaintext = NULL;
+        uint32_t pt_len = 0;
+        int r = decode_v2(img, count, passphrase, &plaintext, &pt_len);
+        if (r == NO_MATCH) {
+            r = decode_v1(img, count, passphrase, &plaintext, &pt_len);
+            if (r == DECODED)
+                fprintf(stderr, "Warning: this image uses the old v1 format, which protects "
+                                "the passphrase less well; re-encode it\n");
         }
         free_passphrase(passphrase);
+        image_free(img);
+        if (r == NO_MATCH)
+            fprintf(stderr, "Error: decryption failed — wrong passphrase, "
+                            "or no message in this image\n");
+        if (r != DECODED) return 1;
 
-        /* Decrypt: payload = [salt | nonce | MAC+ciphertext] */
-        const uint8_t *nonce = payload + crypto_pwhash_SALTBYTES;
-        const uint8_t *ct    = nonce + crypto_secretbox_NONCEBYTES;
-        uint32_t ct_len      = payload_len - crypto_pwhash_SALTBYTES - crypto_secretbox_NONCEBYTES;
-        uint32_t pt_len      = ct_len - crypto_secretbox_MACBYTES;
-
-        uint8_t *plaintext = malloc(pt_len + 1);
-        if (!plaintext) {
-            sodium_memzero(enc_key, sizeof(enc_key));
-            sodium_memzero(payload, payload_len);
-            free(payload);
-            fprintf(stderr, "Error: allocation failed\n");
-            return 1;
-        }
-
-        if (crypto_secretbox_open_easy(plaintext, ct, ct_len, nonce, enc_key) != 0) {
-            sodium_memzero(enc_key, sizeof(enc_key));
-            sodium_memzero(payload, payload_len);
-            free(payload);
-            free(plaintext);
-            fprintf(stderr, "Error: decryption failed — wrong passphrase or corrupted image\n");
-            return 1;
-        }
-        sodium_memzero(enc_key, sizeof(enc_key));
-        sodium_memzero(payload, payload_len);
-        free(payload);
-
-        plaintext[pt_len] = '\0';
         if (pt_len > 0)  /* empty message: print nothing */
             printf("%s\n", (char *)plaintext);
-
         sodium_memzero(plaintext, pt_len);
         free(plaintext);
 

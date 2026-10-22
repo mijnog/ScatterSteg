@@ -29,7 +29,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             img.rows[y][i] = size ? data[(y * w * 3 + i) % size] : 0;
     }
 
-    uint32_t *idx = prng_scatter(key, count);
+    uint32_t *idx = prng_permutation(key, count);
     if (!idx) abort();
 
     /* Garbage decode: header bits are whatever the pixels hold */

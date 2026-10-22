@@ -17,8 +17,8 @@ The message itself is also encrypted with XSalsa20-Poly1305 (`crypto_secretbox`)
 - **Scatter-based LSB embedding** — pixel selection is a ChaCha20-derived Fisher-Yates shuffle, not sequential
 - **LSB matching** — bits are embedded by a random ±1 change rather than by overwriting the LSB, so no sample changes by more than 1 and the pair statistics that classic steganalysis relies on are left intact
 - **Authenticated encryption** — XSalsa20-Poly1305 encrypts and authenticates the message before embedding; wrong passphrase on decode fails with an explicit error
-- **Argon2id key derivation** — the encryption key is derived with Argon2id (winner of the Password Hashing Competition), which is slow and memory-hard by design (see Limitations for how far that protects the passphrase)
-- **Separate keys** — the scatter key is derived from the passphrase with keyed BLAKE2b, and the encryption key with Argon2id and a random salt stored in the image. The scatter key only decides pixel order; the message's secrecy rests on the Argon2id key
+- **Argon2id key derivation** — one Argon2id run (winner of the Password Hashing Competition; 256 MiB, 3 passes) with a random per-image salt derives a master key, split into independent scatter and encryption keys. Nothing about the message, not even where it is, can be checked without paying for Argon2id, so every passphrase guess costs about 0.2 s and 256 MiB
+- **Unbiased, portable pixel order** — the shuffle draws its random numbers without modulo bias and reads them in a fixed byte order, so an image decodes the same on any machine
 - **Random nonce per encode** — identical messages encoded with the same passphrase produce different steg images
 - **Passphrase read from terminal** — passphrase is never passed as a command-line argument (not visible in `ps`), echo is disabled during input, and passphrase memory is zeroed immediately after key derivation
 - **Input validation** — image capacity is checked before embedding; decoded length headers are validated against actual image capacity before any allocation
@@ -72,11 +72,21 @@ You will be prompted to enter and confirm a passphrase.
 
 You will be prompted for the passphrase used during encoding.
 
+## File format (v2)
+
+There is no header or version marker in the image, since one would give the image away. Every pixel carries 3 bits, in the LSBs of R, G and B, written by LSB matching.
+
+1. **Salt** — 16 random bytes in the first 43 pixels of a public pixel order: `prng_permutation` keyed with `BLAKE2b-256("ScatterSteg v2 salt positions")`. Public, so the decoder can find it before it has a key, and spread out rather than in a corner.
+2. **Keys** — `master = Argon2id(passphrase, salt, opslimit 3, memlimit 256 MiB)`; the scatter key and encryption key are `crypto_kdf` subkeys 1 and 2 of `master`, context `ScatStg2`.
+3. **Payload** — a 32-bit little-endian length, then `nonce (24) || crypto_secretbox(message)`, in the order of `prng_permutation(scatter key)` with the 43 salt pixels removed.
+
+`prng_permutation(key, n)` is a forward Fisher–Yates shuffle (for `i` from 0 to n−2, swap slot `i` with `i + uniform(n − i)`), with `uniform` drawing little-endian 32-bit words from the ChaCha20-IETF keystream of `key` (zero nonce, counter from 0) and rejecting values below `2³² mod bound`. Decode tries v2 first and falls back to the v1 format of earlier versions.
+
 ## Limitations
 
 - The output is always an 8-bit RGB PNG. Grayscale and palette covers are converted to RGB, which keeps their pixels exactly. Covers with transparency or 16-bit color are refused, because converting them would visibly change the image.
 - Against the classic detectors, the chi-square attack and sample pair analysis, embedding was not detectable in testing: chi-square stayed negative even at full capacity, and sample pair analysis stayed at the cover's own value up to about 25% of capacity. Modern machine-learning steganalysis can detect LSB matching at lower payloads and hasn't been tested. Keep messages small relative to the cover; a few KB in a photo-sized image uses well under 1% of its capacity.
-- Argon2id does not fully protect weak passphrases. The message length is read using only the fast BLAKE2b scatter key, and for a wrong passphrase it is almost always out of range, so most wrong guesses can be rejected without running Argon2id. Testing a guess costs about one pixel-order shuffle: roughly 100× cheaper than Argon2id for a 256×256 image, about 2× for 1920×1080, and no cheaper for 12 MP photos. Use a long, random passphrase.
+- Images written before format v2 still decode, with a warning. In that old format most wrong passphrases could be rejected without running Argon2id (about 100× cheaper per guess on small images), so re-encode them.
 - Smooth, flat areas (digital art, gradients) hide data worse than noisy photographs, since any ±1 change stands out where neighbouring pixels are identical.
 - Anyone who has the original cover can find the changes by comparing pixels, and the output's PNG metadata and compression differ from the cover's.
 - This is a learning project, not a production security tool

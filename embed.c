@@ -100,3 +100,22 @@ uint32_t embed_peek_len(const Image *img, const uint32_t *indices, uint32_t coun
     }
     return data_len;
 }
+
+int embed_write_raw(Image *img, const uint32_t *indices, uint32_t count,
+                    const uint8_t *data, uint32_t len) {
+    if ((uint64_t)len * 8 > (uint64_t)count * 3) return -1;
+    Coins coins = {0, 0};
+    for (uint32_t pos = 0; pos < len * 8; pos++)
+        write_bit(img, indices[pos / 3], pos % 3, (data[pos / 8] >> (pos % 8)) & 0x01, &coins);
+    sodium_memzero(&coins, sizeof(coins));
+    return 0;
+}
+
+int embed_read_raw(const Image *img, const uint32_t *indices, uint32_t count,
+                   uint8_t *out, uint32_t len) {
+    if ((uint64_t)len * 8 > (uint64_t)count * 3) return -1;
+    memset(out, 0, len);
+    for (uint32_t pos = 0; pos < len * 8; pos++)
+        out[pos / 8] |= (uint8_t)(read_bit(img, indices[pos / 3], pos % 3) << (pos % 8));
+    return 0;
+}

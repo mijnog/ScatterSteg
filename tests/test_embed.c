@@ -209,6 +209,30 @@ static void test_empty_message(void) {
     image_free(img);
 }
 
+static void test_raw_roundtrip(void) {
+    /* 16 bytes = 128 bits in 43 pixels (129 bits): the v2 salt layout */
+    Image *img = make_image(10, 10, 0x80);
+    Image *orig = make_image(10, 10, 0x80);
+    uint32_t px[43];
+    for (uint32_t i = 0; i < 43; i++) px[i] = (i * 37) % 100;
+    uint8_t salt[16], back[16];
+    for (int i = 0; i < 16; i++) salt[i] = (uint8_t)(i * 29 + 7);
+    CHECK(embed_write_raw(img, px, 43, salt, 16) == 0);
+    CHECK(embed_read_raw(img, px, 43, back, 16) == 0);
+    CHECK(memcmp(salt, back, 16) == 0);
+    int within_one = 1;
+    for (uint32_t y = 0; y < 10; y++)
+        for (uint32_t i = 0; i < 30; i++)
+            if (abs(img->rows[y][i] - orig->rows[y][i]) > 1) within_one = 0;
+    CHECK(within_one);
+    /* 17 bytes don't fit in 43 pixels */
+    uint8_t big[17] = {0};
+    CHECK(embed_write_raw(img, px, 43, big, 17) == -1);
+    CHECK(embed_read_raw(img, px, 43, big, 17) == -1);
+    image_free(img);
+    image_free(orig);
+}
+
 int main(void) {
     if (sodium_init() < 0) return 1;
     RUN(test_roundtrip);
@@ -222,5 +246,6 @@ int main(void) {
     RUN(test_decode_clamps_to_out_size);
     RUN(test_decode_stops_at_count);
     RUN(test_empty_message);
+    RUN(test_raw_roundtrip);
     return TEST_SUMMARY();
 }

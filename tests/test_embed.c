@@ -1,5 +1,6 @@
 #include "test.h"
 #include "embed.h"
+#include <sodium.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,23 +47,71 @@ static void test_roundtrip(void) {
     image_free(img);
 }
 
-static void test_only_lsbs_change(void) {
+static void test_changes_at_most_one(void) {
     Image *img = make_image(8, 8, 0xAA);
     Image *orig = make_image(8, 8, 0xAA);
     uint32_t *idx = identity(64);
     const uint8_t msg[] = {0xFF, 0x00, 0x81, 0x7E};
 
     CHECK(embed_encode(img, idx, 64, msg, sizeof(msg)) == 0);
-    int high_bits_same = 1;
+    int within_one = 1;
     for (uint32_t y = 0; y < 8; y++)
         for (uint32_t i = 0; i < 8 * 3; i++)
-            if ((img->rows[y][i] & 0xFE) != (orig->rows[y][i] & 0xFE))
-                high_bits_same = 0;
-    CHECK(high_bits_same);
+            if (abs(img->rows[y][i] - orig->rows[y][i]) > 1)
+                within_one = 0;
+    CHECK(within_one);
 
     free(idx);
     image_free(img);
     image_free(orig);
+}
+
+static void test_lsb_matching_goes_both_ways(void) {
+    /* Every sample is 100 (LSB 0) and every bit is 1, so every sample
+       changes. Overwriting the LSB would always give 101; matching must
+       give 99 and 101 about equally often. */
+    Image *img = make_image(100, 100, 100);
+    uint32_t *idx = identity(10000);
+    uint8_t ones[3746];  /* (10000 * 3 - 32) / 8 */
+    memset(ones, 0xFF, sizeof(ones));
+    uint32_t len = (10000 * 3 - 32) / 8;
+    CHECK(embed_encode(img, idx, 10000, ones, len) == 0);
+
+    uint32_t up = 0, down = 0, other = 0;
+    for (uint32_t y = 0; y < 100; y++)
+        for (uint32_t i = 0; i < 300; i++) {
+            uint8_t v = img->rows[y][i];
+            if (v == 101) up++;
+            else if (v == 99) down++;
+            else if (v != 100) other++;
+        }
+    CHECK(other == 0);
+    CHECK(up + down >= len * 8);
+    /* ~24000 fair flips: 45-55% is over 15 standard deviations wide */
+    CHECK(up * 100 > (up + down) * 45 && up * 100 < (up + down) * 55);
+    free(idx);
+    image_free(img);
+}
+
+static void test_matching_never_wraps(void) {
+    /* 0 can only go up and 255 only down; neither may wrap around */
+    for (int fill = 0; fill <= 255; fill += 255) {
+        Image *img = make_image(40, 40, (uint8_t)fill);
+        uint32_t *idx = identity(1600);
+        uint8_t msg[590];
+        for (size_t i = 0; i < sizeof(msg); i++) msg[i] = (uint8_t)(i * 37);
+        CHECK(embed_encode(img, idx, 1600, msg, sizeof(msg)) == 0);
+        int ok = 1;
+        for (uint32_t y = 0; y < 40; y++)
+            for (uint32_t i = 0; i < 120; i++)
+                if (abs(img->rows[y][i] - fill) > 1) ok = 0;
+        CHECK(ok);
+        uint8_t out[590];
+        embed_decode(img, idx, 1600, out, sizeof(out));
+        CHECK(memcmp(out, msg, sizeof(msg)) == 0);
+        free(idx);
+        image_free(img);
+    }
 }
 
 static void test_only_scattered_pixels_touched(void) {
@@ -161,8 +210,11 @@ static void test_empty_message(void) {
 }
 
 int main(void) {
+    if (sodium_init() < 0) return 1;
     RUN(test_roundtrip);
-    RUN(test_only_lsbs_change);
+    RUN(test_changes_at_most_one);
+    RUN(test_lsb_matching_goes_both_ways);
+    RUN(test_matching_never_wraps);
     RUN(test_only_scattered_pixels_touched);
     RUN(test_capacity_boundary);
     RUN(test_too_small_for_header);

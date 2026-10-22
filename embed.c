@@ -1,11 +1,36 @@
 #include "embed.h"
+#include <sodium.h>
 #include <string.h>
 
-static void write_bit(Image *img, uint32_t pixel_idx, int channel, uint8_t bit) {
+/* Random coin flips, drawn from libsodium 64 at a time */
+typedef struct {
+    uint64_t bits;
+    int left;
+} Coins;
+
+static int flip(Coins *c) {
+    if (c->left == 0) {
+        randombytes_buf(&c->bits, sizeof(c->bits));
+        c->left = 64;
+    }
+    int heads = c->bits & 1;
+    c->bits >>= 1;
+    c->left--;
+    return heads;
+}
+
+/* LSB matching: when the LSB is wrong, add or subtract 1 at random rather
+   than overwriting it. Overwriting only ever maps 2k <-> 2k+1, which leaves
+   the pair statistics that chi-square, RS and sample pair analysis detect;
+   a random +-1 doesn't. Decoding only reads the LSB, so it's unchanged. */
+static void write_bit(Image *img, uint32_t pixel_idx, int channel, uint8_t bit, Coins *coins) {
     uint32_t x = pixel_idx % img->width;
     uint32_t y = pixel_idx / img->width;
     uint8_t *ch = &img->rows[y][x * 3 + channel];
-    *ch = (*ch & 0xFE) | (bit & 0x01);
+    if ((*ch & 0x01) == (bit & 0x01)) return;
+    if (*ch == 0)        *ch = 1;
+    else if (*ch == 255) *ch = 254;
+    else                 *ch = flip(coins) ? *ch + 1 : *ch - 1;
 }
 
 static uint8_t read_bit(const Image *img, uint32_t pixel_idx, int channel) {
@@ -21,20 +46,22 @@ int embed_encode(Image *img, const uint32_t *indices, uint32_t count,
         return -1;
 
     uint32_t bit_pos = 0;
+    Coins coins = {0, 0};
 
     for (int b = 0; b < 32; b++) {
         uint8_t bit = (data_len >> b) & 0x01;
-        write_bit(img, indices[bit_pos / 3], bit_pos % 3, bit);
+        write_bit(img, indices[bit_pos / 3], bit_pos % 3, bit, &coins);
         bit_pos++;
     }
 
     for (uint32_t i = 0; i < data_len; i++) {
         for (int b = 0; b < 8; b++) {
             uint8_t bit = (data[i] >> b) & 0x01;
-            write_bit(img, indices[bit_pos / 3], bit_pos % 3, bit);
+            write_bit(img, indices[bit_pos / 3], bit_pos % 3, bit, &coins);
             bit_pos++;
         }
     }
+    sodium_memzero(&coins, sizeof(coins));
     return 0;
 }
 

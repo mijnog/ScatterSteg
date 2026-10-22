@@ -308,7 +308,7 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "x" * 1476)
 
-    def test_only_lsbs_change(self):
+    def test_samples_change_by_at_most_one(self):
         out = self.path("steg.png")
         self.assertEqual(self.encode(b"some secret", out)[0], 0)
         w, h, before = read_png(self.cover)
@@ -317,7 +317,7 @@ class CliTest(CliBase):
         changed = 0
         for rb, ra in zip(before, after):
             for b, a in zip(rb, ra):
-                self.assertEqual(b & 0xFE, a & 0xFE)
+                self.assertLessEqual(abs(a - b), 1)
                 changed += b != a
         self.assertGreater(changed, 0)
 

@@ -42,7 +42,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     /* Round trip */
     uint32_t len = (uint32_t)size;
-    int r = embed_encode(&img, idx, count, data, len);
+    EmbedPlan *plan = embed_plan_new();
+    if (!plan) abort();
+    int r = embed_encode(&img, idx, count, data, len, plan);
+    if (r == 0 && embed_apply(plan, NULL) != 0) abort();
+    embed_plan_free(plan);
     if ((uint64_t)32 + (uint64_t)len * 8 <= (uint64_t)count * 3) {
         if (r != 0) abort();
         if (embed_peek_len(&img, idx, count) != len) abort();

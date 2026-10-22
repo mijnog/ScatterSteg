@@ -548,16 +548,27 @@ int main(int argc, char *argv[]) {
         sodium_free(keys);
         sodium_free(message);
 
-        int embedded = embed_encode(img, order, count - k, payload, payload_len);
+        /* Record every change (payload and salt), then make them together so
+           they can be paired up to keep the histogram (see embed_apply) */
+        EmbedPlan *plan = embed_plan_new();
+        int embedded = plan ? embed_encode(img, order, count - k, payload, payload_len, plan) : 0;
         sodium_memzero(payload, payload_len);
         free(payload);
         free(order);
-        if (embedded != 0) {
+        if (plan && embedded != 0) {
+            embed_plan_free(plan);
             image_free(img);
             fprintf(stderr, "Error: message too long for this image\n");
             return 1;
         }
-        embed_write_raw(img, salt_px, k, salt, SALT_BYTES);
+        if (!plan || embed_write_raw(img, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
+            embed_apply(plan, NULL) != 0) {
+            embed_plan_free(plan);
+            image_free(img);
+            fprintf(stderr, "Error: allocation failed\n");
+            return 1;
+        }
+        embed_plan_free(plan);
 
         if (png_save(img, output) != 0) {
             fprintf(stderr, "Error: could not write '%s': %s\n", output,

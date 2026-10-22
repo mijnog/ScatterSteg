@@ -42,6 +42,7 @@ struct JpegImage {
     ErrorJump err;
     jvirt_barray_ptr *coefs;
     int16_t **carriers;
+    float *costs;  /* per carrier, see collect_carriers */
     uint32_t n_carriers;
 };
 
@@ -87,7 +88,19 @@ static int collect_carriers(JpegImage *j) {
                         JCOEF *c = &row[0][bx][k];
                         if (!pass && (*c < -JPEG_MAX_AC || *c > JPEG_MAX_AC)) return -1;
                         if (*c >= 2 || *c <= -2) {
-                            if (pass) j->carriers[n] = c;
+                            if (pass) {
+                                /* A change of 1 moves the block's pixels in
+                                   proportion to the quantization step. And
+                                   2 can only go to 3, shifting the 2:3 ratio
+                                   detectors watch: 1.5x keeps the ratio
+                                   within ~0.5% of the cover's in testing
+                                   (1x lets it fall, 2-3x pushes it up) */
+                                j->carriers[n] = c;
+                                /* (a corrupt file's component may lack a table) */
+                                float q = comp->quant_table ? comp->quant_table->quantval[k] : 1;
+                                j->costs[n] = (q > 0 ? q : 1) *
+                                              (*c == 2 || *c == -2 ? 1.5f : 1.0f);
+                            }
                             n++;
                         }
                     }
@@ -97,7 +110,8 @@ static int collect_carriers(JpegImage *j) {
         if (!pass) {
             j->n_carriers = n;
             j->carriers = malloc((n ? n : 1) * sizeof(int16_t *));
-            if (!j->carriers) return -1;
+            j->costs = malloc((n ? n : 1) * sizeof(float));
+            if (!j->carriers || !j->costs) return -1;
         }
     }
     return 0;
@@ -119,6 +133,7 @@ JpegImage *jpeg_load(const char *path) {
     if (setjmp(j->err.jump)) {
         jpeg_destroy_decompress(&j->src);
         free(j->carriers);
+        free(j->costs);
         free(j);
         fclose(fp);
         return NULL;
@@ -152,11 +167,12 @@ void jpeg_free(JpegImage *j) {
     if (!j) return;
     jpeg_destroy_decompress(&j->src);
     free(j->carriers);
+    free(j->costs);
     free(j);
 }
 
 Carrier jpeg_carrier(JpegImage *j) {
-    Carrier c = {NULL, j->carriers, j->n_carriers};
+    Carrier c = {NULL, j->carriers, j->n_carriers, j->costs};
     return c;
 }
 

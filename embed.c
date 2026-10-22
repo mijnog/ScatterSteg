@@ -247,3 +247,31 @@ int embed_read_raw(const Carrier *c, const uint32_t *indices, uint32_t count,
         out[pos / 8] |= (uint8_t)(read_bit(c, indices, pos) << (pos % 8));
     return 0;
 }
+
+void embed_get_bits(const Carrier *c, const uint32_t *indices, size_t start,
+                    size_t n, uint8_t *bits) {
+    for (size_t i = 0; i < n; i++)
+        bits[i] = read_bit(c, indices, (uint32_t)(start + i));
+}
+
+void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
+                    size_t n, const uint8_t *bits, EmbedPlan *plan) {
+    for (size_t i = 0; i < n; i++)
+        write_bit(c, indices, (uint32_t)(start + i), bits[i], plan);
+}
+
+/* PNG: uniform. Content-adaptive costs (cheap in texture, dear in flat
+   areas, like HILL) were tried: on the detectors available here (HCF-COM,
+   and Ker's adjacency HCF-COM, which looks at neighbouring pixels) they did
+   worse than uniform, since they buy cheaper locations with more changes.
+   They aim at machine-learning detectors, which weren't available to test.
+
+   JPEG: a change of 1 to a coefficient changes its block's pixels in
+   proportion to the quantization step, so that is the cost (precomputed
+   per carrier by jpeg_io, which also makes changes to |value| == 2 dearer:
+   2 can only go to 3, which shifts the 2:3 ratio JPEG detectors watch). */
+void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
+                 size_t n, float *costs) {
+    for (size_t i = 0; i < n; i++)
+        costs[i] = c->img ? 1.0f : c->coef_costs[indices[start + i]];
+}

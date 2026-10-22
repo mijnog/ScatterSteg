@@ -338,6 +338,74 @@ def layout_v2(rows, w, h, pw):
     return salt_px, payload_order_v2(scatter_key, w * h, salt_px), enc_key
 
 
+# -- v3: STC syndrome coding (see stc.h)
+
+STC_H, STC_MAX_W, STC_CHUNK = 7, 64, 1 << 20
+
+
+def stc_carriers(n_avail, mlen):
+    if mlen == 0 or n_avail < mlen:
+        return 0
+    return mlen * STC_MAX_W if n_avail // mlen >= STC_MAX_W else n_avail
+
+
+def stc_submatrix(width):
+    """splitmix64 columns, top and bottom rows set"""
+    mask, s, cols = (1 << 64) - 1, 0x5354432D48415431 ^ width, []
+    for _ in range(width):
+        s = (s + 0x9E3779B97F4A7C15) & mask
+        z = s
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & mask
+        z ^= z >> 31
+        cols.append((z & ((1 << STC_H) - 1)) | 1 | (1 << (STC_H - 1)))
+    return cols
+
+
+def stc_blocks(mlen, n):
+    """(first, end) carrier of each message bit's block, and the run length"""
+    starts = [i * n // mlen for i in range(mlen + 1)]
+    per = max(1, STC_CHUNK // (n // mlen + 1))
+    return starts, per
+
+
+def stc_extract(y, mlen, n):
+    cols = stc_submatrix(n // mlen + 1)
+    starts, per = stc_blocks(mlen, n)
+    m, state = [], 0
+    for i in range(mlen):
+        if i % per == 0:
+            state = 0
+        for k in range(starts[i], starts[i + 1]):
+            if y[k]:
+                state ^= cols[k - starts[i]]
+        m.append(state & 1)
+        state >>= 1
+    return m
+
+
+def stc_solve(x, m, n):
+    """Some y with syndrome m (not the cheapest: a greedy forward pass that
+    flips a block's first carrier when its row comes out wrong). Enough to
+    build v3 images independently of the binary's Viterbi."""
+    y = list(x[:n])
+    mlen = len(m)
+    cols = stc_submatrix(n // mlen + 1)
+    starts, per = stc_blocks(mlen, n)
+    state = 0
+    for i in range(mlen):
+        if i % per == 0:
+            state = 0
+        for k in range(starts[i], starts[i + 1]):
+            if y[k]:
+                state ^= cols[k - starts[i]]
+        if (state & 1) != m[i]:  # every column has the bottom row set
+            y[starts[i]] ^= 1
+            state ^= cols[0]
+        state >>= 1
+    return y
+
+
 def forge(src, dst, message, passphrase):
     """Embed `message` as v2, the way scattersteg encode does, without its
     checks (so an empty message is allowed). Overwrites LSBs; decoding
@@ -355,12 +423,52 @@ def forge(src, dst, message, passphrase):
     write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
 
 
-def reveal(src, passphrase):
-    """Extract and decrypt a v2 message independently of the binary.
-    Returns the plaintext bytes, or None if it does not authenticate."""
+def forge_v3(src, dst, message, passphrase):
+    """Embed `message` in the v3 format encode writes: salt as in v2, a
+    32-bit length straight into the first 32 samples, then the box as the
+    STC syndrome of the rest"""
     w, h, rows = read_png(src)
+    rows = [bytearray(r) for r in rows]
+    ch = len(rows[0]) // w
+    pw = passphrase.encode()
+    salt = os.urandom(SALT)
+    salt_px = salt_pixels_v2(w * h, ch)
+    scatter_key, enc_key = keys_v2(pw, salt)
+    order = payload_order_v2(scatter_key, w * h, salt_px)
+    box = seal(message, enc_key)
+    embed_bits(rows, w, salt_px, to_bits(salt), ch)
+    embed_bits(rows, w, order, [(len(box) >> b) & 1 for b in range(32)], ch)
+    samples = len(order) * ch - 32
+    mlen = len(box) * 8
+    n = stc_carriers(samples, mlen)
+    assert n, "message too long"
+    x = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
+    y = stc_solve(x, to_bits(box), n)
+    for i in range(n):
+        p = order[(32 + i) // ch]
+        k = (p % w) * ch + (32 + i) % ch
+        rows[p // w][k] = (rows[p // w][k] & 0xFE) | y[i]
+    write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
+
+
+def reveal(src, passphrase):
+    """Extract and decrypt a message independently of the binary: v3 (what
+    encode writes), else v2. Returns the plaintext bytes, or None."""
+    w, h, rows = read_png(src)
+    ch = len(rows[0]) // w
     _, order, enc_key = layout_v2(rows, w, h, passphrase.encode())
-    payload = read_payload(rows, w, order, V2_OVERHEAD, len(rows[0]) // w)
+    length = read_bits(rows, w, order, 0, 32, ch)
+    samples = len(order) * ch - 32
+    if V2_OVERHEAD <= length and length * 8 <= samples:
+        mlen = length * 8
+        n = stc_carriers(samples, mlen)
+        y = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
+        m = stc_extract(y, mlen, n)
+        box = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(length))
+        pt = open_box(box, enc_key)
+        if pt is not None:
+            return pt
+    payload = read_payload(rows, w, order, V2_OVERHEAD, ch)
     return None if payload is None else open_box(payload, enc_key)
 
 
@@ -688,7 +796,35 @@ class CliTest(CliBase):
         self.assertEqual(len(set(salt_px)), SALT_PIXELS)
         self.assertFalse(set(salt_px) & set(order))
         self.assertEqual(len(order), w * h - SALT_PIXELS)
-        self.assertEqual(open_box(read_payload(rows, w, order, V2_OVERHEAD), enc_key), b"salted")
+        self.assertEqual(reveal(out, "correct horse"), b"salted")
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_syndrome_coding_changes_less(self):
+        # v3 hides the box as an STC syndrome: far fewer samples change than
+        # writing its bits straight in (about half of them) would need
+        noise = __import__("random").Random(3)
+        px = [noise.getrandbits(24) for _ in range(96 * 96)]
+        write_png(self.cover, 96, 96, lambda x, y: tuple((px[y * 96 + x] >> s) & 0xFF for s in (0, 8, 16)))
+        out = self.path("steg.png")
+        msg = b"m" * 150
+        self.assertEqual(self.encode(msg, out)[0], 0)
+        _, _, before = read_png(self.cover)
+        _, _, after = read_png(out)
+        changed = sum(a != b for ra, rb in zip(before, after) for a, b in zip(ra, rb))
+        direct = (len(msg) + V2_OVERHEAD) * 8 // 2 + 16 + 64  # payload, header, salt
+        self.assertLess(changed, direct * 0.5, (changed, direct))
+        self.assertEqual(reveal(out, "correct horse"), msg)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_v2_image_still_decodes(self):
+        # v2 images (written before syndrome coding) decode without a warning:
+        # same salt and keys, only the payload layout differs
+        out = self.path("v2.png")
+        forge(self.cover, out, b"plain bits", "correct horse")
+        code, log = self.decode(out)
+        self.assertEqual(code, 0, log)
+        self.assertIn("plain bits\n", log)
+        self.assertNotIn("Warning", log)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_decode_empty_message_wrong_passphrase(self):
@@ -1074,7 +1210,7 @@ class CrossCheckTest(CliBase):
             with self.subTest(case=case, size=(w, h), channels=ch, length=len(msg), seed=self.SEED + 1):
                 self.cover_for(w, h, ch, rng)
                 out = self.path("forged.png")
-                forge(self.cover, out, msg, pw)
+                forge_v3(self.cover, out, msg, pw)
                 code, log = run(["decode", "-i", out], passphrases=[pw])
                 self.assertEqual(code, 0, log)
                 # Byte-exact: the output is the raw message plus "\n"

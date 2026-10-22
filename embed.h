@@ -13,10 +13,11 @@ typedef struct {
     Image *img;        /* PNG, or NULL */
     int16_t **coefs;   /* JPEG: n_coefs pointers to carrier coefficients */
     uint32_t n_coefs;
+    const float *coef_costs;  /* JPEG: cost of changing each (see embed_costs) */
 } Carrier;
 
 static inline Carrier carrier_of_image(Image *img) {
-    Carrier c = {img, NULL, 0};
+    Carrier c = {img, NULL, 0, NULL};
     return c;
 }
 
@@ -56,5 +57,19 @@ int embed_write_raw(const Carrier *c, const uint32_t *indices, uint32_t count,
                     const uint8_t *data, uint32_t len, EmbedPlan *plan);
 int embed_read_raw(const Carrier *c, const uint32_t *indices, uint32_t count,
                    uint8_t *out, uint32_t len);
+
+/* For syndrome coding (format v3). Sample k is the one bit position k of
+   data written in `indices` order goes to, as above. */
+
+/* The LSBs of samples start .. start+n-1 */
+void embed_get_bits(const Carrier *c, const uint32_t *indices, size_t start,
+                    size_t n, uint8_t *bits);
+/* Record the changes that give those samples these LSBs */
+void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
+                    size_t n, const uint8_t *bits, EmbedPlan *plan);
+/* How costly a change to each of those samples would be to hide: low where
+   the cover is busy, high where a change would stand out */
+void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
+                 size_t n, float *costs);
 
 #endif /* EMBED_H */

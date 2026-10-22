@@ -16,6 +16,7 @@
 #include "jpeg_io.h"
 #include "prng.h"
 #include "embed.h"
+#include "stc.h"
 
 #define PASSPHRASE_CHUNK 256  /* passphrase buffer grows by this much */
 /* The terminal's line editor holds 4095 bytes per line and silently drops
@@ -255,6 +256,68 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     return DECODED;
 }
 
+/* v3: the same 32-bit length, written straight into the first 32 samples,
+   then the payload's bits as the STC syndrome of the samples after it (see
+   stc.h). NO_MATCH if the length doesn't fit. */
+static int read_payload_v3(const Carrier *c, const uint32_t *order, uint32_t n,
+                           uint8_t **payload, uint32_t *len) {
+    uint32_t ch = carrier_channels(c);
+    if (n < header_pixels(ch)) return NO_MATCH;
+    size_t samples = (size_t)n * ch - 32;
+    *len = embed_peek_len(c, order, n);
+    if (*len < V2_OVERHEAD || (uint64_t)*len * 8 > samples) return NO_MATCH;
+    size_t mlen = (size_t)*len * 8;
+    size_t used = stc_carriers(samples, mlen);
+    if (!used) return NO_MATCH;
+
+    uint8_t *y = malloc(used), *m = malloc(mlen);
+    *payload = calloc(*len, 1);
+    if (!y || !m || !*payload) {
+        free(y); free(m); free(*payload);
+        *payload = NULL;
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
+    embed_get_bits(c, order, 32, used, y);
+    stc_extract(y, mlen, used, m);
+    for (size_t i = 0; i < mlen; i++) (*payload)[i / 8] |= (uint8_t)(m[i] << (i % 8));
+    free(y);
+    free(m);
+    return DECODED;
+}
+
+/* Records the v3 changes for payload (see read_payload_v3) in plan: the
+   STC picks, among all sample bits with the right syndrome, the set
+   cheapest to reach under embed_costs. Returns 0, -1 if it doesn't fit,
+   or -2 if out of memory. */
+static int embed_payload_v3(const Carrier *c, const uint32_t *order, uint32_t n,
+                            const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
+    uint32_t ch = carrier_channels(c);
+    if (n < header_pixels(ch)) return -1;
+    size_t samples = (size_t)n * ch - 32;
+    size_t mlen = (size_t)len * 8;
+    size_t used = stc_carriers(samples, mlen);
+    if (!used) return -1;
+
+    uint8_t header[4] = {(uint8_t)len, (uint8_t)(len >> 8), (uint8_t)(len >> 16), (uint8_t)(len >> 24)};
+    embed_write_raw(c, order, n, header, sizeof(header), plan);
+
+    uint8_t *x = malloc(used), *y = malloc(used), *m = malloc(mlen);
+    float *costs = malloc(used * sizeof(float));
+    int r = -2;
+    if (x && y && m && costs) {
+        for (size_t i = 0; i < mlen; i++) m[i] = (payload[i / 8] >> (i % 8)) & 1;
+        embed_get_bits(c, order, 32, used, x);
+        embed_costs(c, order, 32, used, costs);
+        if (stc_embed(x, costs, m, mlen, used, y) == 0) {
+            embed_set_bits(c, order, 32, used, y, plan);
+            r = 0;
+        }
+    }
+    free(x); free(y); free(m); free(costs);
+    return r;
+}
+
 /* Open [nonce | secretbox] with key. NO_MATCH if it doesn't authenticate. */
 static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
                     uint8_t **plaintext, uint32_t *pt_len) {
@@ -297,15 +360,21 @@ static int decode_v2(const Carrier *c, const char *passphrase,
         return FAILED;
     }
 
-    uint8_t *payload = NULL;
-    uint32_t len = 0;
-    int r = read_payload(c, order, count - k, V2_OVERHEAD, &payload, &len);
+    /* v3 and v2 share salt, keys and order; they differ in how the payload
+       sits in it. Try v3 (what encode writes), then v2. */
+    int r = NO_MATCH;
+    for (int v3 = 1; v3 >= 0 && r == NO_MATCH; v3--) {
+        uint8_t *payload = NULL;
+        uint32_t len = 0;
+        r = v3 ? read_payload_v3(c, order, count - k, &payload, &len)
+               : read_payload(c, order, count - k, V2_OVERHEAD, &payload, &len);
+        if (r == DECODED)
+            r = open_box(payload, len, keys->enc, plaintext, pt_len);
+        if (payload) sodium_memzero(payload, len);
+        free(payload);
+    }
     free(order);
-    if (r == DECODED)
-        r = open_box(payload, len, keys->enc, plaintext, pt_len);
     sodium_free(keys);
-    if (payload) sodium_memzero(payload, len);
-    free(payload);
     return r;
 }
 
@@ -606,17 +675,17 @@ int main(int argc, char *argv[]) {
         /* Record every change (payload and salt), then make them together so
            they can be paired up to keep the histogram (see embed_apply) */
         EmbedPlan *plan = embed_plan_new();
-        int embedded = plan ? embed_encode(&carrier, order, count - k, payload, payload_len, plan) : 0;
+        int embedded = plan ? embed_payload_v3(&carrier, order, count - k, payload, payload_len, plan) : -2;
         sodium_memzero(payload, payload_len);
         free(payload);
         free(order);
-        if (plan && embedded != 0) {
+        if (embedded == -1) {
             embed_plan_free(plan);
             cover_free(&cover);
             fprintf(stderr, "Error: message too long for this image\n");
             return 1;
         }
-        if (!plan || embed_write_raw(&carrier, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
+        if (embedded != 0 || embed_write_raw(&carrier, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
             embed_apply(plan, NULL) != 0) {
             embed_plan_free(plan);
             cover_free(&cover);
@@ -627,7 +696,7 @@ int main(int argc, char *argv[]) {
 
         if (cover_save(&cover, output) != 0) {
             fprintf(stderr, "Error: could not write '%s': %s\n", output,
-                    errno ? strerror(errno) : "PNG encoding failed");
+                    errno ? strerror(errno) : cover.png ? "PNG encoding failed" : "JPEG encoding failed");
             cover_free(&cover);
             return 1;
         }

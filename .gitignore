@@ -7,3 +7,4 @@ cmake-build-debug-wsl/
 *.png
 tests/build/
 __pycache__/
+!tests/fuzz/regressions/**

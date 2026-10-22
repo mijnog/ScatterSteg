@@ -501,6 +501,34 @@ class CliTest(CliBase):
         self.assertEqual(code, 1)
         self.assertIn("Usage:", log)
 
+    def test_cover_with_transparency_refused(self):
+        rgba = self.path("rgba.png")
+        raw = b"".join(b"\x00" + b"".join(bytes([200, 50, 50, 0 if x < 16 else 255])
+                                          for x in range(32)) for y in range(32))
+        with open(rgba, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n"
+                    + _chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 6, 0, 0, 0))
+                    + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
+        out = self.path("out.png")
+        code, log = self.encode(b"x", out, src=rgba)
+        self.assertEqual(code, 1, log)
+        self.assertIn("has transparency", log)
+        self.assertFalse(os.path.exists(out))
+
+    def test_cover_with_16_bit_color_refused(self):
+        rgb16 = self.path("rgb16.png")
+        raw = b"".join(b"\x00" + b"".join(struct.pack(">HHH", x * 2000, y * 2000, 0x1234)
+                                          for x in range(32)) for y in range(32))
+        with open(rgb16, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n"
+                    + _chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 16, 2, 0, 0, 0))
+                    + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
+        out = self.path("out.png")
+        code, log = self.encode(b"x", out, src=rgb16)
+        self.assertEqual(code, 1, log)
+        self.assertIn("has 16-bit color", log)
+        self.assertFalse(os.path.exists(out))
+
     def test_output_keeps_mode_and_symlink(self):
         out = self.path("private.png")
         with open(out, "wb") as f:

@@ -172,6 +172,35 @@ static void test_load_interlaced_palette(void) {
     check_variant("adam7pal.png", (Fmt){PNG_COLOR_TYPE_PALETTE, 8, PNG_INTERLACE_ADAM7, 0});
 }
 
+static void test_load_reports_dropped(void) {
+    struct { const char *name; Fmt f; const char *dropped; } cases[] = {
+        {"d_rgb8.png",    {PNG_COLOR_TYPE_RGB, 8, PNG_INTERLACE_NONE, 0},        NULL},
+        {"d_adam7.png",   {PNG_COLOR_TYPE_RGB, 8, PNG_INTERLACE_ADAM7, 0},       NULL},
+        {"d_gray8.png",   {PNG_COLOR_TYPE_GRAY, 8, PNG_INTERLACE_NONE, 0},       NULL},
+        {"d_gray1.png",   {PNG_COLOR_TYPE_GRAY, 1, PNG_INTERLACE_NONE, 0},       NULL},
+        {"d_pal8.png",    {PNG_COLOR_TYPE_PALETTE, 8, PNG_INTERLACE_NONE, 0},    NULL},
+        {"d_rgb16.png",   {PNG_COLOR_TYPE_RGB, 16, PNG_INTERLACE_NONE, 0},       "16-bit color"},
+        {"d_rgba8.png",   {PNG_COLOR_TYPE_RGBA, 8, PNG_INTERLACE_NONE, 0},       "transparency"},
+        {"d_ga8.png",     {PNG_COLOR_TYPE_GRAY_ALPHA, 8, PNG_INTERLACE_NONE, 0}, "transparency"},
+        {"d_paltrns.png", {PNG_COLOR_TYPE_PALETTE, 8, PNG_INTERLACE_NONE, 1},    "transparency"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const char *p = path_in_dir(cases[i].name);
+        write_fixture(p, &cases[i].f, 5, 5);
+        Image *img = png_load(p);
+        CHECK(img != NULL);
+        if (img) {
+            int ok = cases[i].dropped ? img->dropped && strcmp(img->dropped, cases[i].dropped) == 0
+                                      : img->dropped == NULL;
+            CHECK(ok);
+            if (!ok) fprintf(stderr, "    (%s: dropped = %s)\n", cases[i].name,
+                             img->dropped ? img->dropped : "NULL");
+        }
+        image_free(img);
+        remove(p);
+    }
+}
+
 /* ---- png_load: bad input ------------------------------------------------ */
 
 static void png_chunk(FILE *fp, const char *type, const uint8_t *data, uint32_t len) {
@@ -444,6 +473,7 @@ int main(void) {
     RUN(test_load_palette_trns);
     RUN(test_load_interlaced);
     RUN(test_load_interlaced_palette);
+    RUN(test_load_reports_dropped);
     RUN(test_load_missing_file);
     RUN(test_load_empty_file);
     RUN(test_load_not_png);

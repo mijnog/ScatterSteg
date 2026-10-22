@@ -49,6 +49,16 @@ Image *png_load(const char *path) {
     uint32_t width  = png_get_image_width(png, info);
     uint32_t height = png_get_image_height(png, info);
 
+    /* Note what the conversion below throws away. Grayscale and palette
+       images convert exactly; alpha (or a tRNS transparent color) and the
+       low byte of 16-bit samples are lost. */
+    const char *dropped = NULL;
+    if ((png_get_color_type(png, info) & PNG_COLOR_MASK_ALPHA) ||
+        png_get_valid(png, info, PNG_INFO_tRNS))
+        dropped = "transparency";
+    else if (png_get_bit_depth(png, info) == 16)
+        dropped = "16-bit color";
+
     /* Force any PNG variant into 8-bit RGB */
     png_set_strip_alpha(png);     /* drop alpha channel if present */
     png_set_gray_to_rgb(png);     /* expand grayscale to RGB       */
@@ -79,8 +89,9 @@ Image *png_load(const char *path) {
         fclose(fp);
         return NULL;
     }
-    img->width  = width;
-    img->height = height;
+    img->width   = width;
+    img->height  = height;
+    img->dropped = dropped;
     img->rows   = malloc(height * sizeof(uint8_t *));
     if (!img->rows) {
         free(img);

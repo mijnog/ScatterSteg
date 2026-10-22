@@ -242,6 +242,17 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        /* The output is 8-bit RGB: a cover that would lose something in that
+           conversion comes out visibly different, which gives it away */
+        if (img->dropped) {
+            sodium_memzero(scatter_key, sizeof(scatter_key));
+            sodium_memzero(enc_key, sizeof(enc_key));
+            fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
+                            "use an 8-bit RGB PNG as the cover\n", input, img->dropped);
+            image_free(img);
+            return 1;
+        }
+
         if (img->width == 0 || img->height > UINT32_MAX / img->width) {
             sodium_memzero(scatter_key, sizeof(scatter_key));
             sodium_memzero(enc_key, sizeof(enc_key));

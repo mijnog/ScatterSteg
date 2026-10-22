@@ -71,5 +71,6 @@ You will be prompted for the passphrase used during encoding.
 
 ## Limitations
 
-- Supports RGB PNG images only (alpha, grayscale, and palette images are converted automatically on load)
+- The output is always an 8-bit RGB PNG. Grayscale and palette covers are converted to RGB, which keeps their pixels exactly. Covers with transparency or 16-bit color are refused, because converting them would visibly change the image.
+- Scattering defeats sequential-scan attacks such as the chi-square test, but not whole-image statistics such as sample pair analysis, which detect LSB replacement once the message fills a few percent of the image's capacity. Keep messages small relative to the cover.
 - This is a learning project, not a production security tool

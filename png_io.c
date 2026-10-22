@@ -16,6 +16,9 @@
   10.
 */
 
+/* Largest decoded pixel buffer png_load will allocate (1 GiB) */
+#define PNG_MAX_PIXEL_BYTES ((size_t)1 << 30)
+
 Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
@@ -30,7 +33,8 @@ Image *png_load(const char *path) {
 
     /* libpng uses longjmp for errors — if anything goes wrong it jumps here */
     if (setjmp(png_jmpbuf(png))) {
-        image_free(img);  /* fully allocated by the time png_read_image can fail */
+        image_free(img);  /* NULL for the size checks below; fully allocated
+                             by the time png_read_image can fail */
         png_destroy_read_struct(&png, &info, NULL);
         fclose(fp);
         return NULL;
@@ -60,6 +64,13 @@ Image *png_load(const char *path) {
     size_t row_size = (size_t)width * 3;  /* 3 bytes per pixel: R G B */
     if (row_size / 3 != width || png_get_rowbytes(png, info) != row_size)
         png_error(png, "unexpected decoded row size");
+
+    /* The header's dimensions are untrusted: cap the total allocation before
+       making it, so a tiny file can't request terabytes. This also bounds
+       height, so the row-pointer array below can't overflow. libpng rejects
+       a zero height in png_read_info, so the division is safe. */
+    if (row_size > PNG_MAX_PIXEL_BYTES / height)
+        png_error(png, "image dimensions too large");
 
     // Allocate the Image struct and its row pointers
     img = malloc(sizeof(Image));
@@ -115,8 +126,14 @@ int png_save(const Image *img, const char *path) {
     png_structp png = NULL;
     png_infop info = NULL;
 
+    /* On failure tmp may name someone else's file, so don't goto fail's remove */
     int fd = mkstemp(tmp);
-    if (fd < 0) goto fail;
+    if (fd < 0) {
+        int err = errno;
+        free(tmp);
+        errno = err;
+        return -1;
+    }
 
     /* mkstemp creates the file 0600; give it the usual umask-based mode */
     mode_t mask = umask(0);
@@ -156,8 +173,11 @@ int png_save(const Image *img, const char *path) {
     // cleanup — buffered write errors (disk full, quota) only surface here
     png_destroy_write_struct(&png, &info);
     if (fflush(fp) != 0 || ferror(fp) || fsync(fileno(fp)) != 0) goto fail;
-    if (fclose(fp) != 0) { fp = NULL; goto fail; }
+    /* fclose releases fd even when it fails, so fail must not close it again */
+    int closed = fclose(fp);
     fp = NULL;
+    fd = -1;
+    if (closed != 0) goto fail;
     if (rename(tmp, path) != 0) goto fail;
     free(tmp);
     return 0;

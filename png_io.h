@@ -3,12 +3,18 @@
 
 #include <stdint.h>
 
+/* The cover's ancillary chunks, kept by png_load for png_save to write back */
+typedef struct PngMeta PngMeta;
+
 typedef struct {
     uint32_t width;
     uint32_t height;
-    uint8_t **rows;   /* row_pointers[y][x * 3 + channel] */
-    const char *dropped;  /* what png_load's conversion to 8-bit RGB lost,
-                             e.g. "transparency"; NULL if nothing */
+    uint32_t channels;   /* samples per pixel: 1 (gray) or 3 (RGB) */
+    uint8_t **rows;      /* rows[y][x * channels + channel] */
+    const char *unsuitable;  /* why a cover this way would come out visibly
+                                changed, e.g. "transparency"; NULL for 8-bit
+                                RGB or gray without transparency */
+    PngMeta *meta;       /* NULL if none */
 } Image;
 
 Image *png_load(const char *path);

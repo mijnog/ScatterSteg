@@ -90,20 +90,36 @@ def _chunk(kind, data):
             + struct.pack(">I", zlib.crc32(kind + data)))
 
 
-def write_png(path, width, height, pixel):
-    """pixel(x, y) -> (r, g, b)"""
+def write_png(path, width, height, pixel, channels=3, extra=b""):
+    """pixel(x, y) -> (r, g, b), or (gray,) with channels=1. `extra` is
+    raw chunks to put before the image data."""
     raw = b"".join(
         b"\x00" + bytes(c for x in range(width) for c in pixel(x, y))
         for y in range(height))
+    ctype = 2 if channels == 3 else 0
     with open(path, "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n"
-                + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, ctype, 0, 0, 0))
+                + extra
                 + _chunk(b"IDAT", zlib.compress(raw))
                 + _chunk(b"IEND", b""))
 
 
+def png_chunks(path):
+    """[(type, data), ...] for every chunk in the file"""
+    with open(path, "rb") as f:
+        data = f.read()
+    out, pos = [], 8
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        out.append((kind, data[pos + 8:pos + 8 + length]))
+        pos += 12 + length
+    return out
+
+
 def read_png(path):
-    """Returns (width, height, list of row bytes) for 8-bit RGB, non-interlaced."""
+    """Returns (width, height, list of row bytes) for 8-bit RGB or gray,
+    non-interlaced. Rows hold width * channels bytes."""
     with open(path, "rb") as f:
         data = f.read()
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
@@ -113,12 +129,13 @@ def read_png(path):
         body = data[pos + 8:pos + 8 + length]
         if kind == b"IHDR":
             width, height, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", body)
-            assert (depth, ctype, interlace) == (8, 2, 0)
+            assert depth == 8 and ctype in (0, 2) and interlace == 0
+            bpp = 3 if ctype == 2 else 1
         elif kind == b"IDAT":
             idat += body
         pos += 12 + length
     raw = zlib.decompress(idat)
-    stride, bpp = width * 3, 3
+    stride = width * bpp
     rows, prev = [], bytearray(stride)
     for y in range(height):
         ftype = raw[y * (stride + 1)]
@@ -169,7 +186,7 @@ if sodium:
         ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
 
 SALT, NONCE, MAC = 16, 24, 16
-SALT_PIXELS = 43  # v2: 128 salt bits, 3 per pixel
+SALT_PIXELS = 43  # v2, RGB: 128 salt bits, 3 per pixel (gray: 128)
 V2_OVERHEAD = NONCE + MAC
 
 
@@ -182,18 +199,18 @@ def argon2id(pw, salt, level):
     return key.raw
 
 
-def embed_bits(rows, w, order, bits):
+def embed_bits(rows, w, order, bits, ch=3):
     for pos, bit in enumerate(bits):
-        p = order[pos // 3]
-        i = (p % w) * 3 + pos % 3
+        p = order[pos // ch]
+        i = (p % w) * ch + pos % ch
         rows[p // w][i] = (rows[p // w][i] & 0xFE) | bit
 
 
-def read_bits(rows, w, order, start, n):
+def read_bits(rows, w, order, start, n, ch=3):
     out = 0
     for b in range(n):
-        p = order[(start + b) // 3]
-        out |= (rows[p // w][(p % w) * 3 + (start + b) % 3] & 1) << b
+        p = order[(start + b) // ch]
+        out |= (rows[p // w][(p % w) * ch + (start + b) % ch] & 1) << b
     return out
 
 
@@ -220,11 +237,11 @@ def seal(message, key):
     return nonce + ct.raw
 
 
-def read_payload(rows, w, order, min_len):
-    n = read_bits(rows, w, order, 0, 32)
-    if n < min_len or 32 + n * 8 > len(order) * 3:
+def read_payload(rows, w, order, min_len, ch=3):
+    n = read_bits(rows, w, order, 0, 32, ch)
+    if n < min_len or 32 + n * 8 > len(order) * ch:
         return None
-    return bytes(read_bits(rows, w, order, 32 + i * 8, 8) for i in range(n))
+    return bytes(read_bits(rows, w, order, 32 + i * 8, 8, ch) for i in range(n))
 
 
 # -- v2 (the format encode writes)
@@ -262,9 +279,13 @@ def permutation_v2(key, count):
     return a
 
 
-def salt_pixels_v2(count):
+def salt_pixel_count(ch):
+    return (SALT * 8 + ch - 1) // ch
+
+
+def salt_pixels_v2(count, ch=3):
     key = hashlib.blake2b(b"ScatterSteg v2 salt positions", digest_size=32).digest()
-    return permutation_v2(key, count)[:SALT_PIXELS]
+    return permutation_v2(key, count)[:salt_pixel_count(ch)]
 
 
 def keys_v2(pw, salt):
@@ -284,8 +305,9 @@ def payload_order_v2(scatter_key, count, salt_px):
 
 def layout_v2(rows, w, h, pw):
     """(salt pixels, payload order, encryption key) for an image and passphrase"""
-    salt_px = salt_pixels_v2(w * h)
-    salt = read_bits(rows, w, salt_px, 0, SALT * 8).to_bytes(SALT, "little")
+    ch = len(rows[0]) // w
+    salt_px = salt_pixels_v2(w * h, ch)
+    salt = read_bits(rows, w, salt_px, 0, SALT * 8, ch).to_bytes(SALT, "little")
     scatter_key, enc_key = keys_v2(pw, salt)
     return salt_px, payload_order_v2(scatter_key, w * h, salt_px), enc_key
 
@@ -296,14 +318,15 @@ def forge(src, dst, message, passphrase):
     can't tell the difference from LSB matching."""
     w, h, rows = read_png(src)
     rows = [bytearray(r) for r in rows]
+    ch = len(rows[0]) // w
     pw = passphrase.encode()
     salt = os.urandom(SALT)
-    salt_px = salt_pixels_v2(w * h)
+    salt_px = salt_pixels_v2(w * h, ch)
     scatter_key, enc_key = keys_v2(pw, salt)
-    embed_bits(rows, w, salt_px, to_bits(salt))
+    embed_bits(rows, w, salt_px, to_bits(salt), ch)
     embed_bits(rows, w, payload_order_v2(scatter_key, w * h, salt_px),
-               length_prefixed(seal(message, enc_key)))
-    write_png(dst, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
+               length_prefixed(seal(message, enc_key)), ch)
+    write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
 
 
 def reveal(src, passphrase):
@@ -311,7 +334,7 @@ def reveal(src, passphrase):
     Returns the plaintext bytes, or None if it does not authenticate."""
     w, h, rows = read_png(src)
     _, order, enc_key = layout_v2(rows, w, h, passphrase.encode())
-    payload = read_payload(rows, w, order, V2_OVERHEAD)
+    payload = read_payload(rows, w, order, V2_OVERHEAD, len(rows[0]) // w)
     return None if payload is None else open_box(payload, enc_key)
 
 
@@ -340,9 +363,9 @@ def forge_v1(src, dst, message, passphrase):
     write_png(dst, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
 
 
-def capacity_v2(w, h):
+def capacity_v2(w, h, ch=3):
     """Largest message encode accepts for a w x h cover"""
-    return ((w * h - SALT_PIXELS) * 3 - 32) // 8 - V2_OVERHEAD
+    return ((w * h - salt_pixel_count(ch)) * ch - 32) // 8 - V2_OVERHEAD
 
 
 def cover_pixel(x, y):
@@ -454,19 +477,122 @@ class CliTest(CliBase):
         self.assertDecodes(a, "same message")
         self.assertDecodes(b, "same message")
 
-    def test_non_rgb_cover(self):
-        # A grayscale cover is converted to RGB on load; the output still decodes
+    def test_gray_cover_stays_gray(self):
+        # A grayscale cover carries 1 bit per pixel and comes out grayscale
         gray = self.path("gray.png")
-        raw = b"".join(b"\x00" + bytes((x * 4 + y) & 0xFF for x in range(48)) for y in range(48))
-        with open(gray, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\n"
-                    + _chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 48, 8, 0, 0, 0, 0))
-                    + _chunk(b"IDAT", zlib.compress(raw))
-                    + _chunk(b"IEND", b""))
+        write_png(gray, 48, 48, lambda x, y: ((x * 4 + y) & 0xFF,), channels=1)
         out = self.path("steg.png")
         code, log = self.encode(b"from gray", out, src=gray)
         self.assertEqual(code, 0, log)
+        ihdr = dict(png_chunks(out))[b"IHDR"]
+        self.assertEqual(ihdr[8:10], bytes([8, 0]))  # 8-bit gray
         self.assertDecodes(out, "from gray")
+        _, _, before = read_png(gray)
+        _, _, after = read_png(out)
+        self.assertTrue(all(abs(a - b) <= 1 for rb, ra in zip(before, after) for a, b in zip(ra, rb)))
+
+    def test_gray_capacity(self):
+        gray = self.path("gray.png")
+        write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)
+        cap = capacity_v2(40, 40, 1)  # (1600 - 128 - 32) / 8 - 40 = 140
+        self.assertEqual(cap, 140)
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"g" * cap, out, src=gray)[0], 0)
+        self.assertDecodes(out, "g" * cap)
+        code, log = self.encode(b"g" * (cap + 1), self.path("over.png"), src=gray)
+        self.assertEqual(code, 1, log)
+        self.assertIn("too long", log)
+
+    def test_unsuitable_covers_refused(self):
+        def raw_png(path, depth, ctype, rows, extra=b""):
+            with open(path, "wb") as f:
+                f.write(b"\x89PNG\r\n\x1a\n"
+                        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, depth, ctype, 0, 0, 0))
+                        + extra + _chunk(b"IDAT", zlib.compress(rows)) + _chunk(b"IEND", b""))
+        palette = _chunk(b"PLTE", bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 9, 9, 9]))
+        cases = {
+            "palette": (8, 3, b"".join(b"\x00" + bytes((x + y) % 4 for x in range(32)) for y in range(32)),
+                        palette, "has a color palette"),
+            "gray 1-bit": (1, 0, b"".join(b"\x00" + bytes([0xAA if y % 2 else 0x55] * 4) for y in range(32)),
+                           b"", "has fewer than 8 bits per sample"),
+            "gray + tRNS": (8, 0, b"".join(b"\x00" + bytes(range(32)) for y in range(32)),
+                            _chunk(b"tRNS", struct.pack(">H", 5)), "has transparency"),
+        }
+        for name, (depth, ctype, rows, extra, message) in cases.items():
+            with self.subTest(cover=name):
+                src = self.path("cover-%s.png" % name.replace(" ", "_"))
+                raw_png(src, depth, ctype, rows, extra)
+                out = self.path("out.png")
+                code, log = self.encode(b"x", out, src=src)
+                self.assertEqual(code, 1, log)
+                self.assertIn(message, log)
+                self.assertFalse(os.path.exists(out))
+
+    def test_metadata_kept(self):
+        # The output carries the cover's ancillary chunks, so it looks like the
+        # same file; unknown chunks not marked safe to copy must be dropped
+        # A minimal valid ICC profile: 132-byte header (RGB, XYZ PCS, D50) and
+        # an empty tag table. Stored uncompressed: libpng rejects a compressed
+        # profile this tiny as "too short", which real profiles never are.
+        icc = bytearray(136)
+        struct.pack_into(">I", icc, 0, 136)
+        icc[8:12] = bytes([2, 0x10, 0, 0])
+        icc[12:24] = b"mntrRGB XYZ "
+        icc[36:40] = b"acsp"
+        struct.pack_into(">iii", icc, 68, 0xF6D6, 0x10000, 0xD32D)
+        keep = [
+            (b"gAMA", struct.pack(">I", 45455)),
+            (b"cHRM", struct.pack(">8I", 31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000)),
+            (b"iCCP", b"test profile\x00\x00" + zlib.compress(bytes(icc), 0)),
+            (b"pHYs", struct.pack(">IIB", 2835, 2835, 1)),
+            (b"tEXt", b"Comment\x00holiday snaps"),
+            (b"iTXt", b"Title\x00\x00\x00en\x00Titel\x00Vakantie \xe2\x9c\x93"),
+            (b"tIME", struct.pack(">HBBBBB", 2024, 7, 14, 9, 30, 0)),
+            (b"eXIf", b"MM\x00\x2a\x00\x00\x00\x08\x00\x00"),
+            (b"prVt", b"private, safe to copy"),
+        ]
+        drop = [(b"prVT", b"private, unsafe to copy")]
+        src = self.path("meta.png")
+        write_png(src, 64, 64, cover_pixel,
+                  extra=b"".join(_chunk(k, d) for k, d in keep + drop))
+        out = self.path("steg.png")
+        code, log = self.encode(b"with metadata", out, src=src)
+        self.assertEqual(code, 0, log)
+        chunks = png_chunks(out)
+        def normalized(kind, data):
+            # libpng recompresses the profile, so compare it decompressed
+            if kind == b"iCCP":
+                name, rest = data.split(b"\x00", 1)
+                return kind, name, zlib.decompress(rest[1:])
+            return kind, data
+        got = [normalized(k, d) for k, d in chunks]
+        for kind, data in keep:
+            with self.subTest(chunk=kind):
+                self.assertIn(normalized(kind, data), got)
+        self.assertNotIn(b"prVT", [k for k, _ in chunks])
+        self.assertDecodes(out, "with metadata")
+
+    def test_srgb_kept(self):
+        # sRGB and iCCP are alternatives (a file has one or the other)
+        src = self.path("srgb.png")
+        write_png(src, 32, 32, cover_pixel, extra=_chunk(b"sRGB", bytes([0])))
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"m", out, src=src)[0], 0)
+        self.assertIn((b"sRGB", bytes([0])), png_chunks(out))
+
+    def test_unwritable_text_chunk_dropped(self):
+        # libpng reads a tEXt chunk with an empty keyword but refuses to write
+        # one; the cover must still encode, without that chunk (found by fuzzing)
+        src = self.path("badtext.png")
+        write_png(src, 64, 64, cover_pixel,
+                  extra=_chunk(b"tEXt", b"\x00no keyword") + _chunk(b"tEXt", b"Fine\x00kept"))
+        out = self.path("steg.png")
+        code, log = self.encode(b"despite bad text", out, src=src)
+        self.assertEqual(code, 0, log)
+        chunks = png_chunks(out)
+        self.assertIn((b"tEXt", b"Fine\x00kept"), chunks)
+        self.assertNotIn((b"tEXt", b"\x00no keyword"), chunks)
+        self.assertDecodes(out, "despite bad text")
 
     def test_empty_message_writes_nothing(self):
         out = self.path("steg.png")
@@ -883,28 +1009,31 @@ class CrossCheckTest(CliBase):
     CASES = int(os.environ.get("SCATTERSTEG_CASES", "12"))
 
     def random_case(self, rng):
-        w, h = rng.randint(16, 72), rng.randint(16, 72)
-        capacity = capacity_v2(w, h)
+        ch = rng.choice([3, 3, 1])
+        lo = 16 if ch == 3 else 40  # gray holds 1 bit per pixel
+        w, h = rng.randint(lo, 72), rng.randint(lo, 72)
+        capacity = capacity_v2(w, h, ch)
         n = rng.choice([1, 2, rng.randint(1, capacity), capacity])
         # No NUL (printing stops there), no CR (the pty's \n -> \r\n
         # translation is undone on output) and no trailing newline (stripped)
         msg = bytes(rng.choice([b for b in range(1, 256) if b != 13]) for _ in range(n))
         msg = msg.rstrip(b"\n") or b"z"
         pw = "".join(rng.choice("abcxyz019 !é✓") for _ in range(rng.randint(12, 60)))
-        return w, h, msg, pw
+        return w, h, ch, msg, pw
 
-    def cover_for(self, w, h, rng):
+    def cover_for(self, w, h, ch, rng):
         noise = [rng.getrandbits(24) for _ in range(w * h)]
         write_png(self.cover, w, h,
-                  lambda x, y: tuple((noise[y * w + x] >> s) & 0xFF for s in (0, 8, 16)))
+                  lambda x, y: tuple((noise[y * w + x] >> s) & 0xFF for s in (0, 8, 16)[:ch]),
+                  channels=ch)
 
     def test_binary_encode_python_decode(self):
         import random
         rng = random.Random(self.SEED)
         for case in range(self.CASES):
-            w, h, msg, pw = self.random_case(rng)
-            with self.subTest(case=case, size=(w, h), length=len(msg), seed=self.SEED):
-                self.cover_for(w, h, rng)
+            w, h, ch, msg, pw = self.random_case(rng)
+            with self.subTest(case=case, size=(w, h), channels=ch, length=len(msg), seed=self.SEED):
+                self.cover_for(w, h, ch, rng)
                 out = self.path("steg.png")
                 code, log = self.encode(msg, out, passphrase=pw)
                 self.assertEqual(code, 0, log)
@@ -915,9 +1044,9 @@ class CrossCheckTest(CliBase):
         import random
         rng = random.Random(self.SEED + 1)
         for case in range(self.CASES):
-            w, h, msg, pw = self.random_case(rng)
-            with self.subTest(case=case, size=(w, h), length=len(msg), seed=self.SEED + 1):
-                self.cover_for(w, h, rng)
+            w, h, ch, msg, pw = self.random_case(rng)
+            with self.subTest(case=case, size=(w, h), channels=ch, length=len(msg), seed=self.SEED + 1):
+                self.cover_for(w, h, ch, rng)
                 out = self.path("forged.png")
                 forge(self.cover, out, msg, pw)
                 code, log = run(["decode", "-i", out], passphrases=[pw])
@@ -1017,6 +1146,21 @@ class FaultSweepTest(CliBase):
                 f.write(b"precious")
 
         self.sweep(["encode", "-i", self.cover, "-o", out], b"grow", [pw, pw], check)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_decode_sweep_v1_image(self):
+        # The v1 fallback only runs once v2 fails, so sweep a v1 image too
+        steg = self.path("v1.png")
+        forge_v1(self.cover, steg, b"old sweep", "correct horse")
+
+        def check(code, log):
+            if code == 0:
+                self.assertIn("old sweep\n", log)
+            else:
+                self.assertNotIn("old sweep", log)
+
+        faults = self.sweep(["decode", "-i", steg], b"", ["correct horse"], check)
+        self.assertGreater(faults, 5)
 
     def test_sweep_reaches_key_derivation(self):
         # Argon2id's 256 MiB allocation happens inside libsodium; the sweep

@@ -131,13 +131,15 @@ static void write_fixture(const char *path, const Fmt *f, uint32_t w, uint32_t h
     free(rows);
 }
 
+/* Gray images load as one channel, everything else as RGB */
 static int image_matches(const Image *img, const Fmt *f, uint32_t w, uint32_t h) {
-    if (img->width != w || img->height != h) return 0;
+    uint32_t ch = (f->color_type & PNG_COLOR_MASK_COLOR) ? 3 : 1;
+    if (img->width != w || img->height != h || img->channels != ch) return 0;
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t x = 0; x < w; x++) {
             uint8_t rgb[3];
             expected_rgb(f, x, y, rgb);
-            if (memcmp(&img->rows[y][x * 3], rgb, 3) != 0) return 0;
+            if (memcmp(&img->rows[y][x * ch], rgb, ch) != 0) return 0;
         }
     return 1;
 }
@@ -172,13 +174,14 @@ static void test_load_interlaced_palette(void) {
     check_variant("adam7pal.png", (Fmt){PNG_COLOR_TYPE_PALETTE, 8, PNG_INTERLACE_ADAM7, 0});
 }
 
-static void test_load_reports_dropped(void) {
-    struct { const char *name; Fmt f; const char *dropped; } cases[] = {
+static void test_load_reports_unsuitable(void) {
+    struct { const char *name; Fmt f; const char *unsuitable; } cases[] = {
         {"d_rgb8.png",    {PNG_COLOR_TYPE_RGB, 8, PNG_INTERLACE_NONE, 0},        NULL},
         {"d_adam7.png",   {PNG_COLOR_TYPE_RGB, 8, PNG_INTERLACE_ADAM7, 0},       NULL},
         {"d_gray8.png",   {PNG_COLOR_TYPE_GRAY, 8, PNG_INTERLACE_NONE, 0},       NULL},
-        {"d_gray1.png",   {PNG_COLOR_TYPE_GRAY, 1, PNG_INTERLACE_NONE, 0},       NULL},
-        {"d_pal8.png",    {PNG_COLOR_TYPE_PALETTE, 8, PNG_INTERLACE_NONE, 0},    NULL},
+        {"d_gray1.png",   {PNG_COLOR_TYPE_GRAY, 1, PNG_INTERLACE_NONE, 0},       "fewer than 8 bits per sample"},
+        {"d_pal8.png",    {PNG_COLOR_TYPE_PALETTE, 8, PNG_INTERLACE_NONE, 0},    "a color palette"},
+        {"d_pal2.png",    {PNG_COLOR_TYPE_PALETTE, 2, PNG_INTERLACE_NONE, 0},    "a color palette"},
         {"d_rgb16.png",   {PNG_COLOR_TYPE_RGB, 16, PNG_INTERLACE_NONE, 0},       "16-bit color"},
         {"d_rgba8.png",   {PNG_COLOR_TYPE_RGBA, 8, PNG_INTERLACE_NONE, 0},       "transparency"},
         {"d_ga8.png",     {PNG_COLOR_TYPE_GRAY_ALPHA, 8, PNG_INTERLACE_NONE, 0}, "transparency"},
@@ -190,11 +193,11 @@ static void test_load_reports_dropped(void) {
         Image *img = png_load(p);
         CHECK(img != NULL);
         if (img) {
-            int ok = cases[i].dropped ? img->dropped && strcmp(img->dropped, cases[i].dropped) == 0
-                                      : img->dropped == NULL;
+            const char *want = cases[i].unsuitable, *got = img->unsuitable;
+            int ok = want ? got && strcmp(got, want) == 0 : got == NULL;
             CHECK(ok);
-            if (!ok) fprintf(stderr, "    (%s: dropped = %s)\n", cases[i].name,
-                             img->dropped ? img->dropped : "NULL");
+            if (!ok) fprintf(stderr, "    (%s: unsuitable = %s)\n", cases[i].name,
+                             got ? got : "NULL");
         }
         image_free(img);
         remove(p);
@@ -280,9 +283,10 @@ static void test_load_tall_narrow(void) {
 /* ---- png_save ------------------------------------------------------------ */
 
 static Image *make_image(uint32_t w, uint32_t h) {
-    Image *img = malloc(sizeof(Image));
+    Image *img = calloc(1, sizeof(Image));
     img->width = w;
     img->height = h;
+    img->channels = 3;
     img->rows = malloc((h ? h : 1) * sizeof(uint8_t *));
     for (uint32_t y = 0; y < h; y++) {
         img->rows[y] = malloc((size_t)w * 3 + 1);
@@ -293,9 +297,9 @@ static Image *make_image(uint32_t w, uint32_t h) {
 }
 
 static int images_equal(const Image *a, const Image *b) {
-    if (a->width != b->width || a->height != b->height) return 0;
+    if (a->width != b->width || a->height != b->height || a->channels != b->channels) return 0;
     for (uint32_t y = 0; y < a->height; y++)
-        if (memcmp(a->rows[y], b->rows[y], (size_t)a->width * 3) != 0) return 0;
+        if (memcmp(a->rows[y], b->rows[y], (size_t)a->width * a->channels) != 0) return 0;
     return 1;
 }
 
@@ -306,6 +310,20 @@ static void test_save_roundtrip(void) {
     Image *back = png_load(p);
     CHECK(back && images_equal(img, back));
     CHECK(count_dir_entries() == 1);  /* no leftover temp file */
+    image_free(back);
+    image_free(img);
+    remove(p);
+}
+
+static void test_save_gray_roundtrip(void) {
+    /* Gray stays gray: one sample per pixel, written as an 8-bit gray PNG */
+    Image *img = make_image(17, 11);
+    img->channels = 1;
+    const char *p = path_in_dir("gray.png");
+    CHECK(png_save(img, p) == 0);
+    Image *back = png_load(p);
+    CHECK(back && back->channels == 1 && back->unsuitable == NULL);
+    CHECK(back && images_equal(img, back));
     image_free(back);
     image_free(img);
     remove(p);
@@ -473,7 +491,7 @@ int main(void) {
     RUN(test_load_palette_trns);
     RUN(test_load_interlaced);
     RUN(test_load_interlaced_palette);
-    RUN(test_load_reports_dropped);
+    RUN(test_load_reports_unsuitable);
     RUN(test_load_missing_file);
     RUN(test_load_empty_file);
     RUN(test_load_not_png);
@@ -481,6 +499,7 @@ int main(void) {
     RUN(test_load_huge_dimensions);
     RUN(test_load_tall_narrow);
     RUN(test_save_roundtrip);
+    RUN(test_save_gray_roundtrip);
     RUN(test_save_overwrites);
     RUN(test_save_mode_follows_umask);
     RUN(test_save_keeps_existing_mode);

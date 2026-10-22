@@ -80,19 +80,19 @@ You will be prompted for the passphrase used during encoding.
 
 ## File format (v2)
 
-There is no header or version marker in the image, since one would give the image away. Every pixel carries 3 bits, in the LSBs of R, G and B, written by LSB matching.
+There is no header or version marker in the image, since one would give the image away. Every pixel carries one bit per sample, in the LSBs of R, G and B (or of the gray value), written by LSB matching.
 
-1. **Salt** — 16 random bytes in the first 43 pixels of a public pixel order: `prng_permutation` keyed with `BLAKE2b-256("ScatterSteg v2 salt positions")`. Public, so the decoder can find it before it has a key, and spread out rather than in a corner.
+1. **Salt** — 16 random bytes in the first 43 pixels (128 for grayscale) of a public pixel order: `prng_permutation` keyed with `BLAKE2b-256("ScatterSteg v2 salt positions")`. Public, so the decoder can find it before it has a key, and spread out rather than in a corner.
 2. **Keys** — `master = Argon2id(passphrase, salt, opslimit 3, memlimit 256 MiB)`; the scatter key and encryption key are `crypto_kdf` subkeys 1 and 2 of `master`, context `ScatStg2`.
-3. **Payload** — a 32-bit little-endian length, then `nonce (24) || crypto_secretbox(message)`, in the order of `prng_permutation(scatter key)` with the 43 salt pixels removed.
+3. **Payload** — a 32-bit little-endian length, then `nonce (24) || crypto_secretbox(message)`, in the order of `prng_permutation(scatter key)` with the salt pixels removed.
 
 `prng_permutation(key, n)` is a forward Fisher–Yates shuffle (for `i` from 0 to n−2, swap slot `i` with `i + uniform(n − i)`), with `uniform` drawing little-endian 32-bit words from the ChaCha20-IETF keystream of `key` (zero nonce, counter from 0) and rejecting values below `2³² mod bound`. Decode tries v2 first and falls back to the v1 format of earlier versions.
 
 ## Limitations
 
-- The output is always an 8-bit RGB PNG. Grayscale and palette covers are converted to RGB, which keeps their pixels exactly. Covers with transparency or 16-bit color are refused, because converting them would visibly change the image.
+- Covers must be 8-bit RGB or 8-bit grayscale PNGs without transparency, and the output keeps that format. Covers with transparency, 16-bit color, a color palette or fewer than 8 bits per sample are refused, since the output would come out in a visibly different format. A grayscale cover holds a third as much as an RGB one.
 - Against the classic detectors, the chi-square attack and sample pair analysis, embedding was not detectable in testing: chi-square stayed negative even at full capacity, and sample pair analysis stayed at the cover's own value up to about 25% of capacity. Modern machine-learning steganalysis can detect LSB matching at lower payloads and hasn't been tested. Keep messages small relative to the cover; a few KB in a photo-sized image uses well under 1% of its capacity.
 - Images written before format v2 still decode, with a warning. In that old format most wrong passphrases could be rejected without running Argon2id (about 100× cheaper per guess on small images), so re-encode them.
 - Smooth, flat areas (digital art, gradients) hide data worse than noisy photographs, since any ±1 change stands out where neighbouring pixels are identical.
-- Anyone who has the original cover can find the changes by comparing pixels, and the output's PNG metadata and compression differ from the cover's.
+- The output keeps the cover's metadata chunks that come before the image data (gamma, color profile, physical size, text, modification time, EXIF, and unknown chunks marked safe to copy), but not chunks placed after it, and the image data is recompressed. Anyone who has the original cover can find the changes by comparing pixels.
 - This is a learning project, not a production security tool

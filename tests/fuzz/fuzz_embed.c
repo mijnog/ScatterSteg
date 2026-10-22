@@ -22,7 +22,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     size -= 34;
 
     uint32_t count = w * h;
-    Image img = {w, h, malloc(h * sizeof(uint8_t *))};
+    Image img = {.width = w, .height = h, .channels = 3, .rows = malloc(h * sizeof(uint8_t *))};
     for (uint32_t y = 0; y < h; y++) {
         img.rows[y] = malloc((size_t)w * 3);
         for (uint32_t i = 0; i < w * 3; i++)

@@ -122,9 +122,9 @@ static char *read_passphrase(const char *prompt) {
 /* ---- File format ----------------------------------------------------------
 
    v2 (written by encode):
-     salt     16 random bytes, in the LSBs of the first 43 pixels of a public
-              permutation (prng_permutation keyed with BLAKE2b of
-              V2_SALT_LABEL), so it is spread over the image
+     salt     16 random bytes, in the first 43 pixels (RGB; 128 for gray)
+              of a public permutation (prng_permutation keyed with BLAKE2b
+              of V2_SALT_LABEL), so it is spread over the image
      keys     master = Argon2id(passphrase, salt, "moderate": 3 passes,
               256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
               and 2 of master, context V2_KDF_CONTEXT
@@ -137,17 +137,25 @@ static char *read_passphrase(const char *prompt) {
      length, then [salt 16 | nonce 24 | secretbox] in prng_scatter order;
      encryption key = Argon2id(passphrase, salt, "interactive").
 
-   Every pixel carries 3 bits (R, G, B LSBs), written by LSB matching. There
-   is no version marker, which would itself give the image away: decode
-   tries v2, then v1. */
+   Every pixel carries one bit per sample (R, G, B, or gray LSBs), written
+   by LSB matching. There is no version marker, which would itself give the
+   image away: decode tries v2, then v1 (RGB only). */
 
 #define SALT_BYTES      crypto_pwhash_SALTBYTES             /* 16 */
-#define V2_SALT_PIXELS  ((SALT_BYTES * 8 + 2) / 3)          /* 43 */
-#define HEADER_PIXELS   11                                  /* 32-bit length */
+#define MAX_SALT_PIXELS (SALT_BYTES * 8)                    /* gray: 1 bit each */
 #define V2_SALT_LABEL   "ScatterSteg v2 salt positions"
 #define V2_KDF_CONTEXT  "ScatStg2"                          /* exactly 8 chars */
 #define V2_OVERHEAD     (crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES)
 #define V1_OVERHEAD     (SALT_BYTES + V2_OVERHEAD)
+
+/* Pixels holding the v2 salt, and the 32-bit length header */
+static uint32_t salt_pixel_count(uint32_t channels) {
+    return (SALT_BYTES * 8 + channels - 1) / channels;
+}
+
+static uint32_t header_pixels(uint32_t channels) {
+    return (32 + channels - 1) / channels;
+}
 
 typedef struct {
     uint8_t scatter[crypto_stream_chacha20_ietf_KEYBYTES];
@@ -177,11 +185,11 @@ static Keys *derive_keys_v2(const char *passphrase, const uint8_t salt[SALT_BYTE
 
 /* Where v2 keeps the salt: public, so the decoder can find it before it has
    any key. Returns 0, or -1 on allocation failure. */
-static int salt_pixels(uint32_t count, uint32_t out[V2_SALT_PIXELS]) {
+static int salt_pixels(uint32_t count, uint32_t k, uint32_t *out) {
     uint8_t key[crypto_stream_chacha20_ietf_KEYBYTES];
     crypto_generichash(key, sizeof(key), (const uint8_t *)V2_SALT_LABEL,
                        strlen(V2_SALT_LABEL), NULL, 0);
-    return prng_sample(key, count, V2_SALT_PIXELS, out);
+    return prng_sample(key, count, k, out);
 }
 
 static int cmp_u32(const void *a, const void *b) {
@@ -189,19 +197,19 @@ static int cmp_u32(const void *a, const void *b) {
     return (x > y) - (x < y);
 }
 
-/* The v2 message order: the secret permutation with the salt pixels taken
-   out, count - V2_SALT_PIXELS entries. NULL on allocation failure. */
+/* The v2 message order: the secret permutation with the k salt pixels
+   taken out, count - k entries. NULL on allocation failure. */
 static uint32_t *payload_order(const uint8_t *scatter_key, uint32_t count,
-                               const uint32_t salt_px[V2_SALT_PIXELS]) {
-    uint32_t sorted[V2_SALT_PIXELS];
-    memcpy(sorted, salt_px, sizeof(sorted));
-    qsort(sorted, V2_SALT_PIXELS, sizeof(uint32_t), cmp_u32);
+                               const uint32_t *salt_px, uint32_t k) {
+    uint32_t sorted[MAX_SALT_PIXELS];
+    memcpy(sorted, salt_px, k * sizeof(uint32_t));
+    qsort(sorted, k, sizeof(uint32_t), cmp_u32);
 
     uint32_t *order = prng_permutation(scatter_key, count);
     if (!order) return NULL;
     uint32_t n = 0;
     for (uint32_t i = 0; i < count; i++)
-        if (!bsearch(&order[i], sorted, V2_SALT_PIXELS, sizeof(uint32_t), cmp_u32))
+        if (!bsearch(&order[i], sorted, k, sizeof(uint32_t), cmp_u32))
             order[n++] = order[i];
     return order;
 }
@@ -232,8 +240,8 @@ enum { DECODED, NO_MATCH, FAILED };
    FAILED (with a message) if out of memory. */
 static int read_payload(const Image *img, const uint32_t *order, uint32_t n,
                         uint32_t min_len, uint8_t **payload, uint32_t *len) {
-    if (n < HEADER_PIXELS) return NO_MATCH;
-    uint32_t max_len = (uint32_t)(((uint64_t)n * 3 - 32) / 8);
+    if (n < header_pixels(img->channels)) return NO_MATCH;
+    uint32_t max_len = (uint32_t)(((uint64_t)n * img->channels - 32) / 8);
     *len = embed_peek_len(img, order, n);
     if (*len < min_len || *len > max_len) return NO_MATCH;
     *payload = malloc(*len);
@@ -267,18 +275,19 @@ static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
 
 static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
                      uint8_t **plaintext, uint32_t *pt_len) {
-    if (count < V2_SALT_PIXELS + HEADER_PIXELS) return NO_MATCH;
-    uint32_t salt_px[V2_SALT_PIXELS];
+    uint32_t k = salt_pixel_count(img->channels);
+    if (count < k + header_pixels(img->channels)) return NO_MATCH;
+    uint32_t salt_px[MAX_SALT_PIXELS];
     uint8_t salt[SALT_BYTES];
-    if (salt_pixels(count, salt_px) != 0) {
+    if (salt_pixels(count, k, salt_px) != 0) {
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    embed_read_raw(img, salt_px, V2_SALT_PIXELS, salt, SALT_BYTES);
+    embed_read_raw(img, salt_px, k, salt, SALT_BYTES);
 
     Keys *keys = derive_keys_v2(passphrase, salt);
     if (!keys) return FAILED;
-    uint32_t *order = payload_order(keys->scatter, count, salt_px);
+    uint32_t *order = payload_order(keys->scatter, count, salt_px, k);
     if (!order) {
         sodium_free(keys);
         fprintf(stderr, "Error: allocation failed\n");
@@ -287,7 +296,7 @@ static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
 
     uint8_t *payload = NULL;
     uint32_t len = 0;
-    int r = read_payload(img, order, count - V2_SALT_PIXELS, V2_OVERHEAD, &payload, &len);
+    int r = read_payload(img, order, count - k, V2_OVERHEAD, &payload, &len);
     free(order);
     if (r == DECODED)
         r = open_box(payload, len, keys->enc, plaintext, pt_len);
@@ -299,6 +308,7 @@ static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
 
 static int decode_v1(const Image *img, uint32_t count, const char *passphrase,
                      uint8_t **plaintext, uint32_t *pt_len) {
+    if (img->channels != 3) return NO_MATCH;  /* v1 only ever wrote RGB */
     uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES];
     derive_scatter_key_v1(passphrase, scatter_key);
     uint32_t *order = prng_scatter(scatter_key, count);
@@ -456,12 +466,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        /* The output is 8-bit RGB: a cover that would lose something in that
-           conversion comes out visibly different, which gives it away */
-        if (img->dropped) {
+        /* The output is 8-bit RGB or gray: any other cover would come out in
+           a visibly different format, which gives it away */
+        if (img->unsuitable) {
             free_passphrase(passphrase);
             fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
-                            "use an 8-bit RGB PNG as the cover\n", input, img->dropped);
+                            "use an 8-bit RGB or grayscale PNG without transparency "
+                            "as the cover\n", input, img->unsuitable);
             image_free(img);
             return 1;
         }
@@ -473,7 +484,8 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         uint32_t count = img->width * img->height;
-        if (count < V2_SALT_PIXELS + HEADER_PIXELS) {
+        uint32_t k = salt_pixel_count(img->channels);
+        if (count < k + header_pixels(img->channels)) {
             free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image too small to hide a message\n");
@@ -489,10 +501,10 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        uint32_t salt_px[V2_SALT_PIXELS];
+        uint32_t salt_px[MAX_SALT_PIXELS];
         uint32_t *order = NULL;
-        if (salt_pixels(count, salt_px) == 0)
-            order = payload_order(keys->scatter, count, salt_px);
+        if (salt_pixels(count, k, salt_px) == 0)
+            order = payload_order(keys->scatter, count, salt_px, k);
         if (!order) {
             sodium_free(keys);
             image_free(img);
@@ -536,7 +548,7 @@ int main(int argc, char *argv[]) {
         sodium_free(keys);
         sodium_free(message);
 
-        int embedded = embed_encode(img, order, count - V2_SALT_PIXELS, payload, payload_len);
+        int embedded = embed_encode(img, order, count - k, payload, payload_len);
         sodium_memzero(payload, payload_len);
         free(payload);
         free(order);
@@ -545,7 +557,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: message too long for this image\n");
             return 1;
         }
-        embed_write_raw(img, salt_px, V2_SALT_PIXELS, salt, SALT_BYTES);
+        embed_write_raw(img, salt_px, k, salt, SALT_BYTES);
 
         if (png_save(img, output) != 0) {
             fprintf(stderr, "Error: could not write '%s': %s\n", output,
@@ -579,7 +591,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         uint32_t count = img->width * img->height;
-        if (count < HEADER_PIXELS) {
+        if (count < header_pixels(img->channels)) {
             free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image too small to contain a message\n");

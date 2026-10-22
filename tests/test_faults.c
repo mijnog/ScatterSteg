@@ -32,9 +32,10 @@ static int count_open_fds(void) {
 }
 
 static Image *make_image(uint32_t w, uint32_t h) {
-    Image *img = malloc(sizeof(Image));
+    Image *img = calloc(1, sizeof(Image));
     img->width = w;
     img->height = h;
+    img->channels = 3;
     img->rows = malloc(h * sizeof(uint8_t *));
     for (uint32_t y = 0; y < h; y++) {
         img->rows[y] = malloc((size_t)w * 3);

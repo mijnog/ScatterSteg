@@ -1,5 +1,7 @@
 /* libFuzzer target: png_load on arbitrary bytes. Chunk CRCs are recomputed
-   first, so mutations reach the decoder instead of failing the CRC check. */
+   first, so mutations reach the decoder instead of failing the CRC check.
+   Every image that loads is saved again (copying its metadata, as encode
+   does) and must reload with the same pixels. */
 #include "png_io.h"
 #include <png.h>
 #include <zlib.h>
@@ -8,11 +10,12 @@
 #include <string.h>
 #include <unistd.h>
 
-static char path[64];
+static char path[64], out_path[64];
 
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
     (void)argc; (void)argv;
     snprintf(path, sizeof(path), "/dev/shm/fuzz-png-load-%d.png", (int)getpid());
+    snprintf(out_path, sizeof(out_path), "/dev/shm/fuzz-png-save-%d.png", (int)getpid());
     return 0;
 }
 
@@ -40,13 +43,24 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     Image *img = png_load(path);
     if (img) {
-        /* Whatever loads must be a consistent, fully readable RGB image */
+        /* Whatever loads must be a consistent, fully readable gray or RGB image */
         if (img->width == 0 || img->height == 0) abort();
-        if ((size_t)img->width * img->height * 3 > ((size_t)1 << 30)) abort();
+        if (img->channels != 1 && img->channels != 3) abort();
+        if ((size_t)img->width * img->height * img->channels > ((size_t)1 << 30)) abort();
         volatile uint8_t sink = 0;
         for (uint32_t y = 0; y < img->height; y++)
-            sink ^= img->rows[y][0] ^ img->rows[y][(size_t)img->width * 3 - 1];
+            sink ^= img->rows[y][0] ^ img->rows[y][(size_t)img->width * img->channels - 1];
         (void)sink;
+
+        if (png_save(img, out_path) != 0) abort();
+        Image *back = png_load(out_path);
+        if (!back || back->width != img->width || back->height != img->height ||
+            back->channels != img->channels || back->unsuitable)
+            abort();
+        for (uint32_t y = 0; y < img->height; y++)
+            if (memcmp(back->rows[y], img->rows[y], (size_t)img->width * img->channels) != 0)
+                abort();
+        image_free(back);
         image_free(img);
     }
     return 0;

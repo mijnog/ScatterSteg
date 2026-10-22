@@ -15,23 +15,23 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size < 2) return 0;
-    uint32_t w = data[0] % 200 + 1, h = data[1] % 200 + 1;
-    data += 2;
-    size -= 2;
+    if (size < 3) return 0;
+    uint32_t w = data[0] % 200 + 1, h = data[1] % 200 + 1, ch = (data[2] & 1) ? 1 : 3;
+    data += 3;
+    size -= 3;
 
-    Image img = {w, h, malloc(h * sizeof(uint8_t *))};
+    Image img = {.width = w, .height = h, .channels = ch, .rows = malloc(h * sizeof(uint8_t *))};
     for (uint32_t y = 0; y < h; y++) {
-        img.rows[y] = malloc((size_t)w * 3);
-        for (uint32_t i = 0; i < w * 3; i++)
-            img.rows[y][i] = size ? data[(y * w * 3 + i) % size] : (uint8_t)i;
+        img.rows[y] = malloc((size_t)w * ch);
+        for (uint32_t i = 0; i < w * ch; i++)
+            img.rows[y][i] = size ? data[(y * w * ch + i) % size] : (uint8_t)i;
     }
 
     if (png_save(&img, path) != 0) abort();
     Image *back = png_load(path);
-    if (!back || back->width != w || back->height != h) abort();
+    if (!back || back->width != w || back->height != h || back->channels != ch) abort();
     for (uint32_t y = 0; y < h; y++)
-        if (memcmp(back->rows[y], img.rows[y], (size_t)w * 3) != 0) abort();
+        if (memcmp(back->rows[y], img.rows[y], (size_t)w * ch) != 0) abort();
 
     image_free(back);
     for (uint32_t y = 0; y < h; y++) free(img.rows[y]);

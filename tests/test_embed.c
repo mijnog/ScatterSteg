@@ -5,9 +5,10 @@
 #include <string.h>
 
 static Image *make_image(uint32_t w, uint32_t h, uint8_t fill) {
-    Image *img = malloc(sizeof(Image));
-    img->width  = w;
-    img->height = h;
+    Image *img = calloc(1, sizeof(Image));
+    img->width    = w;
+    img->height   = h;
+    img->channels = 3;
     img->rows   = malloc(h * sizeof(uint8_t *));
     for (uint32_t y = 0; y < h; y++) {
         img->rows[y] = malloc((size_t)w * 3);

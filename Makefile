@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c17 -g
 LIBS    = -lsodium -lpng
 
-SRCS    = main.c prng.c embed.c png_io.c
+SRCS    = main.c prng.c embed.c png_io.c atomic_write.c
 OBJS    = $(SRCS:.c=.o)
 TARGET  = scattersteg
 
@@ -28,7 +28,7 @@ TEST_DIR    = tests/build
 TEST_CFLAGS = $(CFLAGS) -I. -Itests -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_ENV    = ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_faults
-HDRS        = png_io.h prng.h embed.h
+HDRS        = png_io.h prng.h embed.h atomic_write.h
 
 # Fault-injection build: the sources force-include tests/fault.h, so a test
 # can make the Nth malloc/fopen/fclose/rename/... fail (see tests/fault.c)
@@ -45,17 +45,17 @@ cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault
 	$(TEST_ENV) SCATTERSTEG=$(TEST_DIR)/scattersteg SCATTERSTEG_FAULT=$(TEST_DIR)/scattersteg-fault \
 		python3 tests/test_cli.py
 
-$(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c tests/test.h $(HDRS) | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c -o $@ -lpng -lsodium
+$(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
+	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lsodium
 
 $(TEST_DIR)/test_prng: tests/test_prng.c prng.c tests/test.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_prng.c prng.c -o $@ -lsodium
 
-$(TEST_DIR)/test_png_io: tests/test_png_io.c png_io.c tests/test.h $(HDRS) | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_png_io.c png_io.c -o $@ -lpng -lz
+$(TEST_DIR)/test_png_io: tests/test_png_io.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
+	$(CC) $(TEST_CFLAGS) tests/test_png_io.c png_io.c atomic_write.c -o $@ -lpng -lz
 
-$(TEST_DIR)/test_faults: tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/fault.o tests/test.h | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/fault.o -o $@ -lpng
+$(TEST_DIR)/test_faults: tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o tests/test.h | $(TEST_DIR)
+	$(CC) $(TEST_CFLAGS) tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o -o $@ -lpng
 
 $(TEST_DIR)/scattersteg: $(SRCS) $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) $(SRCS) -o $@ $(LIBS)
@@ -99,14 +99,14 @@ fuzz: $(FUZZERS)
 	done; \
 	if [ $$fail != 0 ]; then grep -h -A5 -E '^==[0-9]+==|^SUMMARY' fuzz_*.log; ls crash-* 2>/dev/null; exit 1; fi
 
-$(FUZZ_DIR)/fuzz_png_load: tests/fuzz/fuzz_png_load.c png_io.c $(HDRS) | $(FUZZ_DIR)
-	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_load.c png_io.c -o $@ -lpng -lz
+$(FUZZ_DIR)/fuzz_png_load: tests/fuzz/fuzz_png_load.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_load.c png_io.c atomic_write.c -o $@ -lpng -lz
 
 $(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_embed.c embed.c prng.c -o $@ -lsodium
 
-$(FUZZ_DIR)/fuzz_png_roundtrip: tests/fuzz/fuzz_png_roundtrip.c png_io.c $(HDRS) | $(FUZZ_DIR)
-	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c -o $@ -lpng
+$(FUZZ_DIR)/fuzz_png_roundtrip: tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c -o $@ -lpng
 
 # Line coverage over the whole suite, fault sweeps included. All binaries
 # link the same instrumented objects so their counts add up.
@@ -116,10 +116,10 @@ COV_OBJS    = $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sod
 
 coverage: $(COV_OBJS) | $(COV_DIR)
 	rm -f $(COV_DIR)/*.gcda
-	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lsodium
+	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_prng.c $(COV_DIR)/prng.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_prng -lsodium
-	$(CC) $(COV_CFLAGS) tests/test_png_io.c $(COV_DIR)/png_io.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_png_io -lpng -lz
-	$(CC) $(COV_CFLAGS) tests/test_faults.c $(COV_DIR)/png_io.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_faults -lpng
+	$(CC) $(COV_CFLAGS) tests/test_png_io.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_png_io -lpng -lz
+	$(CC) $(COV_CFLAGS) tests/test_faults.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_faults -lpng
 	$(CC) $(COV_CFLAGS) $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sodium.o -o $(COV_DIR)/scattersteg $(LIBS)
 	for t in test_embed test_prng test_png_io test_faults; do $(COV_DIR)/$$t > /dev/null 2>&1 || exit 1; done
 	SCATTERSTEG=$(COV_DIR)/scattersteg SCATTERSTEG_FAULT=$(COV_DIR)/scattersteg \

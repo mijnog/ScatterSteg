@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The embed functions take a Carrier; these tests use PNG images */
+#define C(img) (&(Carrier){(img), NULL, 0})
+
 static Image *make_image(uint32_t w, uint32_t h, uint8_t fill) {
     Image *img = calloc(1, sizeof(Image));
     img->width    = w;
@@ -23,7 +26,7 @@ static EmbedStats last_stats;
 static int encode(Image *img, const uint32_t *idx, uint32_t count,
                   const uint8_t *data, uint32_t len) {
     EmbedPlan *plan = embed_plan_new();
-    int r = embed_encode(img, idx, count, data, len, plan);
+    int r = embed_encode(C(img), idx, count, data, len, plan);
     if (r == 0 && embed_apply(plan, &last_stats) != 0) r = -2;
     embed_plan_free(plan);
     return r;
@@ -32,7 +35,7 @@ static int encode(Image *img, const uint32_t *idx, uint32_t count,
 static int write_raw(Image *img, const uint32_t *idx, uint32_t count,
                      const uint8_t *data, uint32_t len) {
     EmbedPlan *plan = embed_plan_new();
-    int r = embed_write_raw(img, idx, count, data, len, plan);
+    int r = embed_write_raw(C(img), idx, count, data, len, plan);
     if (r == 0 && embed_apply(plan, &last_stats) != 0) r = -2;
     embed_plan_free(plan);
     return r;
@@ -59,10 +62,10 @@ static void test_roundtrip(void) {
     const uint8_t msg[] = "hello, scattered world";
 
     CHECK(encode(img, idx, count, msg, sizeof(msg)) == 0);
-    CHECK(embed_peek_len(img, idx, count) == sizeof(msg));
+    CHECK(embed_peek_len(C(img), idx, count) == sizeof(msg));
 
     uint8_t out[sizeof(msg)] = {0};
-    embed_decode(img, idx, count, out, sizeof(out));
+    embed_decode(C(img), idx, count, out, sizeof(out));
     CHECK(memcmp(out, msg, sizeof(msg)) == 0);
 
     free(idx);
@@ -129,7 +132,7 @@ static void test_matching_never_wraps(void) {
                 if (abs(img->rows[y][i] - fill) > 1) ok = 0;
         CHECK(ok);
         uint8_t out[590];
-        embed_decode(img, idx, 1600, out, sizeof(out));
+        embed_decode(C(img), idx, 1600, out, sizeof(out));
         CHECK(memcmp(out, msg, sizeof(msg)) == 0);
         free(idx);
         image_free(img);
@@ -162,7 +165,7 @@ static void test_capacity_boundary(void) {
     CHECK(encode(img, idx, 24, msg, 6) == -1);
 
     uint8_t out[5] = {0};
-    embed_decode(img, idx, 24, out, 5);
+    embed_decode(C(img), idx, 24, out, 5);
     CHECK(memcmp(out, msg, 5) == 0);
 
     free(idx);
@@ -174,7 +177,7 @@ static void test_too_small_for_header(void) {
     Image *img = make_image(10, 1, 0);
     uint32_t *idx = identity(10);
     CHECK(encode(img, idx, 10, NULL, 0) == -1);
-    CHECK(embed_peek_len(img, idx, 10) == 0);
+    CHECK(embed_peek_len(C(img), idx, 10) == 0);
     free(idx);
     image_free(img);
 }
@@ -198,7 +201,7 @@ static void test_decode_clamps_to_out_size(void) {
     /* out has room for 4 bytes plus a canary; decode must stop at 4 */
     uint8_t out[5];
     memset(out, 0xEE, sizeof(out));
-    embed_decode(img, idx, 128, out, 4);
+    embed_decode(C(img), idx, 128, out, 4);
     CHECK(memcmp(out, "0123", 4) == 0);
     CHECK(out[4] == 0xEE);
 
@@ -216,7 +219,7 @@ static void test_decode_stops_at_count(void) {
     CHECK(encode(img, idx, 512, msg, sizeof(msg)) == 0);
 
     uint8_t out[100] = {0};
-    embed_decode(img, idx, 20, out, sizeof(out));  /* ASan catches over-reads */
+    embed_decode(C(img), idx, 20, out, sizeof(out));  /* ASan catches over-reads */
     CHECK(out[0] == 0x33);  /* bits 32..39 are inside the first 20 pixels */
     free(idx);
     image_free(img);
@@ -226,7 +229,7 @@ static void test_empty_message(void) {
     Image *img = make_image(4, 4, 0x11);
     uint32_t *idx = identity(16);
     CHECK(encode(img, idx, 16, NULL, 0) == 0);
-    CHECK(embed_peek_len(img, idx, 16) == 0);
+    CHECK(embed_peek_len(C(img), idx, 16) == 0);
     free(idx);
     image_free(img);
 }
@@ -240,7 +243,7 @@ static void test_raw_roundtrip(void) {
     uint8_t salt[16], back[16];
     for (int i = 0; i < 16; i++) salt[i] = (uint8_t)(i * 29 + 7);
     CHECK(write_raw(img, px, 43, salt, 16) == 0);
-    CHECK(embed_read_raw(img, px, 43, back, 16) == 0);
+    CHECK(embed_read_raw(C(img), px, 43, back, 16) == 0);
     CHECK(memcmp(salt, back, 16) == 0);
     int within_one = 1;
     for (uint32_t y = 0; y < 10; y++)
@@ -250,7 +253,7 @@ static void test_raw_roundtrip(void) {
     /* 17 bytes don't fit in 43 pixels */
     uint8_t big[17] = {0};
     CHECK(write_raw(img, px, 43, big, 17) == -1);
-    CHECK(embed_read_raw(img, px, 43, big, 17) == -1);
+    CHECK(embed_read_raw(C(img), px, 43, big, 17) == -1);
     image_free(img);
     image_free(orig);
 }
@@ -296,7 +299,7 @@ static void test_exchange_preserves_histogram(void) {
     CHECK(moved <= unpaired);                       /* only nudges move it */
 
     uint8_t *out = malloc(len);
-    embed_decode(img, idx, count, out, len);
+    embed_decode(C(img), idx, count, out, len);
     CHECK(memcmp(out, msg, len) == 0);
     free(out);
     free(msg);
@@ -311,7 +314,7 @@ static void test_recording_changes_nothing(void) {
     EmbedPlan *plan = embed_plan_new();
     uint32_t *idx = identity(16);
     uint8_t ones[2] = {0xFF, 0xFF};
-    CHECK(embed_write_raw(img, idx, 16, ones, 2, plan) == 0);
+    CHECK(embed_write_raw(C(img), idx, 16, ones, 2, plan) == 0);
     int same = 1;
     for (uint32_t y = 0; y < 4; y++) same &= memcmp(img->rows[y], orig->rows[y], 12) == 0;
     CHECK(same);

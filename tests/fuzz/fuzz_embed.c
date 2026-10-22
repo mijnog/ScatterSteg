@@ -29,29 +29,30 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             img.rows[y][i] = size ? data[(y * w * 3 + i) % size] : 0;
     }
 
+    Carrier carrier = carrier_of_image(&img);
     uint32_t *idx = prng_permutation(key, count);
     if (!idx) abort();
 
     /* Garbage decode: header bits are whatever the pixels hold */
-    uint32_t claimed = embed_peek_len(&img, idx, count);
+    uint32_t claimed = embed_peek_len(&carrier, idx, count);
     uint32_t cap = count * 3 >= 32 ? (count * 3 - 32) / 8 : 0;
     uint32_t want = claimed < cap ? claimed : cap;
     uint8_t *junk = malloc(want ? want : 1);
-    embed_decode(&img, idx, count, junk, want);
+    embed_decode(&carrier, idx, count, junk, want);
     free(junk);
 
     /* Round trip */
     uint32_t len = (uint32_t)size;
     EmbedPlan *plan = embed_plan_new();
     if (!plan) abort();
-    int r = embed_encode(&img, idx, count, data, len, plan);
+    int r = embed_encode(&carrier, idx, count, data, len, plan);
     if (r == 0 && embed_apply(plan, NULL) != 0) abort();
     embed_plan_free(plan);
     if ((uint64_t)32 + (uint64_t)len * 8 <= (uint64_t)count * 3) {
         if (r != 0) abort();
-        if (embed_peek_len(&img, idx, count) != len) abort();
+        if (embed_peek_len(&carrier, idx, count) != len) abort();
         uint8_t *out = malloc(len ? len : 1);
-        embed_decode(&img, idx, count, out, len);
+        embed_decode(&carrier, idx, count, out, len);
         if (memcmp(out, data, len) != 0) abort();
         free(out);
     } else if (r != -1) {

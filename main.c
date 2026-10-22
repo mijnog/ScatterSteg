@@ -238,18 +238,18 @@ enum { DECODED, NO_MATCH, FAILED };
 /* Read the length-prefixed payload in `order` (n pixels). NO_MATCH if the
    length is out of range, as it is for a wrong passphrase or format;
    FAILED (with a message) if out of memory. */
-static int read_payload(const Image *img, const uint32_t *order, uint32_t n,
+static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
                         uint32_t min_len, uint8_t **payload, uint32_t *len) {
-    if (n < header_pixels(img->channels)) return NO_MATCH;
-    uint32_t max_len = (uint32_t)(((uint64_t)n * img->channels - 32) / 8);
-    *len = embed_peek_len(img, order, n);
+    if (n < header_pixels(carrier_channels(c))) return NO_MATCH;
+    uint32_t max_len = (uint32_t)(((uint64_t)n * carrier_channels(c) - 32) / 8);
+    *len = embed_peek_len(c, order, n);
     if (*len < min_len || *len > max_len) return NO_MATCH;
     *payload = malloc(*len);
     if (!*payload) {
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    embed_decode(img, order, n, *payload, *len);
+    embed_decode(c, order, n, *payload, *len);
     return DECODED;
 }
 
@@ -273,17 +273,18 @@ static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
     return DECODED;
 }
 
-static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
+static int decode_v2(const Carrier *c, const char *passphrase,
                      uint8_t **plaintext, uint32_t *pt_len) {
-    uint32_t k = salt_pixel_count(img->channels);
-    if (count < k + header_pixels(img->channels)) return NO_MATCH;
+    uint32_t count = carrier_positions(c);
+    uint32_t k = salt_pixel_count(carrier_channels(c));
+    if (count < k + header_pixels(carrier_channels(c))) return NO_MATCH;
     uint32_t salt_px[MAX_SALT_PIXELS];
     uint8_t salt[SALT_BYTES];
     if (salt_pixels(count, k, salt_px) != 0) {
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    embed_read_raw(img, salt_px, k, salt, SALT_BYTES);
+    embed_read_raw(c, salt_px, k, salt, SALT_BYTES);
 
     Keys *keys = derive_keys_v2(passphrase, salt);
     if (!keys) return FAILED;
@@ -296,7 +297,7 @@ static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
 
     uint8_t *payload = NULL;
     uint32_t len = 0;
-    int r = read_payload(img, order, count - k, V2_OVERHEAD, &payload, &len);
+    int r = read_payload(c, order, count - k, V2_OVERHEAD, &payload, &len);
     free(order);
     if (r == DECODED)
         r = open_box(payload, len, keys->enc, plaintext, pt_len);
@@ -306,9 +307,10 @@ static int decode_v2(const Image *img, uint32_t count, const char *passphrase,
     return r;
 }
 
-static int decode_v1(const Image *img, uint32_t count, const char *passphrase,
+static int decode_v1(const Carrier *c, const char *passphrase,
                      uint8_t **plaintext, uint32_t *pt_len) {
-    if (img->channels != 3) return NO_MATCH;  /* v1 only ever wrote RGB */
+    if (!c->img || c->img->channels != 3) return NO_MATCH;  /* v1 only ever wrote RGB PNG */
+    uint32_t count = carrier_positions(c);
     uint8_t scatter_key[crypto_stream_chacha20_KEYBYTES];
     derive_scatter_key_v1(passphrase, scatter_key);
     uint32_t *order = prng_scatter(scatter_key, count);
@@ -320,7 +322,7 @@ static int decode_v1(const Image *img, uint32_t count, const char *passphrase,
 
     uint8_t *payload = NULL;
     uint32_t len = 0;
-    int r = read_payload(img, order, count, V1_OVERHEAD, &payload, &len);
+    int r = read_payload(c, order, count, V1_OVERHEAD, &payload, &len);
     free(order);
     if (r != DECODED) return r;
 
@@ -483,9 +485,10 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: image dimensions overflow\n");
             return 1;
         }
-        uint32_t count = img->width * img->height;
-        uint32_t k = salt_pixel_count(img->channels);
-        if (count < k + header_pixels(img->channels)) {
+        Carrier carrier = carrier_of_image(img);
+        uint32_t count = carrier_positions(&carrier);
+        uint32_t k = salt_pixel_count(carrier_channels(&carrier));
+        if (count < k + header_pixels(carrier_channels(&carrier))) {
             free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image too small to hide a message\n");
@@ -551,7 +554,7 @@ int main(int argc, char *argv[]) {
         /* Record every change (payload and salt), then make them together so
            they can be paired up to keep the histogram (see embed_apply) */
         EmbedPlan *plan = embed_plan_new();
-        int embedded = plan ? embed_encode(img, order, count - k, payload, payload_len, plan) : 0;
+        int embedded = plan ? embed_encode(&carrier, order, count - k, payload, payload_len, plan) : 0;
         sodium_memzero(payload, payload_len);
         free(payload);
         free(order);
@@ -561,7 +564,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: message too long for this image\n");
             return 1;
         }
-        if (!plan || embed_write_raw(img, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
+        if (!plan || embed_write_raw(&carrier, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
             embed_apply(plan, NULL) != 0) {
             embed_plan_free(plan);
             image_free(img);
@@ -601,8 +604,8 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: image dimensions overflow\n");
             return 1;
         }
-        uint32_t count = img->width * img->height;
-        if (count < header_pixels(img->channels)) {
+        Carrier carrier = carrier_of_image(img);
+        if (carrier_positions(&carrier) < header_pixels(carrier_channels(&carrier))) {
             free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image too small to contain a message\n");
@@ -611,9 +614,9 @@ int main(int argc, char *argv[]) {
 
         uint8_t *plaintext = NULL;
         uint32_t pt_len = 0;
-        int r = decode_v2(img, count, passphrase, &plaintext, &pt_len);
+        int r = decode_v2(&carrier, passphrase, &plaintext, &pt_len);
         if (r == NO_MATCH) {
-            r = decode_v1(img, count, passphrase, &plaintext, &pt_len);
+            r = decode_v1(&carrier, passphrase, &plaintext, &pt_len);
             if (r == DECODED)
                 fprintf(stderr, "Warning: this image uses the old v1 format, which protects "
                                 "the passphrase less well; re-encode it\n");

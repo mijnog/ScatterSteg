@@ -1,12 +1,10 @@
-#define _XOPEN_SOURCE 700  /* mkstemp, fchmod, fchown, fsync, realpath */
 #include "png_io.h"
+#include "atomic_write.h"
 #include <png.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
 
@@ -220,77 +218,24 @@ static void copy_metadata(png_structp w, png_infop wi, const PngMeta *m) {
         }
 }
 
-/* Write to a temp file beside `path`, then rename() it into place. The
-   destination is only replaced once the new PNG is complete, so a failed
-   write never truncates or deletes an existing file (e.g. -i a.png -o a.png).
-   On failure, errno describes the cause (0 if libpng failed internally). */
-int png_save(const Image *img, const char *path) {
-    /* Write through a symlink to the file it points to rather than replacing
-       the link itself. A new path, or a dangling link, is used as is. */
-    char *target = realpath(path, NULL);
-    const char *dest = target ? target : path;
-    struct stat existing;
-    int replacing = stat(dest, &existing) == 0;
-
-    errno = 0;
-    size_t len = strlen(dest);
-    char *tmp = malloc(len + sizeof(".XXXXXX"));
-    if (!tmp) {
-        int err = errno;
-        free(target);
-        errno = err;
+/* Writes the image as a PNG stream. Called by atomic_write, which leaves
+   errno at 0 so a libpng error reports as such. */
+static int write_png(FILE *fp, const void *ctx) {
+    const Image *img = ctx;
+    png_structp png = png_create_write_struct_2(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL,
+                                                NULL, capped_malloc, capped_free);
+    if (!png) return -1;
+    png_infop info = png_create_info_struct(png);
+    if (!info) {
+        png_destroy_write_struct(&png, NULL);
         return -1;
     }
-    memcpy(tmp, dest, len);
-    memcpy(tmp + len, ".XXXXXX", sizeof(".XXXXXX"));
-
-    FILE *volatile fp = NULL;  /* volatile: set to NULL after setjmp */
-    png_structp png = NULL;
-    png_infop info = NULL;
-
-    /* On failure tmp may name someone else's file, so don't goto fail's remove */
-    int fd = mkstemp(tmp);
-    if (fd < 0) {
-        int err = errno;
-        free(tmp);
-        free(target);
-        errno = err;
+    if (setjmp(png_jmpbuf(png))) {
+        png_destroy_write_struct(&png, &info);
         return -1;
     }
 
-    /* Replacing a file: keep its permissions and group, so a private image
-       stays private and a shared one stays shared. If its group can't be
-       kept (we're not a member), don't grant its group bits to another.
-       A new file gets the usual umask-based mode (mkstemp makes it 0600). */
-    mode_t mode;
-    if (replacing) {
-        mode = existing.st_mode & 0777;
-        if (fchown(fd, (uid_t)-1, existing.st_gid) != 0) {
-            mode &= ~(mode_t)0070;
-            errno = 0;
-        }
-    } else {
-        mode_t mask = umask(0);
-        umask(mask);
-        mode = 0666 & ~mask;
-    }
-    if (fchmod(fd, mode) != 0) goto fail;
-
-    fp = fdopen(fd, "wb");
-    if (!fp) goto fail;
-
-    png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png) goto fail;
-    info = png_create_info_struct(png);
-    if (!info) goto fail;
-
-    // error handling
-    if (setjmp(png_jmpbuf(png))) goto fail;
-
-    // file to write to
     png_init_io(png, fp);
-
-    // declare pixel data format
     png_set_IHDR(png, info,
         img->width, img->height,
         8,
@@ -298,42 +243,16 @@ int png_save(const Image *img, const char *path) {
         PNG_INTERLACE_NONE,
         PNG_COMPRESSION_TYPE_DEFAULT,
         PNG_FILTER_TYPE_DEFAULT);
-
     if (img->meta) copy_metadata(png, info, img->meta);
-
-    //  write the PNG header
     png_write_info(png, info);
-    // write the pixel rows
     png_write_image(png, img->rows);
-    // finalize the file
     png_write_end(png, NULL);
-
-    // cleanup — buffered write errors (disk full, quota) only surface here
     png_destroy_write_struct(&png, &info);
-    if (fflush(fp) != 0 || ferror(fp) || fsync(fileno(fp)) != 0) goto fail;
-    /* fclose releases fd even when it fails, so fail must not close it again */
-    int closed = fclose(fp);
-    fp = NULL;
-    fd = -1;
-    if (closed != 0) goto fail;
-    if (rename(tmp, dest) != 0) goto fail;
-    free(tmp);
-    free(target);
     return 0;
+}
 
-fail:
-    {
-        /* cleanup calls may clobber errno; keep the one from the failure */
-        int err = errno;
-        if (png) png_destroy_write_struct(&png, info ? &info : NULL);
-        if (fp) fclose(fp);
-        else if (fd >= 0) close(fd);
-        remove(tmp);
-        free(tmp);
-        free(target);
-        errno = err;
-        return -1;
-    }
+int png_save(const Image *img, const char *path) {
+    return atomic_write(path, write_png, img);
 }
 
 

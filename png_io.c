@@ -50,17 +50,16 @@ Image *png_load(const char *path) {
     png_set_gray_to_rgb(png);     /* expand grayscale to RGB       */
     png_set_strip_16(png);        /* 16-bit channels → 8-bit       */
     png_set_palette_to_rgb(png);  /* indexed color → RGB           */
+    png_set_interlace_handling(png);    /* de-interlace Adam7 images     */
     png_read_update_info(png, info);    /* apply the transforms          */
 
     /* Rows are allocated as row_size below; refuse anything the transforms
        didn't turn into exactly that, rather than let libpng overrun them.
-       row_size is computed once in size_t so the check and malloc agree. */
+       row_size is computed once in size_t so the check and malloc agree.
+       png_error reports the cause and jumps to the cleanup handler above. */
     size_t row_size = (size_t)width * 3;  /* 3 bytes per pixel: R G B */
-    if (row_size / 3 != width || png_get_rowbytes(png, info) != row_size) {
-        png_destroy_read_struct(&png, &info, NULL);
-        fclose(fp);
-        return NULL;
-    }
+    if (row_size / 3 != width || png_get_rowbytes(png, info) != row_size)
+        png_error(png, "unexpected decoded row size");
 
     // Allocate the Image struct and its row pointers
     img = malloc(sizeof(Image));

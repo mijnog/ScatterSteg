@@ -10,17 +10,35 @@
 #include "prng.h"
 #include "embed.h"
 
-#define PASSPHRASE_MAX 256
+#define PASSPHRASE_CHUNK 256  /* passphrase buffer grows by this much */
+/* The terminal's line editor holds 4095 bytes per line and silently drops
+   the rest, so a line that long may have been cut short: refuse it. */
+#define PASSPHRASE_MAX_LEN 4094
 
-static int read_passphrase(const char *prompt, char *buf, size_t max_len) {
+/* Wipe and free a passphrase from read_passphrase. NULL is fine. */
+static void free_passphrase(char *passphrase) {
+    if (!passphrase) return;
+    sodium_memzero(passphrase, strlen(passphrase));
+    free(passphrase);
+}
+
+/* Read a passphrase from the terminal with echo off. Returns it in a heap
+   buffer for free_passphrase; on EOF or error, prints why and returns NULL. */
+static char *read_passphrase(const char *prompt) {
     FILE *tty = fopen("/dev/tty", "r+");
-    if (!tty) return -1;
+    if (!tty) {
+        fprintf(stderr, "Error: could not read passphrase\n");
+        return NULL;
+    }
+    /* Unbuffered, so no copy of the passphrase is left in stdio's buffer */
+    setvbuf(tty, NULL, _IONBF, 0);
 
     int fd = fileno(tty);
     struct termios old, silent;
     if (tcgetattr(fd, &old) != 0) {
         fclose(tty);
-        return -1;
+        fprintf(stderr, "Error: could not read passphrase\n");
+        return NULL;
     }
 
     silent = old;
@@ -29,19 +47,42 @@ static int read_passphrase(const char *prompt, char *buf, size_t max_len) {
 
     fputs(prompt, tty);
     fflush(tty);
-    char *result = fgets(buf, (int)max_len, tty);
+
+    size_t cap = PASSPHRASE_CHUNK;
+    size_t len = 0;
+    char *buf = malloc(cap);
+    int c = EOF;
+    while (buf && (c = fgetc(tty)) != EOF && c != '\n') {
+        if (len + 1 >= cap) {
+            /* Not realloc: it could leave the old copy behind in freed memory */
+            char *bigger = malloc(cap + PASSPHRASE_CHUNK);
+            if (bigger) memcpy(bigger, buf, len);
+            sodium_memzero(buf, cap);
+            free(buf);
+            buf = bigger;
+            cap += PASSPHRASE_CHUNK;
+            if (!buf) break;
+        }
+        buf[len++] = (char)c;
+    }
 
     tcsetattr(fd, TCSAFLUSH, &old);
     fputs("\n", tty);
     fclose(tty);
 
-    if (!result) return -1;
-
-    size_t len = strlen(buf);
-    if (len > 0 && buf[len - 1] == '\n')
-        buf[len - 1] = '\0';
-
-    return 0;
+    if (!buf || (c == EOF && len == 0)) {  /* out of memory, or Ctrl+D */
+        free(buf);
+        fprintf(stderr, "Error: could not read passphrase\n");
+        return NULL;
+    }
+    if (len > PASSPHRASE_MAX_LEN) {
+        sodium_memzero(buf, len);
+        free(buf);
+        fprintf(stderr, "Error: passphrase too long (max %d bytes)\n", PASSPHRASE_MAX_LEN);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
 }
 
 /* Derive the scatter key from the passphrase alone using BLAKE2b.
@@ -136,25 +177,20 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char passphrase[PASSPHRASE_MAX];
-        char confirm[PASSPHRASE_MAX];
-
-        if (read_passphrase("Passphrase: ", passphrase, sizeof(passphrase)) != 0) {
-            fprintf(stderr, "Error: could not read passphrase\n");
-            return 1;
-        }
-        if (read_passphrase("Confirm passphrase: ", confirm, sizeof(confirm)) != 0) {
-            sodium_memzero(passphrase, sizeof(passphrase));
-            fprintf(stderr, "Error: could not read passphrase\n");
+        char *passphrase = read_passphrase("Passphrase: ");
+        if (!passphrase) return 1;
+        char *confirm = read_passphrase("Confirm passphrase: ");
+        if (!confirm) {
+            free_passphrase(passphrase);
             return 1;
         }
         if (strcmp(passphrase, confirm) != 0) {
-            sodium_memzero(passphrase, sizeof(passphrase));
-            sodium_memzero(confirm, sizeof(confirm));
+            free_passphrase(passphrase);
+            free_passphrase(confirm);
             fprintf(stderr, "Error: passphrases do not match\n");
             return 1;
         }
-        sodium_memzero(confirm, sizeof(confirm));
+        free_passphrase(confirm);
 
         uint8_t salt[crypto_pwhash_SALTBYTES];
         randombytes_buf(salt, sizeof(salt));
@@ -164,12 +200,12 @@ int main(int argc, char *argv[]) {
         derive_scatter_key(passphrase, scatter_key);
         fprintf(stderr, "Deriving keys...\n");
         if (derive_enc_key(passphrase, salt, enc_key) != 0) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             sodium_memzero(scatter_key, sizeof(scatter_key));
             fprintf(stderr, "Error: key derivation failed (out of memory)\n");
             return 1;
         }
-        sodium_memzero(passphrase, sizeof(passphrase));
+        free_passphrase(passphrase);
 
         Image *img = png_load(input);
         if (!img) {
@@ -265,21 +301,18 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char passphrase[PASSPHRASE_MAX];
-        if (read_passphrase("Passphrase: ", passphrase, sizeof(passphrase)) != 0) {
-            fprintf(stderr, "Error: could not read passphrase\n");
-            return 1;
-        }
+        char *passphrase = read_passphrase("Passphrase: ");
+        if (!passphrase) return 1;
 
         Image *img = png_load(input);
         if (!img) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             fprintf(stderr, "Error: could not load '%s'\n", input);
             return 1;
         }
 
         if (img->width == 0 || img->height > UINT32_MAX / img->width) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image dimensions overflow\n");
             return 1;
@@ -294,7 +327,7 @@ int main(int argc, char *argv[]) {
         uint32_t *indices = prng_scatter(scatter_key, count);
         sodium_memzero(scatter_key, sizeof(scatter_key));
         if (!indices) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             image_free(img);
             fprintf(stderr, "Error: image too small or allocation failed\n");
             return 1;
@@ -302,7 +335,7 @@ int main(int argc, char *argv[]) {
 
         uint64_t bits = (uint64_t)count * 3;
         if (bits < 32) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             free(indices);
             image_free(img);
             fprintf(stderr, "Error: image too small to contain a message\n");
@@ -316,7 +349,7 @@ int main(int argc, char *argv[]) {
 
         uint32_t payload_len = embed_peek_len(img, indices, count);
         if (payload_len > max_payload_len || payload_len < min_payload_len) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             free(indices);
             image_free(img);
             fprintf(stderr, "Error: invalid message length in image\n");
@@ -325,7 +358,7 @@ int main(int argc, char *argv[]) {
 
         uint8_t *payload = malloc(payload_len);
         if (!payload) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             free(indices);
             image_free(img);
             fprintf(stderr, "Error: allocation failed\n");
@@ -343,13 +376,13 @@ int main(int argc, char *argv[]) {
         uint8_t enc_key[crypto_secretbox_KEYBYTES];
         fprintf(stderr, "Deriving keys...\n");
         if (derive_enc_key(passphrase, salt, enc_key) != 0) {
-            sodium_memzero(passphrase, sizeof(passphrase));
+            free_passphrase(passphrase);
             sodium_memzero(payload, payload_len);
             free(payload);
             fprintf(stderr, "Error: key derivation failed (out of memory)\n");
             return 1;
         }
-        sodium_memzero(passphrase, sizeof(passphrase));
+        free_passphrase(passphrase);
 
         /* Decrypt: payload = [salt | nonce | MAC+ciphertext] */
         const uint8_t *nonce = payload + crypto_pwhash_SALTBYTES;

@@ -52,9 +52,11 @@ Image *png_load(const char *path) {
     png_set_palette_to_rgb(png);  /* indexed color → RGB           */
     png_read_update_info(png, info);    /* apply the transforms          */
 
-    /* Rows are allocated as width*3 below; refuse anything the transforms
-       didn't turn into exactly that, rather than let libpng overrun them */
-    if (png_get_rowbytes(png, info) != (size_t)width * 3) {
+    /* Rows are allocated as row_size below; refuse anything the transforms
+       didn't turn into exactly that, rather than let libpng overrun them.
+       row_size is computed once in size_t so the check and malloc agree. */
+    size_t row_size = (size_t)width * 3;  /* 3 bytes per pixel: R G B */
+    if (row_size / 3 != width || png_get_rowbytes(png, info) != row_size) {
         png_destroy_read_struct(&png, &info, NULL);
         fclose(fp);
         return NULL;
@@ -77,7 +79,7 @@ Image *png_load(const char *path) {
         return NULL;
     }
     for (uint32_t y = 0; y < height; y++) {
-        img->rows[y] = malloc(width * 3);  /* 3 bytes per pixel: R G B */
+        img->rows[y] = malloc(row_size);
         if (!img->rows[y]) {
             for (uint32_t i = 0; i < y; i++)
                 free(img->rows[i]);

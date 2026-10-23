@@ -111,8 +111,8 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
 /// chunks (a gAMA of the wrong length, a bad fcTL, ...) that libpng only
 /// warns about, and wants an IEND libpng doesn't; none of that may decide
 /// whether a cover loads. Like libpng, a repeated PLTE or tRNS and a tRNS of
-/// the wrong size are ignored. False if image data is interrupted by another
-/// chunk, which libpng refuses.
+/// the wrong size are ignored, and so is image data that follows another chunk.
+/// False if a critical chunk before the image data ends has a bad CRC.
 fn decoder_view(file: &mut Vec<u8>) -> bool {
     let (mut pos, mut out) = (8, 8);
     let (mut seen_plte, mut seen_trns, mut in_idat, mut idat_done) = (false, false, false, false);
@@ -123,6 +123,7 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
         let name: [u8; 4] = file[pos + 4..pos + 8].try_into().unwrap();
         let end = pos + 12 + len;
         if &name == b"IEND" { break; }
+        if !name.iter().all(u8::is_ascii_alphabetic) { break; } // libpng stops reading here
         if &name != b"IDAT" && in_idat { in_idat = false; idat_done = true; }
         let keep = match &name {
             b"IHDR" => {
@@ -150,9 +151,10 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
                 match color { 0 => len == 2, 2 => len == 6, 3 => seen_plte && len <= plte_entries, _ => false }
             }
             b"IDAT" => {
-                if idat_done { return false; }
-                in_idat = true;
-                true
+                // More image data after another chunk: libpng reads it only if
+                // the image isn't complete yet. Dropping it gives the decoder
+                // the same data, so it fails exactly when libpng would.
+                !idat_done && { in_idat = true; true }
             }
             _ => {
                 // libpng fails on a bad CRC in any critical chunk before the

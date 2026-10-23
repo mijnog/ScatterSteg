@@ -28,6 +28,8 @@ On purpose:
   error message and exit 1, not death by signal.
 - **Chunks with a bad CRC are dropped.** libpng kept such an ancillary chunk
   and wrote it back with a valid CRC.
+- **A bad zlib checksum (Adler-32) in the image data is not an error.** The
+  `png` crate doesn't check it; libpng refuses the file. The output is valid.
 - **No libpng width/height cap** (1,000,000). Only the 2^28-pixel cap applies.
 
 Needed for compatibility:

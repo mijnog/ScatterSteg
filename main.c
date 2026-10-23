@@ -29,7 +29,8 @@
 
 /* Secrets (passphrase, message, keys, plaintext) live in sodium_malloc
    memory: locked so it can't be swapped to disk, fenced by guard pages, and
-   wiped by sodium_free. */
+   wiped by sodium_free. They are read and written with read() and write(),
+   never through a stdio buffer, which would keep a copy outside it. */
 
 /* Wipe and free a passphrase from read_passphrase. NULL is fine. */
 static void free_passphrase(char *passphrase) {
@@ -476,13 +477,9 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
     char *buf = sodium_malloc(cap);
     if (!buf) return NULL;
 
-    int c;
-    while ((c = getchar()) != EOF) {
-        if (len > max_len) {  /* max_len + 1 bytes is fine if the last is '\n' */
-            sodium_free(buf);
-            *too_long = 1;
-            return NULL;
-        }
+    /* read(), not stdio: a FILE buffer would keep a copy of the message
+       in ordinary heap memory, unlocked and never wiped */
+    for (;;) {
         if (len + 1 >= cap) {
             /* Grow by copying; sodium_free wipes the old buffer */
             char *bigger = sodium_malloc(cap * 2);
@@ -492,7 +489,18 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
             buf = bigger;
             cap *= 2;
         }
-        buf[len++] = (char)c;
+        /* max_len + 2 bytes in all tell a message that is too long */
+        size_t want = cap - 1 - len;
+        if (want > max_len + 2 - len) want = max_len + 2 - len;
+        ssize_t n = read(STDIN_FILENO, buf + len, want);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        len += (size_t)n;
+        if (len > max_len + 1) {  /* max_len + 1 is fine if the last is '\n' */
+            sodium_free(buf);
+            *too_long = 1;
+            return NULL;
+        }
     }
 
     if (len > 0 && buf[len - 1] == '\n')
@@ -507,6 +515,20 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
     return buf;
 }
 
+/* Write all n bytes to fd, unbuffered: stdout's FILE buffer would keep a
+   copy of secrets in ordinary heap memory. Returns 0, or -1 (errno set). */
+static int write_all(int fd, const void *data, size_t n) {
+    const char *p = data;
+    while (n > 0) {
+        ssize_t w = write(fd, p, n);
+        if (w < 0 && errno == EINTR) continue;
+        if (w < 0) return -1;
+        p += w;
+        n -= (size_t)w;
+    }
+    return 0;
+}
+
 /* Print a random passphrase: 5 groups of 5 characters from a 31-character
    alphabet without look-alikes (0/o, 1/l/i), about 124 bits in all */
 static void generate_passphrase(void) {
@@ -518,8 +540,8 @@ static void generate_passphrase(void) {
         for (int i = 0; i < 5; i++)
             out[n++] = alphabet[randombytes_uniform(sizeof(alphabet) - 1)];
     }
-    out[n] = '\0';
-    printf("%s\n", out);
+    out[n++] = '\n';
+    write_all(STDOUT_FILENO, out, n);
     sodium_memzero(out, sizeof(out));
 }
 
@@ -781,8 +803,10 @@ int main(int argc, char *argv[]) {
         if (r != DECODED) return 1;
 
         if (pt_len > 0) {  /* empty message: print nothing */
-            fwrite(plaintext, 1, pt_len, stdout);  /* all of it, NULs too */
-            putchar('\n');
+            /* All of it, NULs too. The newline goes in the same write, so
+               the plaintext buffer has room: open_box allocates pt_len + 1. */
+            plaintext[pt_len] = '\n';
+            write_all(STDOUT_FILENO, plaintext, pt_len + 1);
         }
         sodium_free(plaintext);
 

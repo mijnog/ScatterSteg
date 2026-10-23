@@ -1,32 +1,33 @@
 # ScatterSteg
 
-**Hide encrypted messages inside PNG and JPEG images — scattered, syndrome-coded and statistically quiet.**
+ScatterSteg is a command-line tool for hiding encrypted messages in PNG and JPEG images. It combines authenticated encryption and memory-hard key derivation with steganographic techniques from the research literature (syndrome-trellis coding, LSB matching and histogram-preserving value exchange), so that the output image is statistically close to the cover it was made from.
 
 ```bash
 echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
 ./scattersteg decode -i holiday.jpg
 ```
 
-ScatterSteg combines modern authenticated encryption with steganography techniques from the research literature, so the image that comes out looks, to the eye and to classic steganalysis, like the one that went in.
+## Features
 
-## Highlights
+### Steganography
 
-**Steganography**
-- 🎲 **Scattered embedding** — bits go to a secret, passphrase-derived permutation of the image, never to the first N pixels
-- 🧮 **Syndrome-trellis codes (STC)** — the message is the *syndrome* of many carrier bits, and a Viterbi search finds the cheapest changes that produce it: **2.4–3.3× fewer changes** at typical payloads
-- ⚖️ **Histogram-preserving exchange** — changes are paired up as value swaps (the idea behind steghide), so over 99% of them leave the image histogram untouched
-- ±1 **LSB matching** — no value ever changes by more than 1, and there's none of the pairs-of-values fingerprint that LSB overwriting leaves
-- 🖼️ **PNG and JPEG** — JPEG messages live in the DCT coefficients, read and written **losslessly**: nothing is decompressed and recompressed
-- 🪞 **The cover's format survives** — grayscale stays grayscale, progressive stays progressive, EXIF, ICC profiles, text and other metadata are carried over; covers that would come out visibly different are refused
+- **Keyed embedding order.** Bits are placed along a secret permutation of the image derived from the passphrase, not sequentially from the first pixel.
+- **Syndrome-trellis codes (STC).** The message is encoded as the syndrome of a larger set of carrier bits, and a Viterbi search selects the least costly set of changes that produces it. At typical payloads this requires 2.4–3.3 times fewer changes than writing the bits directly.
+- **Histogram-preserving exchange.** Required changes are paired into value swaps where possible (the approach used by steghide), which leaves the image histogram unchanged for over 99% of changes on photographs.
+- **LSB matching.** No sample changes by more than 1, and the pairs-of-values artifact produced by LSB replacement is avoided.
+- **PNG and JPEG covers.** In JPEG images the message is carried by the quantized DCT coefficients, which are read and written losslessly; the image is never decompressed and recompressed.
+- **Format preservation.** The output keeps the cover's format and metadata: grayscale remains grayscale, progressive JPEGs remain progressive, and EXIF, ICC profiles and text chunks are retained. Covers that could not be reproduced in their original format are refused.
 
-**Cryptography**
-- 🔐 **XSalsa20-Poly1305** authenticated encryption, with a fresh nonce every time
-- 🧂 **Argon2id** (256 MiB, 3 passes) with a per-image salt gates *everything*: without paying for it, an attacker can't even tell where the message would be — each passphrase guess costs ~0.2 s and 256 MiB
-- 🧷 **No version marker or header** in the image to give it away
+### Cryptography
 
-**Engineering**
-- 🛡️ Secrets in **libsodium guarded memory** (locked, guard pages, wiped), core dumps off, debugger attach blocked, hardened build (FORTIFY 3, PIE, full RELRO)
-- 🧪 Hundreds of unit checks, end-to-end CLI tests, **fault injection on every failing call**, **five libFuzzer targets**, AddressSanitizer/UBSan everywhere, and CI on every push
+- **Authenticated encryption** with XSalsa20-Poly1305 and a fresh random nonce for every message.
+- **Argon2id key derivation** (256 MiB, 3 passes) with a per-image salt. Both the embedding order and the encryption key depend on it, so no property of the message, including its location, can be tested without completing a full Argon2id computation; each passphrase guess costs about 0.2 s and 256 MiB.
+- **No header or version marker** is stored in the image.
+
+### Engineering
+
+- Secrets are held in libsodium guarded memory (locked, guard pages, wiped on release); core dumps are disabled and, on Linux, debugger attachment is blocked. The release build uses `_FORTIFY_SOURCE=3`, stack protection, PIE and full RELRO.
+- The test suite comprises unit tests, end-to-end CLI tests, fault injection on every fallible library call, five libFuzzer targets and AddressSanitizer/UndefinedBehaviorSanitizer instrumentation, and runs in CI on every push.
 
 ## Quick start
 
@@ -39,7 +40,7 @@ echo "your message" | ./scattersteg encode -i cover.png -o steg.png
 ./scattersteg decode -i steg.png
 ```
 
-The passphrase is always read from the terminal, never from the command line (so it never shows up in `ps`), with echo off. New images need at least 12 bytes of passphrase. The message comes from stdin, or is typed at the terminal (Ctrl+D to finish). The output has the cover's format, so a JPEG cover gives a JPEG.
+The passphrase is read from the terminal with echo disabled and is never accepted as a command-line argument, so it does not appear in the process list. New images require a passphrase of at least 12 bytes. The message is read from standard input, or typed at the terminal and terminated with Ctrl+D. The output is written in the cover's format.
 
 ## How it works
 
@@ -61,39 +62,39 @@ The passphrase is always read from the terminal, never from the command line (so
              ±1 nudges otherwise ──► write the image back
 ```
 
-1. **Keys.** A random salt is hidden at public pseudo-random positions. Argon2id turns the passphrase and salt into a master key, split into a *scatter key* and an *encryption key*.
-2. **Encryption.** The message is sealed with XSalsa20-Poly1305. A wrong passphrase or a tampered image fails authentication with a clear error.
-3. **Where.** The scatter key drives an unbiased ChaCha20 Fisher–Yates shuffle that orders the carriers: pixel samples in a PNG, AC coefficients with |value| ≥ 2 in a JPEG.
-4. **What changes.** Instead of writing each bit into one carrier (and changing about half of them), the box becomes the syndrome H·y of many more carrier bits. A Viterbi pass over a 128-state trellis finds the cheapest y with that syndrome, so few carriers change and the cover's own statistics are left nearly intact.
-5. **How it changes.** Every change is ±1. Pairs of carriers that need flipping and hold values one apart swap values instead, which leaves the histogram exactly as it was.
+1. **Key derivation.** A random salt is stored at public pseudo-random positions. Argon2id derives a master key from the passphrase and salt, from which a *scatter key* and an *encryption key* are derived.
+2. **Encryption.** The message is sealed with XSalsa20-Poly1305. A wrong passphrase or a modified image fails authentication and is reported as an error.
+3. **Embedding order.** The scatter key drives an unbiased Fisher–Yates shuffle (ChaCha20) over the carriers: pixel samples in a PNG, AC coefficients with |value| ≥ 2 in a JPEG.
+4. **Syndrome coding.** Rather than writing each bit into one carrier, which changes about half of them, the encrypted payload is encoded as the syndrome H·y of a larger set of carrier bits. A Viterbi search over a 128-state trellis selects the least costly y with that syndrome, so few carriers change and the cover's statistics are largely preserved.
+5. **Sample modification.** Every change is ±1. Where two carriers that both require a change hold values one apart, they exchange values instead, leaving the histogram unchanged.
 
-## Measured, not assumed
+## Steganalysis results
 
-Every claim about detectability was measured on real images (two photographs; the overwriting baseline for sample pair analysis on a painting), against the classic detectors for LSB steganography:
+All detectability figures below were measured on real images (two photographs; the overwriting baseline for sample pair analysis on a painting), against the classic detectors for LSB steganography:
 
 | Detector | Writing bits directly | ScatterSteg (STC) |
 |---|---|---|
 | Changes needed, PNG at 5–10% of capacity | 340–682 K | **102–221 K** |
 | Ker's adjacency HCF-COM shift (cover 93.81), 5–25% | 2.4–10.7 | **0.5–0.7** |
 | JPEG 2:3 coefficient ratio at 25% (cover 2.087) | 1.671 (−20%) | **2.079 (−0.4%)** |
-| Chi-square attack, any payload | fires with sequential LSB | **doesn't fire** |
+| Chi-square attack, any payload | triggered by sequential LSB | **not triggered** |
 | Sample pair analysis | tracks payload with LSB overwriting (≈0.5 at half capacity) | **stays within 0.1 of the cover's value** |
 
-Some ideas that *didn't* survive measurement were dropped. For example, content-adaptive PNG costs did worse than uniform costs on these detectors, so they aren't used. See [Limitations](#limitations) for where the method stops working.
+Techniques that did not improve these results were not adopted; for example, content-adaptive PNG costs performed worse than uniform costs against these detectors. See [Limitations](#limitations) for where the method stops working.
 
 ## Robustness
 
-Fuzzing found real bugs, and each one is fixed and kept as a regression test in `tests/fuzz/regressions`:
+Fuzzing has found the following defects, each of which is fixed and retained as a regression test in `tests/fuzz/regressions`:
 
-- a 290-byte PNG that made Ubuntu's libpng allocate **1.3 GB** (libpng now runs on a capped allocator)
-- a text chunk libpng will read but refuses to write back
-- JPEGs that decode but can't be re-encoded (out-of-range coefficients, quantization tables redefined mid-file, oversampled progressive scans); encode now does a trial write and refuses them up front
+- A 290-byte PNG that caused Ubuntu's libpng to allocate 1.3 GB. libpng now uses a capped allocator.
+- A text chunk that libpng reads but refuses to write. Such chunks are now skipped.
+- JPEG files that decode but cannot be re-encoded (out-of-range coefficients, quantization tables redefined between scans, sampling factors too large for progressive scans). The encoder now performs a trial write and rejects such covers before deriving keys.
 
-Other defences:
-- Images are capped at 1 GiB of pixels or coefficients before anything is allocated.
-- Progressive JPEGs are capped at 500 scans.
-- Output is written to a temp file, fsync'd and renamed into place, so a failed write never destroys an existing file. It keeps the existing file's permissions and group, and writes through symlinks.
-- Ctrl+C at the passphrase prompt restores the terminal.
+Additional safeguards:
+- Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation.
+- Progressive JPEGs are limited to 500 scans.
+- Output is written to a temporary file, synced and renamed into place, so a failed write never destroys an existing file. Existing permissions and group ownership are preserved, and symbolic links are written through.
+- The terminal is restored if the program is interrupted at the passphrase prompt.
 
 ## Testing
 
@@ -103,10 +104,10 @@ make fuzz       # libFuzzer: PNG loader, JPEG loader, embedder, STC, PNG round t
 make coverage   # line coverage over the whole suite (~98%); annotated sources in tests/build/cov
 ```
 
-- **Unit tests:** cover every module, including known-answer tests that pin the file format.
-- **CLI tests:** drive the real binary through a pseudo-terminal, and cross-check it against an independent Python implementation of the format, in both directions.
-- **Fault injection:** makes each `malloc`, `fopen`, `fclose`, `rename`, `crypto_pwhash` and similar call fail in turn, and checks every error path fails cleanly: no leaks, no double closes, no damaged output.
-- **CI:** GitHub Actions builds, tests and fuzzes on every push. `make test` needs only Python 3's standard library.
+- **Unit tests** cover every module, including known-answer tests that fix the file format.
+- **CLI tests** drive the binary through a pseudo-terminal and cross-check it in both directions against an independent Python implementation of the format.
+- **Fault injection** causes each `malloc`, `fopen`, `fclose`, `rename`, `crypto_pwhash` and similar call to fail in turn, and verifies that every error path fails cleanly, without leaks, double closes or damaged output.
+- **Continuous integration** builds, tests and fuzzes on every push. `make test` requires only the Python 3 standard library.
 
 ## Supported covers
 
@@ -120,7 +121,7 @@ make coverage   # line coverage over the whole suite (~98%); annotated sources i
 
 ## File format (v3)
 
-There is no header or version marker in the image, since one would give the image away. Every pixel holds one bit per sample, in the LSBs of R, G and B (or of the gray value), set by exchanging values between pairs of samples where possible and LSB matching otherwise. Below, "sample k" means bit position k counted along the payload order: pixel `order[k / channels]`, channel `k % channels`.
+The image contains no header or version marker, as either would reveal the presence of a message. Every pixel holds one bit per sample, in the LSBs of R, G and B (or of the gray value), set by exchanging values between pairs of samples where possible and LSB matching otherwise. Below, "sample k" means bit position k counted along the payload order: pixel `order[k / channels]`, channel `k % channels`.
 
 1. **Salt** — 16 random bytes in the first 43 pixels (128 for grayscale) of a public pixel order: `prng_permutation` keyed with `BLAKE2b-256("ScatterSteg v2 salt positions")`. Public, so the decoder can find it before it has a key, and spread out rather than in a corner.
 2. **Keys** — `master = Argon2id(passphrase, salt, opslimit 3, memlimit 256 MiB)`; the scatter key and encryption key are `crypto_kdf` subkeys 1 and 2 of `master`, context `ScatStg2`.
@@ -130,7 +131,7 @@ There is no header or version marker in the image, since one would give the imag
 
 **JPEG** uses the same layout over a different kind of position: each *carrier* is one AC coefficient with |value| ≥ 2, taken in component, block-row, block and coefficient order, and carries one bit. So the salt takes the first 128 carriers of the public order. DC coefficients, zeros and ±1 are never used, and embedding keeps every carrier at |value| ≥ 2 and within ±1023, so the decoder finds the same carriers and the encoder can write them.
 
-**Costs** steer which samples change, and are the encoder's choice (the decoder doesn't need them): uniform for PNG; for JPEG, the coefficient's quantization step, ×1.5 when |value| = 2.
+**Costs** determine which samples change and are chosen by the encoder alone (the decoder does not use them): uniform for PNG; for JPEG, the coefficient's quantization step, ×1.5 when |value| = 2.
 
 **v2** is the same with the box's bits written straight into samples 32 on; **v1** used a BLAKE2b-only scatter key. Decode tries v3, v2 (same keys, one Argon2id run), then v1.
 
@@ -138,14 +139,14 @@ There is no header or version marker in the image, since one would give the imag
 
 ## Limitations
 
-- **Not independently reviewed.** The engineering is thoroughly tested, but neither the cryptography nor the steganography has had an outside audit. Don't stake anyone's safety on it.
-- **Machine-learning steganalysis hasn't been tested.** Modern detectors are much stronger than the classic ones measured above. Keep messages small relative to the cover; a few KB in a photo-sized image uses well under 1% of its capacity.
-- **Near full capacity the advantages fade.** The closer the message is to the number of carrier bits, the less freedom STC and the exchange have, and the JPEG 2:3 shift returns past about half of capacity.
-- **Choose noisy photographs as covers.** Flat areas, gradients and posterized images (few distinct values, gaps in the histogram) hide data badly: any ±1 change stands out where neighbouring pixels are identical, and there's no neighbouring value to exchange with.
-- **JPEG carries less, and is more detectable per bit, than PNG.** A JPEG is re-encoded from the same coefficients, so only embedded positions change, but the file isn't byte for byte the cover: optimized Huffman tables are optimized afresh, and a progressive file gets libjpeg's standard scan sequence.
-- **Some metadata is lost.** PNG chunks placed after the image data aren't kept, and the PNG image data is recompressed. Anyone who has the original cover can find the changes by comparing pixels.
-- **Old images.** v1 images (from before format v2) still decode, with a warning to re-encode them, because in v1 most wrong passphrases could be rejected without running Argon2id. v2 images decode silently; they're as well protected, just more detectable.
-- **Ctrl+Z at the passphrase prompt** can leave terminal echo off (Ctrl+C, SIGTERM and SIGHUP are handled).
+- **No independent review.** The implementation is extensively tested, but neither the cryptography nor the steganography has been externally audited. It should not be relied on where personal safety is at stake. See [THREAT_MODEL.md](THREAT_MODEL.md) for the security claims and their scope.
+- **Machine-learning steganalysis.** Modern learned detectors are considerably stronger than the classic detectors measured above. Messages should be small relative to the cover; a few kilobytes in a photograph-sized image uses well under 1% of its capacity.
+- **High payloads.** As the message approaches the number of carrier bits, STC and value exchange have less freedom, and the JPEG coefficient-ratio shift reappears beyond about half of capacity.
+- **Cover selection.** Noisy photographs are the most suitable covers. Flat regions, gradients and posterized images (few distinct values or gaps in the histogram) conceal changes poorly, since a ±1 change is conspicuous among identical neighbours and no adjacent value is available for exchange.
+- **JPEG capacity.** JPEG covers carry less data than PNG covers and are more detectable per bit. Only embedded coefficients change, but the file is not byte-identical to the cover: optimized Huffman tables are regenerated, and progressive files are written with libjpeg's standard scan sequence.
+- **Metadata.** PNG chunks located after the image data are not retained, and PNG image data is recompressed. Anyone holding the original cover can locate the changes by comparison.
+- **Earlier formats.** Format v1 images remain readable but produce a warning recommending re-encoding, because v1 allowed most wrong passphrases to be rejected without an Argon2id computation. Format v2 images are read without a warning; they are equally well protected but more detectable.
+- **Job control.** Suspending the program (Ctrl+Z) at the passphrase prompt can leave terminal echo disabled. Ctrl+C, SIGTERM and SIGHUP are handled.
 
 ## References
 

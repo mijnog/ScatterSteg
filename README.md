@@ -89,9 +89,10 @@ Fuzzing has found the following defects, each of which is fixed and retained as 
 - A 290-byte PNG that caused Ubuntu's libpng to allocate 1.3 GB. libpng now uses a capped allocator.
 - A text chunk that libpng reads but refuses to write. Ancillary chunks are now copied as raw bytes, so such chunks are kept as they were.
 - JPEG files that decode but cannot be re-encoded (out-of-range coefficients, quantization tables redefined between scans, sampling factors too large for progressive scans). The encoder now performs a trial write and rejects such covers before deriving keys.
+- A truncated progressive JPEG (a first AC scan at Al=1 and no refinement scan) that libjpeg writes back with different coefficients, which would silently corrupt a hidden message. The trial write now also reads its output back and rejects a cover that does not match exactly.
 
 Additional safeguards:
-- Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation, a PNG to 2²⁸ pixels (so the 4-byte-per-pixel permutation stays under 1 GiB too), and a JPEG to as many carriers as 1 GiB of per-carrier working memory allows (about 44 million).
+- Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation, a PNG to 2²⁸ pixels (so the 4-byte-per-pixel permutation stays under 1 GiB too), and a JPEG to as many carriers as 1 GiB of per-carrier working memory allows (about 49 million).
 - libpng may hold at most 128 MiB in all, so compressed text chunks cannot inflate without bound.
 - Progressive JPEGs are limited to 500 scans.
 - Output is written to a temporary file, synced and renamed into place, so a failed write never destroys an existing file. Existing permissions and group ownership are preserved, and symbolic links are written through.
@@ -108,7 +109,8 @@ make coverage   # line coverage over the whole suite (~98%); annotated sources i
 - **Unit tests** cover every module, including known-answer tests that fix the file format.
 - **CLI tests** drive the binary through a pseudo-terminal and cross-check it in both directions against an independent Python implementation of the format.
 - **Fault injection** causes each `malloc`, `fopen`, `fclose`, `rename`, `crypto_pwhash` and similar call to fail in turn, and verifies that every error path fails cleanly, without leaks, double closes or damaged output.
-- **Continuous integration** builds, tests and fuzzes on every push. `make test` requires only the Python 3 standard library.
+- **The Rust port** (`rust/`) runs the same CLI tests, and `tests/differential.py` gives both binaries the same ~165 odd covers (malformed chunks, truncated and mutated files, fuzzer regressions) and checks they agree on which load. See [rust/README.md](rust/README.md).
+- **Continuous integration** builds, tests and fuzzes both implementations on every push. `make test` requires only the Python 3 standard library.
 
 ## Supported covers
 

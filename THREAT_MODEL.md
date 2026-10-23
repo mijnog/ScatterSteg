@@ -45,7 +45,7 @@ Images may come from anyone, so the decoder parses hostile input.
 - **How:** capped allocations (1 GiB of pixels or coefficients, 1 GiB of per-carrier working memory for a JPEG, libpng behind an allocator capped at 64 MiB per allocation and 128 MiB in all, 16 MiB per chunk), at most 500 JPEG scans, libjpeg errors caught rather than exiting, coefficients range-checked before re-encoding.
 - **Evidence:** five libFuzzer targets run on every push, fault injection on every failing call, ASan and UBSan across the test suite; every crash fuzzing found is kept as a regression test.
 - **Assumes:** libpng, libjpeg-turbo and libsodium are themselves sound.
-- **The Rust port** (`rust/`) swaps libpng for the `png` crate, with the file size capped at 1 GiB + 64 MiB and the same pixel, chunk and scan caps; a failed allocation aborts rather than exiting cleanly. See `rust/README.md`.
+- **The Rust port** (`rust/`) swaps libpng for the `png` crate, with the file size capped at 1 GiB + 64 MiB and the same pixel, chunk and scan caps; a failed allocation aborts rather than exiting cleanly. The `png` crate is shown only the chunks it needs, so it cannot refuse (or panic on) a file libpng accepts. Fuzzed with cargo-fuzz in CI. See `rust/README.md`.
 
 ### A6 — Someone on the same machine
 

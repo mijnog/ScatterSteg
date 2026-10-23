@@ -34,3 +34,65 @@ jobs:
           name: fuzz-crashes
           path: tests/build/fuzz/crash-*
           if-no-files-found: ignore
+
+  # The Rust port must stay compatible with the C version: an image written by
+  # one decodes with the other. So it runs the same CLI tests, and both
+  # binaries read the same odd files (tests/differential.py).
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev libclang-dev pkg-config clang python3
+
+      - name: Let AddressSanitizer run
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build the C version (the reference) and the test fixture
+        run: make && make tests/build/jpeg_fixture
+
+      - name: Build the Rust version, with and without fault injection
+        working-directory: rust
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked --features fault-injection --target-dir target/fault
+
+      - name: Rust unit tests and fuzz regressions
+        working-directory: rust
+        run: cargo test --release --locked
+
+      - name: CLI and fault-injection tests against the Rust binary
+        env:
+          JPEG_FIXTURE: tests/build/jpeg_fixture
+        run: |
+          R=$PWD/rust/target
+          SCATTERSTEG=$R/release/scattersteg SCATTERSTEG_FAULT=$R/fault/release/scattersteg \
+            FAULT_LONG_MIN=15 python3 tests/test_cli.py
+
+      - name: C and Rust agree on what loads
+        env:
+          SCATTERSTEG_C: ./scattersteg
+          SCATTERSTEG_RUST: rust/target/release/scattersteg
+          JPEG_FIXTURE: tests/build/jpeg_fixture
+        run: python3 tests/differential.py
+
+      - name: Install the fuzzer
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+
+      - name: Fuzz the Rust loaders for a minute each
+        working-directory: rust
+        run: |
+          for t in png_load jpeg_load; do
+            cargo +nightly fuzz run $t -- -max_total_time=60 -rss_limit_mb=5000 -max_len=20000 -timeout=60
+          done
+
+      - name: Keep fuzzer crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-fuzz-crashes
+          path: rust/fuzz/artifacts/
+          if-no-files-found: ignore

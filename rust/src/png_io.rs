@@ -244,7 +244,16 @@ fn filtered_image(img: &Image, interlaced: bool) -> Vec<u8> {
     out
 }
 
-fn write_png(img: &Image, w: &mut impl Write) -> io::Result<()> {
+/// The image data as one zlib stream. Done before `save` makes its temp file:
+/// it is the large allocation, and a failure there must not leave one behind.
+fn compress(img: &Image) -> io::Result<Vec<u8>> {
+    let interlaced = img.meta.as_ref().is_some_and(|m| m.interlaced);
+    let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+    z.write_all(&filtered_image(img, interlaced))?;
+    z.finish()
+}
+
+fn write_png(img: &Image, zlib: &[u8], w: &mut impl Write) -> io::Result<()> {
     let interlaced = img.meta.as_ref().is_some_and(|m| m.interlaced); // like the cover
     w.write_all(&SIGNATURE)?;
     let mut ihdr = Vec::with_capacity(13);
@@ -257,9 +266,7 @@ fn write_png(img: &Image, w: &mut impl Write) -> io::Result<()> {
     if let Some(m) = &img.meta {
         for c in m.chunks.iter().filter(|c| !c.after_idat) { write_chunk(w, &c.name, &c.data)?; }
     }
-    let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
-    z.write_all(&filtered_image(img, interlaced))?;
-    for part in z.finish()?.chunks(1 << 16) { write_chunk(w, b"IDAT", part)?; }
+    for part in zlib.chunks(1 << 16) { write_chunk(w, b"IDAT", part)?; }
     if let Some(m) = &img.meta {
         for c in m.chunks.iter().filter(|c| c.after_idat) { write_chunk(w, &c.name, &c.data)?; }
     }
@@ -267,9 +274,10 @@ fn write_png(img: &Image, w: &mut impl Write) -> io::Result<()> {
 }
 
 pub fn save(img: &Image, path: &Path) -> io::Result<()> {
+    let zlib = compress(img)?;
     atomic_write(path, |f| {
         let mut w = io::BufWriter::new(f);
-        write_png(img, &mut w)?;
+        write_png(img, &zlib, &mut w)?;
         w.flush() // BufWriter's drop would swallow a failure here
     })
 }

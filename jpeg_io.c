@@ -51,6 +51,7 @@ struct JpegImage {
     int16_t **carriers;
     float *costs;  /* per carrier, see collect_carriers */
     uint32_t n_carriers;
+    int trailing_data;  /* bytes after the EOI marker */
 };
 
 static void silent(j_common_ptr cinfo) {
@@ -165,6 +166,8 @@ JpegImage *jpeg_load(const char *path) {
     j->coefs = jpeg_read_coefficients(&j->src);
     if (!j->coefs || collect_carriers(j) != 0)
         error_exit((j_common_ptr)&j->src);
+    /* Reading stops at EOI: anything left, buffered or not, comes after */
+    j->trailing_data = j->src.src->bytes_in_buffer > 0 || fgetc(fp) != EOF;
     fclose(fp);
     j->err.pub.error_exit = unexpected_error;
     j->src.progress = NULL;
@@ -177,6 +180,11 @@ void jpeg_free(JpegImage *j) {
     free(j->carriers);
     free(j->costs);
     free(j);
+}
+
+const char *jpeg_unsuitable(const JpegImage *j) {
+    return j->trailing_data ? "data after the end of the image (such as a second "
+                              "image or an HDR gain map)" : NULL;
 }
 
 Carrier jpeg_carrier(JpegImage *j) {

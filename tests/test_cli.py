@@ -1320,6 +1320,19 @@ class JpegTest(CliBase):
         self.assertNotIn(0xE0, markers)
         self.assertDecodes(out, "no jfif")
 
+    def test_data_after_image_refused(self):
+        # An MPO or Ultra HDR file has more images after the first one's EOI;
+        # they'd be lost while the MPF marker indexing them was kept
+        src = self.path("mpo.jpg")
+        make_jpeg(src, 200, 150)
+        with open(src, "ab") as f:
+            f.write(open(self.jpeg, "rb").read())  # a second image
+        out = self.path("steg.jpg")
+        code, log = self.encode(b"x", out, src=src)
+        self.assertEqual(code, 1, log)
+        self.assertIn("data after the end of the image", log)
+        self.assertFalse(os.path.exists(out))
+
     def test_gray(self):
         src = self.path("gray.jpg")
         make_jpeg(src, 200, 150, 1)

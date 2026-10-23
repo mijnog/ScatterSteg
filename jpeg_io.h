@@ -24,6 +24,11 @@ void jpeg_free(JpegImage *j);
    finds the same carriers. Valid until jpeg_free. */
 Carrier jpeg_carrier(JpegImage *j);
 
+/* Why a cover this way would come out visibly changed, or NULL. Data
+   after the EOI marker (MPF secondary images, Ultra HDR gain maps, depth
+   maps) isn't kept, while the markers indexing it would be. */
+const char *jpeg_unsuitable(const JpegImage *j);
+
 /* Some JPEGs decode fine but libjpeg won't write their coefficients back
    (a quantization table redefined between scans, sampling factors too big
    for the scans it would generate, ...: each found by fuzzing). Encodes to

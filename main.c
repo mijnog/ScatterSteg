@@ -612,6 +612,14 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        if (cover.jpeg && jpeg_unsuitable(cover.jpeg)) {
+            free_passphrase(passphrase);
+            fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
+                            "use another cover\n", input, jpeg_unsuitable(cover.jpeg));
+            cover_free(&cover);
+            return 1;
+        }
+
         if (cover.jpeg && jpeg_check_writable(cover.jpeg) != 0) {
             free_passphrase(passphrase);
             fprintf(stderr, "Error: '%s' is a JPEG that can't be rewritten losslessly; "

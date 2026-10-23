@@ -38,8 +38,9 @@ Needed for compatibility:
   libpng warns about a malformed gAMA, pHYs, fcTL and the like, a repeated
   PLTE or tRNS, or a missing IEND, and loads the file anyway; the `png`
   crate refuses (or, for a short palette, panics). A name that isn't four
-  letters with an uppercase third, or a bad CRC in a critical chunk, fails
-  the load as in libpng, so we never write a chunk libpng would refuse.
+  letters, or a bad CRC in a critical chunk, fails the load as in libpng. A
+  lowercase third letter (newer libpng refuses it, older accepts it) loads
+  but the chunk isn't written back, so we never write one libpng would refuse.
 - A JPEG's carrier cap uses C's per-carrier size (8-byte pointer included), so
   every JPEG Rust writes can be read by C.
 - `check_writable` reads the encoded JPEG back and requires identical

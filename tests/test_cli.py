@@ -663,11 +663,24 @@ class CliTest(CliBase):
     def test_invalid_chunk_name_refused(self):
         # libpng rejects such a file, so writing the chunk back out would
         # make an image C can't read
-        for name in (b"te1t", b"abcd", b"a\xe9bc"):
+        for name in (b"te1t", b"a\xe9bc"):
             src = self.path("name.png")
             write_png(src, 64, 64, cover_pixel, extra=_chunk(name, b"xx"))
             code, log = self.encode(b"x", self.path("steg.png"), src=src)
             self.assertEqual(code, 1, (name, log))
+            self.assertIn("could not load", log)
+
+    def test_reserved_bit_chunk_never_written(self):
+        # Newer libpng refuses a name with a lowercase third letter, older
+        # accepts it. Whichever happens, we must not write it back out.
+        src = self.path("rsv.png")
+        write_png(src, 64, 64, cover_pixel, extra=_chunk(b"abcd", b"xx"))
+        out = self.path("steg.png")
+        code, log = self.encode(b"x", out, src=src)
+        if code == 0:
+            self.assertNotIn(b"abcd", [k for k, _ in png_chunks(out)])
+            self.assertDecodes(out, "x")
+        else:
             self.assertIn("could not load", log)
 
     def test_critical_chunk_bad_crc_refused(self):

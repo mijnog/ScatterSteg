@@ -78,10 +78,12 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
         let data = &file[pos + 8..pos + 8 + len];
         let crc = u32::from_be_bytes(file[pos + 8 + len..pos + 12 + len].try_into().unwrap());
         pos += 12 + len;
-        // libpng refuses the whole file over a name that isn't four letters
-        // with an uppercase third; so must we, or we'd write such a chunk
-        // back out and C couldn't read the result
-        if !name.iter().all(u8::is_ascii_alphabetic) || name[2] & 0x20 != 0 { return None; }
+        // libpng refuses the whole file over a name that isn't four letters;
+        // so must we, or we'd write such a chunk back out and C couldn't read
+        // the result. A lowercase third letter (reserved) is refused only by
+        // newer libpng: load the file, but don't write that chunk back.
+        if !name.iter().all(u8::is_ascii_alphabetic) { return None; }
+        if name[2] & 0x20 != 0 { continue; }
         match &name {
             b"IDAT" => { after_idat = true; continue; }
             b"IEND" => break,

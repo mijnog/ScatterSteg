@@ -29,8 +29,11 @@ C = os.environ.get("SCATTERSTEG_C", os.path.join(HERE, "..", "scattersteg"))
 RUST = os.environ.get("SCATTERSTEG_RUST", os.path.join(HERE, "..", "rust", "target", "release", "scattersteg"))
 
 # Where the two are known to differ, on purpose (see rust/README.md)
+# Rust loads these and C refuses (never the reverse)
 EXPECTED = {
     "bad_adler": "the png crate doesn't check the zlib Adler-32",
+    "name_61626364": "newer libpng refuses a lowercase third letter; Rust loads and drops the chunk",
+    "name_70726956": "likewise",
 }
 
 SIG = b"\x89PNG\r\n\x1a\n"
@@ -181,7 +184,7 @@ def main():
         with ThreadPoolExecutor(4) as ex:
             for name, c, r in ex.map(one, files):
                 if c != r:
-                    if name in EXPECTED:
+                    if name in EXPECTED and not c[0] and r[0]:
                         print(f"expected  {name}: C={c} Rust={r}  ({EXPECTED[name]})")
                     else:
                         bad.append(name)

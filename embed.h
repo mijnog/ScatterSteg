@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 #ifndef EMBED_H
 #define EMBED_H
 

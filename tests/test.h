@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 #ifndef TEST_H
 #define TEST_H
 

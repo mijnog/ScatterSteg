@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 #ifndef JPEG_IO_H
 #define JPEG_IO_H
 

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 #define FAULT_IMPL
 #include "fault.h"
 #include <errno.h>

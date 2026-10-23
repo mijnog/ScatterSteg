@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: for any carrier count, message length, cover bits and
    costs (including extreme ones), the STC syndrome of what stc_embed
    returns is the message. */

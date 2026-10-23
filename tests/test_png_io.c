@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 #define _POSIX_C_SOURCE 200809L  /* mkdtemp */
 #include "test.h"
 #include "png_io.h"

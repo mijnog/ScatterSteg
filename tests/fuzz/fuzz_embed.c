@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: scatter + embed. Checks that encode followed by decode
    gives the data back for any image size, key and message, and that
    decoding a garbage image (as decode does with a wrong passphrase) stays

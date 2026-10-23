@@ -149,6 +149,12 @@ The image contains no header or version marker, as either would reveal the prese
 - **Earlier formats.** Format v1 images remain readable but produce a warning recommending re-encoding, because v1 allowed most wrong passphrases to be rejected without an Argon2id computation. Format v2 images are read without a warning; they are equally well protected but more detectable.
 - **Job control.** Suspending the program (Ctrl+Z) at the passphrase prompt can leave terminal echo disabled. Ctrl+C, SIGTERM and SIGHUP are handled.
 
+## License
+
+Copyright (C) 2026 Maxime de Montbron.
+
+ScatterSteg is free software, licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later). You may use, modify and distribute it, but any distributed version, and any modified version made available to users over a network, must be released under the same license with its source code.
+
 ## References
 
 - T. Filler, J. Judas, J. Fridrich — *Minimizing Additive Distortion in Steganography Using Syndrome-Trellis Codes* (2011)

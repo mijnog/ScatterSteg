@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: png_save then png_load must give back the same pixels,
    for any dimensions and contents. */
 #include "png_io.h"

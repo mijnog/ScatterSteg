@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: png_load on arbitrary bytes. Chunk CRCs are recomputed
    first, so mutations reach the decoder instead of failing the CRC check.
    Every image that loads is saved again (copying its metadata, as encode

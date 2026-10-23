@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Maxime de Montbron
 """End-to-end tests for the scattersteg binary.
 
 The passphrase is read from /dev/tty, so each run gets a pseudo-terminal

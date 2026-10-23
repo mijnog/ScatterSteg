@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Maxime de Montbron
 """Writes a seed corpus for fuzz_png_load: small valid PNGs of every color
 type, bit depth and interlace mode, plus ancillary chunks (tRNS, gAMA,
 tEXt), so the fuzzer starts from inputs that reach every decode path."""

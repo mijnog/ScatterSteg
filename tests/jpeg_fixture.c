@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+   Copyright (C) 2026 Maxime de Montbron */
 /* Writes a deterministic test JPEG, so tests don't need external tools.
 
    jpeg_fixture OUT WIDTH HEIGHT COMPONENTS QUALITY [option...]

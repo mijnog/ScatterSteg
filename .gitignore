@@ -13,3 +13,6 @@ rust/fuzz/target/
 rust/fuzz/corpus/
 rust/fuzz/artifacts/
 rust/fuzz/fuzz-*.log
+benchmark/dumpcoef
+benchmark/__pycache__/
+benchmark/results-raw.txt.bak

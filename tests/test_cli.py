@@ -627,6 +627,56 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "meet at the old bridge")
 
+    def decode_bytes(self, src, *flags, passphrase="correct horse"):
+        """What decode wrote to stdout, byte for byte"""
+        out = self.path("decoded.bin")
+        open(out, "wb").close()
+        code, log = run(["decode", *flags, "-i", src], passphrases=[passphrase], stdout_path=out)
+        self.assertEqual(code, 0, log)
+        with open(out, "rb") as f:
+            return f.read()
+
+    def test_raw_keeps_every_byte(self):
+        # -r: nothing is stripped on the way in or added on the way out
+        for msg in (b"no newline", b"one newline\n", b"two newlines\n\n", b"\x00\xff\n\x00", b"\n"):
+            with self.subTest(msg=msg):
+                out = self.path("raw.png")
+                code, log = self.encode_raw(msg, out)
+                self.assertEqual(code, 0, log)
+                self.assertEqual(self.decode_bytes(out, "-r"), msg)
+
+    def test_default_newline_handling_unchanged(self):
+        # without -r: one trailing newline is dropped on encode, one added on decode
+        out = self.path("plain.png")
+        self.assertEqual(self.encode(b"abc\n", out)[0], 0)
+        self.assertEqual(self.decode_bytes(out), b"abc\n")
+        self.assertEqual(self.decode_bytes(out, "-r"), b"abc")
+        self.assertEqual(self.encode(b"abc", out)[0], 0)
+        self.assertEqual(self.decode_bytes(out), b"abc\n")
+        # a message stored with -r reads back with the newline added, as before
+        self.assertEqual(self.encode_raw(b"abc\n", out)[0], 0)
+        self.assertEqual(self.decode_bytes(out), b"abc\n\n")
+
+    def test_raw_flag_forms(self):
+        # getopt clusters: -ri file, and -r after the other options
+        out = self.path("cluster.png")
+        code, log = run(["encode", "-i", self.cover, "-o", out, "-r"], b"x\n", ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.decode_bytes(out, "-r"), b"x\n")
+        code, log = run(["encode", "-ri", self.cover, "-o", out], b"y", ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.decode_bytes(out, "-r"), b"y")
+
+    def test_raw_message_too_long(self):
+        # raw keeps the final newline, so it counts against the capacity
+        out = self.path("long.png")
+        code, log = self.encode_raw(b"A" * 100000 + b"\n", out)
+        self.assertNotEqual(code, 0)
+        self.assertIn("too long", log)
+
+    def encode_raw(self, message, out, passphrase="correct horse"):
+        return run(["encode", "-r", "-i", self.cover, "-o", out], message, [passphrase, passphrase])
+
     def test_passphrase_ends_at_nul(self):
         # A NUL typed or pasted ends the passphrase, as when it was a C string
         out = self.path("steg.png")

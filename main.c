@@ -552,11 +552,11 @@ static int output_name_matches(const char *input, const char *output) {
 /* Read the entire contents of stdin into a sodium_malloc buffer.
    Prints a prompt first if stdin is a terminal. Caller must sodium_free.
    The message may hold any bytes, NUL included: its length (less a final
-   newline) goes in *out_len. Stops reading once that is longer than
+   newline, unless raw) goes in *out_len. Stops reading once that is longer than
    max_len, so a huge stdin can't exhaust memory or overflow the payload
    length: then sets *too_long and returns NULL. Also NULL on a read error
    or out of memory, with errno set. */
-static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
+static char *read_message(size_t max_len, size_t *out_len, int *too_long, int raw) {
     *too_long = 0;
     if (isatty(STDIN_FILENO))
         fprintf(stderr, "Message (Ctrl+D when done):\n");
@@ -598,7 +598,7 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
         }
     }
 
-    if (len > 0 && buf[len - 1] == '\n')
+    if (!raw && len > 0 && buf[len - 1] == '\n')
         len--;
     if (len > max_len) {
         sodium_free(buf);
@@ -654,10 +654,11 @@ static void protect_process(void) {
 }
 
 static void usage(const char *prog) {
-    fprintf(stderr, "Usage: %s encode -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
-    fprintf(stderr, "       %s decode -i <image.png|jpg>\n", prog);
+    fprintf(stderr, "Usage: %s encode [-r] -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
+    fprintf(stderr, "       %s decode [-r] -i <image.png|jpg>\n", prog);
     fprintf(stderr, "       %s passphrase\n", prog);
     fprintf(stderr, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
+    fprintf(stderr, "Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -674,12 +675,14 @@ int main(int argc, char *argv[]) {
 
     const char *input  = NULL;
     const char *output = NULL;
+    int raw = 0;  /* -r: no newline stripped from the message or added to it */
 
     int opt;
-    while ((opt = getopt(argc - 1, argv + 1, "i:o:")) != -1) {
+    while ((opt = getopt(argc - 1, argv + 1, "i:o:r")) != -1) {
         switch (opt) {
             case 'i': input  = optarg; break;
             case 'o': output = optarg; break;
+            case 'r': raw = 1; break;
             default:
                 usage(argv[0]);
                 return 1;
@@ -795,7 +798,7 @@ int main(int argc, char *argv[]) {
         size_t max_msg = samples / 8 > V2_OVERHEAD ? samples / 8 - V2_OVERHEAD : 0;
         int too_long;
         size_t message_len;
-        char *message = read_message(max_msg, &message_len, &too_long);
+        char *message = read_message(max_msg, &message_len, &too_long, raw);
         int read_err = errno;  /* before the cleanup below changes it */
         if (!message) {
             sodium_free(keys);
@@ -912,8 +915,8 @@ int main(int argc, char *argv[]) {
         if (pt_len > 0) {  /* empty message: print nothing */
             /* All of it, NULs too. The newline goes in the same write, so
                the plaintext buffer has room: open_box allocates pt_len + 1. */
-            plaintext[pt_len] = '\n';
-            if (write_all(STDOUT_FILENO, plaintext, pt_len + 1) != 0) {
+            if (!raw) plaintext[pt_len] = '\n';
+            if (write_all(STDOUT_FILENO, plaintext, pt_len + !raw) != 0) {
                 /* e.g. a full disk: the message was not saved */
                 fprintf(stderr, "Error: could not write the message: %s\n", strerror(errno));
                 sodium_free(plaintext);

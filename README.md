@@ -50,8 +50,8 @@ There is also a Rust port in [`rust/`](rust/README.md) with the same command lin
 
 | steghide | ScatterSteg |
 |---|---|
-| `steghide embed -cf cover.jpg -ef secret.txt -sf out.jpg` | `./scattersteg encode -i cover.jpg -o out.jpg < secret.txt` |
-| `steghide extract -sf out.jpg -xf secret.txt` | `./scattersteg decode -i out.jpg > secret.txt` |
+| `steghide embed -cf cover.jpg -ef secret.txt -sf out.jpg` | `./scattersteg encode -r -i cover.jpg -o out.jpg < secret.txt` |
+| `steghide extract -sf out.jpg -xf secret.txt` | `./scattersteg decode -r -i out.jpg > secret.txt` |
 | `-p passphrase` | not accepted: the passphrase is typed at the terminal, echo off, so it never appears in the process list or shell history |
 | `steghide info` | none: the image carries no header to read, so there is nothing to report without the passphrase |
 | `-e`, `-z`, `-N`, `-K` (algorithm, compression, filename, checksum) | none: always XSalsa20-Poly1305 with an Argon2id key; the message is read from standard input and no filename is stored |
@@ -59,7 +59,7 @@ There is also a Rust port in [`rust/`](rust/README.md) with the same command lin
 What differs:
 
 - **Formats.** ScatterSteg handles PNG and JPEG. It does not read BMP, WAV or AU. PNG covers must be 8-bit RGB or grayscale without transparency.
-- **Output.** `decode` writes the message to standard output, any bytes included, and adds a newline, so a file that goes in comes out one byte longer.
+- **Newlines.** Use `-r` (raw) on both commands to store and print a file byte for byte, any bytes included. Without it, `encode` drops one trailing newline from the message and `decode` adds one, which suits `echo "text" | encode` and prints a clean line at the terminal but changes a file that does not end in a newline. A message stored with `-r` and read without it gains a newline; one stored without it and read with `-r` loses its last newline.
 - **Passphrase.** At least 12 bytes for a new image. `./scattersteg passphrase` prints a random one.
 - **Not compatible.** Neither tool can read the other's images.
 - **Detectability.** Against the rich-model detectors in [`benchmark/`](benchmark/README.md), steghide is caught 96–98% of the time at every payload tested, and ScatterSteg about 65% at 0.05 bits per pixel. See [Steganalysis results](#steganalysis-results) for the numbers and what they do not show.

@@ -82,7 +82,10 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
         // so must we, or we'd write such a chunk back out and C couldn't read
         // the result. A lowercase third letter (reserved) is refused only by
         // newer libpng: load the file, but don't write that chunk back.
-        if !name.iter().all(u8::is_ascii_alphabetic) { return None; }
+        if !name.iter().all(u8::is_ascii_alphabetic) {
+            if after_idat { break; } // the pixels are in: C stops reading here, keeping what it has
+            return None;
+        }
         if name[2] & 0x20 != 0 { continue; }
         match &name {
             b"IDAT" => { after_idat = true; continue; }
@@ -132,9 +135,11 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
                 seen_plte = true;
                 plte_entries = len / 3;
                 if color == 3 {
-                    // libpng fails on a palette that isn't whole entries, is
-                    // empty, or has more than the bit depth allows
-                    if len % 3 != 0 || len == 0 || plte_entries > 1usize << depth.min(8) { return false; }
+                    // libpng fails on a palette that isn't whole entries or
+                    // is empty; one with more entries than the bit depth
+                    // allows is only cut short (written below)
+                    if len % 3 != 0 || len == 0 || len > 768 { return false; }
+                    plte_entries = plte_entries.min(1usize << depth.min(8));
                     true
                 } else {
                     false // ignored for other color types
@@ -150,8 +155,10 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
                 true
             }
             _ => {
-                // libpng fails on a bad CRC in any critical chunk, kept or not
-                if name[0] & 0x20 == 0 {
+                // libpng fails on a bad CRC in any critical chunk before the
+                // image data ends (after it, the pixels are in: a failure
+                // there is ignored)
+                if name[0] & 0x20 == 0 && !idat_done {
                     let mut h = crc32fast::Hasher::new();
                     h.update(&file[pos + 4..pos + 8 + len]);
                     if h.finalize() != u32::from_be_bytes(file[pos + 8 + len..end].try_into().unwrap()) { return false; }
@@ -159,7 +166,15 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
                 false
             }
         };
-        if keep {
+        if keep && &name == b"PLTE" && plte_entries * 3 < len {
+            // Keep the entries the bit depth allows, with a CRC to match
+            let n = plte_entries * 3;
+            file.copy_within(pos + 4..pos + 8 + n, out + 4);
+            file[out..out + 4].copy_from_slice(&(n as u32).to_be_bytes());
+            let crc = crc32fast::hash(&file[out + 4..out + 8 + n]);
+            file[out + 8 + n..out + 12 + n].copy_from_slice(&crc.to_be_bytes());
+            out += 12 + n;
+        } else if keep {
             file.copy_within(pos..end, out);
             out += end - pos;
         }

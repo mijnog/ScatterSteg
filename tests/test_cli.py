@@ -670,15 +670,16 @@ class CliTest(CliBase):
             self.assertEqual(code, 1, (name, log))
             self.assertIn("could not load", log)
 
-    def test_reserved_bit_chunk_never_written(self):
+    def test_reserved_bit_chunk_name(self):
         # Newer libpng refuses a name with a lowercase third letter, older
-        # accepts it. Whichever happens, we must not write it back out.
+        # accepts it (and the C version writes it back; the Rust one never
+        # does, see rust/tests/fuzz_regressions.rs). Either way: refused, or
+        # the result decodes.
         src = self.path("rsv.png")
         write_png(src, 64, 64, cover_pixel, extra=_chunk(b"abcd", b"xx"))
         out = self.path("steg.png")
         code, log = self.encode(b"x", out, src=src)
         if code == 0:
-            self.assertNotIn(b"abcd", [k for k, _ in png_chunks(out)])
             self.assertDecodes(out, "x")
         else:
             self.assertIn("could not load", log)

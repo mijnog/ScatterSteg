@@ -185,6 +185,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
+ "libz-sys",
  "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
@@ -336,6 +337,17 @@ dependencies = [
  "ureq",
  "vcpkg",
  "zip",
+]
+
+[[package]]
+name = "libz-sys"
+version = "1.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f710a23e6dbf193214fd46ca56a9d6864e550abe86202184532ae7275e46de19"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -538,7 +550,10 @@ dependencies = [
 name = "scattersteg-fuzz"
 version = "0.0.0"
 dependencies = [
+ "cc",
  "crc32fast",
+ "flate2",
+ "libc",
  "libfuzzer-sys",
  "scattersteg",
 ]

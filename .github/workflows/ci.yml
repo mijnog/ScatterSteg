@@ -82,11 +82,12 @@ jobs:
           rustup toolchain install nightly --profile minimal
           cargo install cargo-fuzz --locked
 
-      - name: Fuzz the Rust loaders for a minute each
+      - name: Fuzz the Rust loaders, and C against Rust, for a minute each
         working-directory: rust
         run: |
-          for t in png_load jpeg_load; do
-            cargo +nightly fuzz run $t -- -max_total_time=60 -rss_limit_mb=5000 -max_len=20000 -timeout=60
+          for t in png_load jpeg_load diff_png diff_jpeg; do
+            case $t in *png*) dict=dicts/png.dict;; *) dict=dicts/jpeg.dict;; esac
+            cargo +nightly fuzz run $t -- -dict=$dict -max_total_time=60 -rss_limit_mb=7000 -max_len=20000 -timeout=60
           done
 
       - name: Keep fuzzer crashes

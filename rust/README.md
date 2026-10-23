@@ -30,6 +30,9 @@ On purpose:
   and wrote it back with a valid CRC.
 - **A bad zlib checksum (Adler-32) in the image data is not an error.** The
   `png` crate doesn't check it; libpng refuses the file. The output is valid.
+- **Damaged compressed data after the last row fails the load.** libpng stops
+  reading once the image is complete; the `png` crate reads the zlib stream to
+  its end. (C-written images are never like this.)
 - **No libpng width/height cap** (1,000,000). Only the 2^28-pixel cap applies.
 
 Needed for compatibility:
@@ -60,8 +63,15 @@ Fuzzing (needs `cargo install cargo-fuzz` and a nightly toolchain):
 
     cargo +nightly fuzz run png_load  -- -max_len=20000 -rss_limit_mb=5000
     cargo +nightly fuzz run jpeg_load -- -max_len=20000 -rss_limit_mb=5000
+    cargo +nightly fuzz run diff_png  -- -dict=dicts/png.dict  -max_len=20000 -rss_limit_mb=5000
+    cargo +nightly fuzz run diff_jpeg -- -dict=dicts/jpeg.dict -max_len=20000 -rss_limit_mb=7000
 
 The targets mirror `tests/fuzz/fuzz_png_load.c` and `fuzz_jpeg_load.c`: whatever
 loads must save and reload identically. Inputs that once broke them are kept in
 `fuzz/regressions` and replayed by `cargo test`. CI runs both tests and a
 minute of each fuzzer on every push.
+
+`diff_png` and `diff_jpeg` link the C loaders in as well and check what C loads,
+Rust loads with the same pixels or carriers, and that what one writes the other
+reads back identically. Differences that are deliberate are listed above; the
+PNG target skips them.

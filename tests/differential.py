@@ -34,11 +34,20 @@ EXPECTED = {
     "bad_adler": "the png crate doesn't check the zlib Adler-32",
     "name_61626364": "newer libpng refuses a lowercase third letter; Rust loads and drops the chunk",
     "name_70726956": "likewise",
+    "plte_dup": "older libpng refuses a repeated PLTE",
 }
 
 SIG = b"\x89PNG\r\n\x1a\n"
 ch = T._chunk
 W = H = 64
+
+
+# C loads these and Rust refuses (never the reverse): the compressed image data
+# goes bad after the last row, which libpng never reads
+STRICTER = {
+    "fuzzreg_png_zlib_damaged_after_last_row": "the png crate reads to the end of the zlib stream",
+    "fuzzreg_png_zlib_damaged_after_last_row_2": "likewise",
+}
 
 
 def ihdr(w=W, h=H, depth=8, ctype=2, interlace=0):
@@ -162,6 +171,26 @@ def jpeg_cases(tmp):
     return out
 
 
+def png_fuzz_regressions():
+    """Inputs the differential fuzzer (rust/fuzz) once found the two disagreeing on.
+    The fuzz target fixes chunk CRCs on even-sized inputs; so do the same here."""
+    out = {}
+    d = os.path.join(HERE, "..", "rust", "fuzz", "regressions", "diff_png")
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            data = bytearray(open(os.path.join(d, f), "rb").read())
+            if len(data) % 2 == 0:
+                pos = 8
+                while pos + 12 <= len(data):
+                    n = int.from_bytes(data[pos:pos + 4], "big")
+                    if n > len(data) - pos - 12:
+                        break
+                    data[pos + 8 + n:pos + 12 + n] = zlib.crc32(bytes(data[pos + 4:pos + 8 + n])).to_bytes(4, "big")
+                    pos += 12 + n
+            out["fuzzreg_png_" + f] = bytes(data)
+    return out
+
+
 def loads(binary, path):
     code, log = T.run(["decode", "-i", path], passphrases=["wrong-passphrase-12"], binary=binary)
     return "could not load" not in log, code
@@ -169,10 +198,10 @@ def loads(binary, path):
 
 def main():
     with tempfile.TemporaryDirectory() as tmp:
-        cases = {**png_cases(), **mutated_pngs(), **jpeg_cases(tmp)}
+        cases = {**png_cases(), **mutated_pngs(), **png_fuzz_regressions(), **jpeg_cases(tmp)}
         files = {}
         for name, data in cases.items():
-            ext = ".jpg" if name.startswith(("jpeg_", "fuzzreg_")) else ".png"
+            ext = ".jpg" if data[:3] == b"\xff\xd8\xff" else ".png"
             files[name] = os.path.join(tmp, name + ext)
             with open(files[name], "wb") as f:
                 f.write(data)
@@ -186,6 +215,8 @@ def main():
                 if c != r:
                     if name in EXPECTED and not c[0] and r[0]:
                         print(f"expected  {name}: C={c} Rust={r}  ({EXPECTED[name]})")
+                    elif name in STRICTER and c[0] and not r[0]:
+                        print(f"expected  {name}: C={c} Rust={r}  ({STRICTER[name]})")
                     else:
                         bad.append(name)
                         print(f"MISMATCH  {name}: C={c} Rust={r}")

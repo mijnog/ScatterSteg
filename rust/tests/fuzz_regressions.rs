@@ -64,3 +64,37 @@ fn jpeg_regressions() {
         assert!(back.coefs == j.coefs && back.carriers == j.carriers, "{}", f.display());
     }
 }
+
+/// Newer libpng refuses a chunk name with a lowercase third letter, so we load
+/// such a file but never write the chunk back.
+#[test]
+fn reserved_bit_chunk_name_not_written() {
+    fn chunk(name: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        let mut c = crc32fast::Hasher::new();
+        c.update(name);
+        c.update(data);
+        out.extend_from_slice(&c.finalize().to_be_bytes());
+        out
+    }
+    let (w, h) = (8u32, 8u32);
+    let mut raw = Vec::new();
+    for _ in 0..h { raw.push(0); raw.extend(std::iter::repeat_n(7u8, w as usize * 3)); }
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut z, &raw).unwrap();
+    let mut ihdr = [w.to_be_bytes(), h.to_be_bytes()].concat();
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+    for c in [chunk(b"IHDR", &ihdr), chunk(b"abcd", b"xx"), chunk(b"tEXt", b"k\0v"), chunk(b"IDAT", &z.finish().unwrap()), chunk(b"IEND", b"")] {
+        file.extend(c);
+    }
+    let (input, out) = (scratch("rsv-in.png"), scratch("rsv-out.png"));
+    fs::write(&input, &file).unwrap();
+    let img = png_io::load(&input).expect("loads");
+    png_io::save(&img, &out).unwrap();
+    let written = fs::read(&out).unwrap();
+    assert!(!written.windows(4).any(|w| w == b"abcd"));
+    assert!(written.windows(4).any(|w| w == b"tEXt"), "other chunks are kept");
+}

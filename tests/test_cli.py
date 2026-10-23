@@ -1114,6 +1114,29 @@ class CliTest(CliBase):
                 self.assertTrue(os.WIFSIGNALED(status))
                 os.close(master)
 
+    def test_ignored_signal_stays_ignored_at_prompt(self):
+        # Under nohup (SIGHUP ignored), a hangup at the prompt mustn't kill it
+        pid, master = pty.fork()
+        if pid == 0:
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)  # inherited across exec
+            os.execv(BINARY, [BINARY, "decode", "-i", self.cover])
+        out, deadline = b"", time.monotonic() + TIMEOUT
+        while b"Passphrase: " not in out and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.5)[0]:
+                out += os.read(master, 1024)
+        os.kill(pid, signal.SIGHUP)
+        os.write(master, b"correct horse\n")
+        while True:  # drain until it exits
+            try:
+                if not os.read(master, 4096):
+                    break
+            except OSError:
+                break
+        _, status = os.waitpid(pid, 0)
+        os.close(master)
+        self.assertFalse(os.WIFSIGNALED(status))
+        self.assertEqual(os.waitstatus_to_exitcode(status), 1)  # no message in it
+
     def test_wrong_passphrase(self):
         out = self.path("steg.png")
         self.assertEqual(self.encode(b"top secret", out)[0], 0)

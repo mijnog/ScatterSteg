@@ -71,14 +71,19 @@ static char *read_passphrase(const char *prompt) {
         return NULL;
     }
 
-    /* Ctrl+C and friends would otherwise leave the terminal without echo */
+    /* Ctrl+C and friends would otherwise leave the terminal without echo.
+       A signal we were started ignoring (nohup, a script) stays ignored:
+       it can't kill us, so there's nothing to restore. */
     tty_restore_fd = fd;
     tty_restore = old;
     struct sigaction on_signal = {.sa_handler = restore_tty_and_die, .sa_flags = SA_RESETHAND};
     struct sigaction saved[N_RESTORE_SIGNALS];
     sigemptyset(&on_signal.sa_mask);
-    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++)
-        sigaction(restore_signals[i], &on_signal, &saved[i]);
+    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++) {
+        sigaction(restore_signals[i], NULL, &saved[i]);
+        if (saved[i].sa_handler != SIG_IGN)
+            sigaction(restore_signals[i], &on_signal, NULL);
+    }
 
     silent = old;
     silent.c_lflag &= ~ECHO;

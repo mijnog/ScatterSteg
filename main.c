@@ -133,7 +133,15 @@ static char *read_passphrase(const char *prompt) {
 
 /* ---- File format ----------------------------------------------------------
 
-   v3 (written by encode):
+   v4 (written by encode): as v3, except for where the salt goes.
+     salt     16 random bytes, as the STC syndrome (see stc.h) of the
+              samples of a public salt region: the first salt_region_pixels
+              pixels of the public permutation below. v3 wrote them straight
+              into 128 samples at those public positions, about 64 changes at
+              places anyone can look; spread over ~8192 samples, the salt
+              takes ~18 changes, as sparse as the payload's.
+
+   v3 (decode only):
      salt     16 random bytes, in the first 43 pixels (RGB; 128 for gray)
               of a public permutation (prng_permutation keyed with BLAKE2b
               of V2_SALT_LABEL), so it is spread over the image
@@ -156,18 +164,67 @@ static char *read_passphrase(const char *prompt) {
    Every pixel carries one bit per sample (R, G, B, or gray LSBs), written
    by LSB matching (a JPEG: one per carrier coefficient). There is no
    version marker, which would itself give the image away: decode tries
-   v3, then v2, then v1 (RGB PNG only). */
+   v4, then v3 and v2 (which share a salt layout), then v1 (RGB PNG only). */
 
 #define SALT_BYTES      crypto_pwhash_SALTBYTES             /* 16 */
-#define MAX_SALT_PIXELS (SALT_BYTES * 8)                    /* gray: 1 bit each */
+#define V4_SALT_SAMPLES 8192  /* the v4 salt region, when the image allows */
 #define V2_SALT_LABEL   "ScatterSteg v2 salt positions"
 #define V2_KDF_CONTEXT  "ScatStg2"                          /* exactly 8 chars */
 #define V2_OVERHEAD     (crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES)
 #define V1_OVERHEAD     (SALT_BYTES + V2_OVERHEAD)
 
-/* Pixels holding the v2 salt, and the 32-bit length header */
+/* Pixels holding the v2/v3 salt, and the 32-bit length header */
 static uint32_t salt_pixel_count(uint32_t channels) {
     return (SALT_BYTES * 8 + channels - 1) / channels;
+}
+
+/* Pixels in the v4 salt region: V4_SALT_SAMPLES samples' worth, but at most
+   1/16 of the image, and never fewer than one sample per salt bit */
+static uint32_t salt_region_pixels(uint32_t count, uint32_t channels) {
+    uint32_t want = (V4_SALT_SAMPLES + channels - 1) / channels;
+    uint32_t k = want < count / 16 ? want : count / 16;
+    uint32_t least = salt_pixel_count(channels);
+    return k > least ? k : least;
+}
+
+/* The v4 salt's carriers: all of the region's samples, up to STC's cap */
+static size_t salt_carriers(uint32_t k, uint32_t channels) {
+    return stc_carriers((size_t)k * channels, SALT_BYTES * 8);
+}
+
+/* The v4 salt, read from the region's sample bits. 0, or -1 if out of memory. */
+static int read_salt_v4(const Carrier *c, const uint32_t *salt_px, uint32_t k,
+                        uint8_t salt[SALT_BYTES]) {
+    size_t used = salt_carriers(k, carrier_channels(c));
+    uint8_t *y = malloc(used), m[SALT_BYTES * 8];
+    if (!y) return -1;
+    embed_get_bits(c, salt_px, 0, used, y);
+    stc_extract(y, SALT_BYTES * 8, used, m);
+    memset(salt, 0, SALT_BYTES);
+    for (unsigned i = 0; i < SALT_BYTES * 8; i++) salt[i / 8] |= (uint8_t)(m[i] << (i % 8));
+    free(y);
+    return 0;
+}
+
+/* Records the changes that make the region carry the salt. 0, or -1 if out
+   of memory. */
+static int write_salt_v4(const Carrier *c, const uint32_t *salt_px, uint32_t k,
+                         const uint8_t salt[SALT_BYTES], EmbedPlan *plan) {
+    size_t used = salt_carriers(k, carrier_channels(c));
+    uint8_t *x = malloc(used), *y = malloc(used), m[SALT_BYTES * 8];
+    float *costs = malloc(used * sizeof(float));
+    int r = -1;
+    if (x && y && costs) {
+        for (unsigned i = 0; i < SALT_BYTES * 8; i++) m[i] = (salt[i / 8] >> (i % 8)) & 1;
+        embed_get_bits(c, salt_px, 0, used, x);
+        embed_costs(c, salt_px, 0, used, costs);
+        if (stc_embed(x, costs, m, SALT_BYTES * 8, used, y) == 0) {
+            embed_set_bits(c, salt_px, 0, used, y, plan);
+            r = 0;
+        }
+    }
+    free(x); free(y); free(costs);
+    return r;
 }
 
 static uint32_t header_pixels(uint32_t channels) {
@@ -200,8 +257,9 @@ static Keys *derive_keys_v2(const char *passphrase, const uint8_t salt[SALT_BYTE
     return keys;
 }
 
-/* Where v2 keeps the salt: public, so the decoder can find it before it has
-   any key. Returns 0, or -1 on allocation failure. */
+/* The first k pixels of the public permutation, where the salt goes:
+   public, so the decoder can find it before it has any key. Returns 0, or
+   -1 on allocation failure. */
 static int salt_pixels(uint32_t count, uint32_t k, uint32_t *out) {
     uint8_t key[crypto_stream_chacha20_ietf_KEYBYTES];
     crypto_generichash(key, sizeof(key), (const uint8_t *)V2_SALT_LABEL,
@@ -214,20 +272,23 @@ static int cmp_u32(const void *a, const void *b) {
     return (x > y) - (x < y);
 }
 
-/* The v2 message order: the secret permutation with the k salt pixels
-   taken out, count - k entries. NULL on allocation failure. */
+/* The message order: the secret permutation with the k salt pixels taken
+   out, count - k entries. NULL on allocation failure. */
 static uint32_t *payload_order(const uint8_t *scatter_key, uint32_t count,
                                const uint32_t *salt_px, uint32_t k) {
-    uint32_t sorted[MAX_SALT_PIXELS];
+    uint32_t *sorted = malloc((size_t)k * sizeof(uint32_t));
+    if (!sorted) return NULL;
     memcpy(sorted, salt_px, k * sizeof(uint32_t));
     qsort(sorted, k, sizeof(uint32_t), cmp_u32);
 
     uint32_t *order = prng_permutation(scatter_key, count);
-    if (!order) return NULL;
-    uint32_t n = 0;
-    for (uint32_t i = 0; i < count; i++)
-        if (!bsearch(&order[i], sorted, k, sizeof(uint32_t), cmp_u32))
-            order[n++] = order[i];
+    if (order) {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < count; i++)
+            if (!bsearch(&order[i], sorted, k, sizeof(uint32_t), cmp_u32))
+                order[n++] = order[i];
+    }
+    free(sorted);
     return order;
 }
 
@@ -361,32 +422,38 @@ static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
     return DECODED;
 }
 
-static int decode_v2(const Carrier *c, const char *passphrase,
-                     uint8_t **plaintext, uint32_t *pt_len) {
-    uint32_t count = carrier_positions(c);
-    uint32_t k = salt_pixel_count(carrier_channels(c));
-    if (count < k + header_pixels(carrier_channels(c))) return NO_MATCH;
-    uint32_t salt_px[MAX_SALT_PIXELS];
+/* Decodes with one salt layout: v4's (an STC-coded salt region), or the
+   one v3 and v2 share (the salt written straight into 43 pixels). Each
+   costs an Argon2id run. */
+static int decode_keyed(const Carrier *c, int v4, const char *passphrase,
+                        uint8_t **plaintext, uint32_t *pt_len) {
+    uint32_t count = carrier_positions(c), ch = carrier_channels(c);
+    uint32_t k = v4 ? salt_region_pixels(count, ch) : salt_pixel_count(ch);
+    if (count < k + header_pixels(ch)) return NO_MATCH;
+    uint32_t *salt_px = malloc((size_t)k * sizeof(uint32_t));
     uint8_t salt[SALT_BYTES];
-    if (salt_pixels(count, k, salt_px) != 0) {
+    if (!salt_px || salt_pixels(count, k, salt_px) != 0 ||
+        (v4 ? read_salt_v4(c, salt_px, k, salt)
+            : embed_read_raw(c, salt_px, k, salt, SALT_BYTES)) != 0) {
+        free(salt_px);
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    embed_read_raw(c, salt_px, k, salt, SALT_BYTES);
 
     Keys *keys = derive_keys_v2(passphrase, salt);
+    uint32_t *order = keys ? payload_order(keys->scatter, count, salt_px, k) : NULL;
+    free(salt_px);
     if (!keys) return FAILED;
-    uint32_t *order = payload_order(keys->scatter, count, salt_px, k);
     if (!order) {
         sodium_free(keys);
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
 
-    /* v3 and v2 share salt, keys and order; they differ in how the payload
-       sits in it. Try v3 (what encode writes), then v2. */
+    /* v4 and v3 lay the payload out alike; v2 shares v3's salt and keys but
+       writes the payload straight in. */
     int r = NO_MATCH;
-    for (int v3 = 1; v3 >= 0 && r == NO_MATCH; v3--) {
+    for (int v3 = 1; v3 >= v4 && r == NO_MATCH; v3--) {  /* v4: v3 layout only */
         uint8_t *payload = NULL;
         uint32_t len = 0;
         r = v3 ? read_payload_v3(c, order, count - k, &payload, &len)
@@ -692,7 +759,7 @@ int main(int argc, char *argv[]) {
 
         Carrier carrier = cover.carrier;
         uint32_t count = carrier_positions(&carrier);
-        uint32_t k = salt_pixel_count(carrier_channels(&carrier));
+        uint32_t k = salt_region_pixels(count, carrier_channels(&carrier));
         if (count < k + header_pixels(carrier_channels(&carrier))) {
             free_passphrase(passphrase);
             cover_free(&cover);
@@ -709,11 +776,12 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        uint32_t salt_px[MAX_SALT_PIXELS];
+        uint32_t *salt_px = malloc((size_t)k * sizeof(uint32_t));
         uint32_t *order = NULL;
-        if (salt_pixels(count, k, salt_px) == 0)
+        if (salt_px && salt_pixels(count, k, salt_px) == 0)
             order = payload_order(keys->scatter, count, salt_px, k);
         if (!order) {
+            free(salt_px);
             sodium_free(keys);
             cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
@@ -732,6 +800,7 @@ int main(int argc, char *argv[]) {
         if (!message) {
             sodium_free(keys);
             free(order);
+            free(salt_px);
             cover_free(&cover);
             if (too_long) fprintf(stderr, "Error: message too long for this image\n");
             else fprintf(stderr, "Error: could not read message: %s\n", strerror(read_err));
@@ -743,6 +812,7 @@ int main(int argc, char *argv[]) {
             sodium_free(keys);
             sodium_free(message);
             free(order);
+            free(salt_px);
             cover_free(&cover);
             fprintf(stderr, "Message is empty; nothing written\n");
             return 0;
@@ -755,6 +825,7 @@ int main(int argc, char *argv[]) {
             sodium_free(keys);
             sodium_free(message);
             free(order);
+            free(salt_px);
             cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
             return 1;
@@ -774,12 +845,14 @@ int main(int argc, char *argv[]) {
         free(order);
         if (embedded == -1) {
             embed_plan_free(plan);
+            free(salt_px);
             cover_free(&cover);
             fprintf(stderr, "Error: message too long for this image\n");
             return 1;
         }
-        if (embedded != 0 || embed_write_raw(&carrier, salt_px, k, salt, SALT_BYTES, plan) != 0 ||
-            embed_apply(plan, NULL) != 0) {
+        int salted = embedded == 0 ? write_salt_v4(&carrier, salt_px, k, salt, plan) : -1;
+        free(salt_px);
+        if (salted != 0 || embed_apply(plan, NULL) != 0) {
             embed_plan_free(plan);
             cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
@@ -820,7 +893,9 @@ int main(int argc, char *argv[]) {
 
         uint8_t *plaintext = NULL;
         uint32_t pt_len = 0;
-        int r = decode_v2(&carrier, passphrase, &plaintext, &pt_len);
+        int r = decode_keyed(&carrier, 1, passphrase, &plaintext, &pt_len);    /* v4 */
+        if (r == NO_MATCH)
+            r = decode_keyed(&carrier, 0, passphrase, &plaintext, &pt_len);   /* v3, v2 */
         if (r == NO_MATCH) {
             r = decode_v1(&carrier, passphrase, &plaintext, &pt_len);
             if (r == DECODED)

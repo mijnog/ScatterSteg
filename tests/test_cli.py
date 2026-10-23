@@ -460,23 +460,90 @@ def forge_v3(src, dst, message, passphrase):
     write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
 
 
-def reveal(src, passphrase):
-    """Extract and decrypt a message independently of the binary: v3 (what
-    encode writes), else v2. Returns the plaintext bytes, or None."""
-    w, h, rows = read_png(src)
+# -- v4: the salt, too, is an STC syndrome, over a public region
+
+V4_SALT_SAMPLES = 8192
+
+
+def salt_region_pixels(count, ch):
+    want = (V4_SALT_SAMPLES + ch - 1) // ch
+    return max(min(want, count // 16), salt_pixel_count(ch))
+
+
+def salt_region(count, ch):
+    """The v4 salt pixels, and how many of their samples carry the salt"""
+    key = hashlib.blake2b(b"ScatterSteg v2 salt positions", digest_size=32).digest()
+    k = salt_region_pixels(count, ch)
+    return permutation_v2(key, count)[:k], stc_carriers(k * ch, SALT * 8)
+
+
+def layout_v4(rows, w, h, pw):
+    """(salt pixels, payload order, encryption key) for a v4 image"""
     ch = len(rows[0]) // w
-    _, order, enc_key = layout_v2(rows, w, h, passphrase.encode())
+    salt_px, used = salt_region(w * h, ch)
+    y = [read_bits(rows, w, salt_px, i, 1, ch) for i in range(used)]
+    m = stc_extract(y, SALT * 8, used)
+    salt = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(SALT))
+    scatter_key, enc_key = keys_v2(pw, salt)
+    return salt_px, payload_order_v2(scatter_key, w * h, salt_px), enc_key
+
+
+def set_bits(rows, w, order, start, bits, ch):
+    for i, bit in enumerate(bits):
+        p = order[(start + i) // ch]
+        k = (p % w) * ch + (start + i) % ch
+        rows[p // w][k] = (rows[p // w][k] & 0xFE) | bit
+
+
+def forge_v4(src, dst, message, passphrase):
+    """Embed `message` in the v4 format encode writes: as v3, but with the
+    salt as the STC syndrome of the public salt region"""
+    w, h, rows = read_png(src)
+    rows = [bytearray(r) for r in rows]
+    ch = len(rows[0]) // w
+    pw = passphrase.encode()
+    salt = os.urandom(SALT)
+    salt_px, used = salt_region(w * h, ch)
+    x = [read_bits(rows, w, salt_px, i, 1, ch) for i in range(used)]
+    set_bits(rows, w, salt_px, 0, stc_solve(x, to_bits(salt), used), ch)
+    scatter_key, enc_key = keys_v2(pw, salt)
+    order = payload_order_v2(scatter_key, w * h, salt_px)
+    box = seal(message, enc_key)
+    set_bits(rows, w, order, 0, [(len(box) >> b) & 1 for b in range(32)], ch)
+    n = stc_carriers(len(order) * ch - 32, len(box) * 8)
+    assert n, "message too long"
+    x = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
+    set_bits(rows, w, order, 32, stc_solve(x, to_bits(box), n), ch)
+    write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
+
+
+def read_box_v3(rows, w, order, ch, enc_key):
+    """The v3/v4 payload: a 32-bit length, then the box as an STC syndrome"""
     length = read_bits(rows, w, order, 0, 32, ch)
     samples = len(order) * ch - 32
-    if V2_OVERHEAD <= length and length * 8 <= samples:
-        mlen = length * 8
-        n = stc_carriers(samples, mlen)
-        y = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
-        m = stc_extract(y, mlen, n)
-        box = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(length))
-        pt = open_box(box, enc_key)
-        if pt is not None:
-            return pt
+    if not (V2_OVERHEAD <= length and length * 8 <= samples):
+        return None
+    mlen = length * 8
+    n = stc_carriers(samples, mlen)
+    y = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
+    m = stc_extract(y, mlen, n)
+    box = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(length))
+    return open_box(box, enc_key)
+
+
+def reveal(src, passphrase):
+    """Extract and decrypt a message independently of the binary: v4 (what
+    encode writes), else v3, else v2. Returns the plaintext bytes, or None."""
+    w, h, rows = read_png(src)
+    ch = len(rows[0]) // w
+    _, order, enc_key = layout_v4(rows, w, h, passphrase.encode())
+    pt = read_box_v3(rows, w, order, ch, enc_key)
+    if pt is not None:
+        return pt
+    _, order, enc_key = layout_v2(rows, w, h, passphrase.encode())
+    pt = read_box_v3(rows, w, order, ch, enc_key)
+    if pt is not None:
+        return pt
     payload = read_payload(rows, w, order, V2_OVERHEAD, ch)
     return None if payload is None else open_box(payload, enc_key)
 
@@ -506,9 +573,9 @@ def forge_v1(src, dst, message, passphrase):
     write_png(dst, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
 
 
-def capacity_v2(w, h, ch=3):
-    """Largest message encode accepts for a w x h cover"""
-    return ((w * h - salt_pixel_count(ch)) * ch - 32) // 8 - V2_OVERHEAD
+def capacity(w, h, ch=3):
+    """Largest message encode accepts for a w x h cover (v4)"""
+    return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - V2_OVERHEAD
 
 
 def cover_pixel(x, y):
@@ -580,14 +647,15 @@ class CliTest(CliBase):
         self.assertDecodes(target, "in place")
 
     def test_near_capacity(self):
-        # 64x64: 4096 - 43 salt pixels = 4053 px * 3 bits; minus the 32-bit
-        # header -> 1515 payload bytes; minus nonce 24 + MAC 16 = 1475
-        self.assertEqual(capacity_v2(64, 64), 1475)
+        # 64x64: 4096 - 256 salt-region pixels (1/16 of the image) = 3840
+        # px * 3 bits; minus the 32-bit header -> 1436 payload bytes; minus
+        # nonce 24 + MAC 16 = 1396
+        self.assertEqual(capacity(64, 64), 1396)
         out = self.path("full.png")
-        msg = ("x" * 1475).encode()
+        msg = ("x" * 1396).encode()
         code, log = self.encode(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertDecodes(out, "x" * 1475)
+        self.assertDecodes(out, "x" * 1396)
 
     def test_samples_change_by_at_most_one(self):
         out = self.path("steg.png")
@@ -637,7 +705,7 @@ class CliTest(CliBase):
     def test_gray_capacity(self):
         gray = self.path("gray.png")
         write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)
-        cap = capacity_v2(40, 40, 1)  # (1600 - 128 - 32) / 8 - 40 = 140
+        cap = capacity(40, 40, 1)  # salt region 128 px: (1600 - 128 - 32) / 8 - 40 = 140
         self.assertEqual(cap, 140)
         out = self.path("steg.png")
         self.assertEqual(self.encode(b"g" * cap, out, src=gray)[0], 0)
@@ -830,16 +898,34 @@ class CliTest(CliBase):
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_salt_at_public_positions(self):
-        # The salt is readable by anyone from the public positions, and the
+        # The salt is readable by anyone from the public salt region, and the
         # encryption key derived from it opens the message
         out = self.path("steg.png")
         self.assertEqual(self.encode(b"salted", out)[0], 0)
         w, h, rows = read_png(out)
-        salt_px, order, enc_key = layout_v2(rows, w, h, b"correct horse")
-        self.assertEqual(len(set(salt_px)), SALT_PIXELS)
+        salt_px, order, enc_key = layout_v4(rows, w, h, b"correct horse")
+        k = salt_region_pixels(w * h, 3)
+        self.assertEqual(len(set(salt_px)), k)
         self.assertFalse(set(salt_px) & set(order))
-        self.assertEqual(len(order), w * h - SALT_PIXELS)
+        self.assertEqual(len(order), w * h - k)
         self.assertEqual(reveal(out, "correct horse"), b"salted")
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_salt_positions_barely_change(self):
+        # v3 wrote the salt straight into the 43 public pixels v2 defined,
+        # changing ~64 of their 129 samples in every image: a signal at places
+        # anyone can look. v4 hides it as a syndrome of the whole region.
+        noise = __import__("random").Random(9)
+        px = [noise.getrandbits(24) for _ in range(96 * 96)]
+        write_png(self.cover, 96, 96, lambda x, y: tuple((px[y * 96 + x] >> s) & 0xFF for s in (0, 8, 16)))
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"m" * 20, out)[0], 0)
+        _, _, before = read_png(self.cover)
+        _, _, after = read_png(out)
+        old = salt_pixels_v2(96 * 96, 3)  # the 43 pixels v3 used
+        changed = sum(before[p // 96][(p % 96) * 3 + c] != after[p // 96][(p % 96) * 3 + c]
+                      for p in old for c in range(3))
+        self.assertLess(changed, 16, changed)  # v3: about 64
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_syndrome_coding_changes_less(self):
@@ -857,6 +943,17 @@ class CliTest(CliBase):
         direct = (len(msg) + V2_OVERHEAD) * 8 // 2 + 16 + 64  # payload, header, salt
         self.assertLess(changed, direct * 0.5, (changed, direct))
         self.assertEqual(reveal(out, "correct horse"), msg)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_v3_image_still_decodes(self):
+        # v3 images (salt written straight in) decode silently: decode falls
+        # back to v3's salt layout, at the cost of a second Argon2id run
+        out = self.path("v3.png")
+        forge_v3(self.cover, out, b"from v3", "correct horse")
+        code, log = self.decode(out)
+        self.assertEqual(code, 0, log)
+        self.assertIn("from v3\n", log)
+        self.assertNotIn("Warning", log)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_v2_image_still_decodes(self):
@@ -882,7 +979,7 @@ class CliTest(CliBase):
         # 800x600: 1.44M bits -> 179,928 message bytes, through stdin, the
         # pty and the 1 KiB-doubling read buffer
         write_png(self.cover, 800, 600, cover_pixel)
-        cap = capacity_v2(800, 600)
+        cap = capacity(800, 600)
         msg = bytes(65 + i % 26 for i in range(cap))
         out = self.path("big.png")
         code, log = self.encode(msg, out)
@@ -1019,7 +1116,7 @@ class CliTest(CliBase):
         self.assertEqual(self.encode(b"authenticated", out)[0], 0)
         w, h, rows = read_png(out)
         rows = [bytearray(r) for r in rows]
-        _, order, _ = layout_v2(rows, w, h, b"correct horse")
+        _, order, _ = layout_v4(rows, w, h, b"correct horse")
         pos = 32 + (NONCE + MAC + 3) * 8  # a bit of the 4th plaintext byte
         p = order[pos // 3]
         rows[p // w][(p % w) * 3 + pos % 3] ^= 1
@@ -1283,8 +1380,8 @@ class CrossCheckTest(CliBase):
         ch = rng.choice([3, 3, 1])
         lo = 16 if ch == 3 else 40  # gray holds 1 bit per pixel
         w, h = rng.randint(lo, 72), rng.randint(lo, 72)
-        capacity = capacity_v2(w, h, ch)
-        n = rng.choice([1, 2, rng.randint(1, capacity), capacity])
+        room = capacity(w, h, ch)
+        n = rng.choice([1, 2, rng.randint(1, room), room])
         # No NUL (printing stops there), no CR (the pty's \n -> \r\n
         # translation is undone on output) and no trailing newline (stripped)
         msg = bytes(rng.choice([b for b in range(1, 256) if b != 13]) for _ in range(n))
@@ -1319,7 +1416,7 @@ class CrossCheckTest(CliBase):
             with self.subTest(case=case, size=(w, h), channels=ch, length=len(msg), seed=self.SEED + 1):
                 self.cover_for(w, h, ch, rng)
                 out = self.path("forged.png")
-                forge_v3(self.cover, out, msg, pw)
+                forge_v4(self.cover, out, msg, pw)
                 code, log = run(["decode", "-i", out], passphrases=[pw])
                 self.assertEqual(code, 0, log)
                 # Byte-exact: the output is the raw message plus "\n"
@@ -1502,7 +1599,7 @@ class FaultSweepTest(CliBase):
     def test_encode_sweep_long_message(self):
         # Over read_message's initial 1 KiB buffer, so its realloc can fail too
         write_png(self.cover, 64, 64, cover_pixel)
-        self.assertGreater(self.encode_sweep(b"y" * 1400), 60)
+        self.assertGreater(self.encode_sweep(b"y" * 1300), 60)
 
     def test_decode_sweep(self):
         steg = self.path("steg.png")

@@ -120,21 +120,21 @@ make coverage   # line coverage over the whole suite (~98%); annotated sources i
 | Kept from the cover | interlacing, every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) and safe-to-copy chunks, byte for byte and in place, before or after the image data | quantization, sampling, coding mode, restart interval, APPn/COM markers |
 | Refused | palette, transparency, 16-bit, <8-bit gray | 12-bit, lossless, not re-encodable, data after the image (MPO, Ultra HDR) |
 
-## File format (v3)
+## File format (v4)
 
 The image contains no header or version marker, as either would reveal the presence of a message. Every pixel holds one bit per sample, in the LSBs of R, G and B (or of the gray value), set by exchanging values between pairs of samples where possible and LSB matching otherwise. Below, "sample k" means bit position k counted along the payload order: pixel `order[k / channels]`, channel `k % channels`.
 
-1. **Salt** — 16 random bytes in the first 43 pixels (128 for grayscale) of a public pixel order: `prng_permutation` keyed with `BLAKE2b-256("ScatterSteg v2 salt positions")`. Public, so the decoder can find it before it has a key, and spread out rather than in a corner.
+1. **Salt** — 16 random bytes, carried as the STC syndrome (as in step 5, with the same costs) of the samples of a public *salt region*: the first k pixels of a public pixel order, `prng_permutation` keyed with `BLAKE2b-256("ScatterSteg v2 salt positions")`, where k = max(⌈128 / channels⌉, min(⌈8192 / channels⌉, ⌊pixels / 16⌋)) and the first min(k · channels, 64 · 128) of its samples are used. Public, so the decoder can find it before it has a key; syndrome-coded, so the roughly 18 changes it needs are as sparse as the payload's.
 2. **Keys** — `master = Argon2id(passphrase, salt, opslimit 3, memlimit 256 MiB)`; the scatter key and encryption key are `crypto_kdf` subkeys 1 and 2 of `master`, context `ScatStg2`.
 3. **Order** — `prng_permutation(scatter key)` over the pixels, with the salt pixels removed.
 4. **Length** — the box length L (32 bits, little-endian), in the LSBs of samples 0–31.
 5. **Box** — `nonce (24) || crypto_secretbox(message)`, as bits (LSB first), is the STC syndrome of the LSBs of the samples from 32 on. With N samples left and m = 8L message bits, n = min(N, 64·m) of them are used; message bit i is row i of H·y, where block i covers samples ⌊i·n/m⌋ to ⌊(i+1)·n/m⌋ − 1 and its j-th sample contributes column j of the 7-row submatrix to rows i…i+6. Columns: splitmix64 seeded with `0x5354432d48415431 ^ (⌊n/m⌋ + 1)`, low 7 bits, with bits 0 and 6 set. The rows run in independent chunks of ⌊2²⁰ / (⌊n/m⌋ + 1)⌋ message bits.
 
-**JPEG** uses the same layout over a different kind of position: each *carrier* is one AC coefficient with |value| ≥ 2, taken in component, block-row, block and coefficient order, and carries one bit. So the salt takes the first 128 carriers of the public order. DC coefficients, zeros and ±1 are never used, and embedding keeps every carrier at |value| ≥ 2 and within ±1023, so the decoder finds the same carriers and the encoder can write them.
+**JPEG** uses the same layout over a different kind of position: each *carrier* is one AC coefficient with |value| ≥ 2, taken in component, block-row, block and coefficient order, and carries one bit. Its salt region is counted in carriers (one sample each). DC coefficients, zeros and ±1 are never used, and embedding keeps every carrier at |value| ≥ 2 and within ±1023, so the decoder finds the same carriers and the encoder can write them.
 
 **Costs** determine which samples change and are chosen by the encoder alone (the decoder does not use them): uniform for PNG; for JPEG, the coefficient's quantization step, ×1.5 when |value| = 2.
 
-**v2** is the same with the box's bits written straight into samples 32 on; **v1** used a BLAKE2b-only scatter key. Decode tries v3, v2 (same keys, one Argon2id run), then v1.
+**v3** wrote the salt's bits straight into the first 43 public pixels (128 samples), about 64 changes at positions anyone can compute; a targeted test of prediction error at those positions detected it slightly above chance (AUC 0.56 on 500 ALASKA2 images, against 0.50 for v4). **v2** is v3 with the box's bits also written straight in, into samples 32 on; **v1** used a BLAKE2b-only scatter key. Decode tries v4, then v3 and v2 (which share a salt layout and keys, so one further Argon2id run), then v1.
 
 `prng_permutation(key, n)` is a forward Fisher–Yates shuffle (for `i` from 0 to n−2, swap slot `i` with `i + uniform(n − i)`), with `uniform` drawing little-endian 32-bit words from the ChaCha20-IETF keystream of `key` (zero nonce, counter from 0) and rejecting values below `2³² mod bound`.
 
@@ -146,7 +146,7 @@ The image contains no header or version marker, as either would reveal the prese
 - **Cover selection.** Noisy photographs are the most suitable covers. Flat regions, gradients and posterized images (few distinct values or gaps in the histogram) conceal changes poorly, since a ±1 change is conspicuous among identical neighbours and no adjacent value is available for exchange.
 - **JPEG capacity.** JPEG covers carry less data than PNG covers and are more detectable per bit. Only embedded coefficients change, but the file is not byte-identical to the cover: optimized Huffman tables are regenerated, and progressive files are written with libjpeg's standard scan sequence.
 - **Metadata.** PNG image data is recompressed, and unknown chunks not marked safe to copy are dropped, as the PNG specification requires. Anyone holding the original cover can locate the changes by comparison.
-- **Earlier formats.** Format v1 images remain readable but produce a warning recommending re-encoding, because v1 allowed most wrong passphrases to be rejected without an Argon2id computation. Format v2 images are read without a warning; they are equally well protected but more detectable.
+- **Earlier formats.** Format v1 images remain readable but produce a warning recommending re-encoding, because v1 allowed most wrong passphrases to be rejected without an Argon2id computation. Format v2 and v3 images are read without a warning; they are equally well protected but more detectable.
 - **Job control.** Suspending the program (Ctrl+Z) at the passphrase prompt can leave terminal echo disabled. Ctrl+C, SIGTERM and SIGHUP are handled.
 
 ## License

@@ -70,6 +70,48 @@ unsafe extern "C-unwind" fn limit_scans(cinfo: j_common_ptr) {
     }
 }
 
+/// Where libjpeg writes the JPEG: a buffer we own, so a failure partway
+/// leaves nothing for us to guess about. (`jpeg_mem_dest` only updates the
+/// caller's pointer when it finishes, so after an error that pointer can name
+/// a buffer it has already freed.)
+#[repr(C)]
+struct Dest {
+    mgr: jpeg_destination_mgr, // first: libjpeg hands back a pointer to it
+    buf: Vec<u8>,
+}
+
+const DEST_CHUNK: usize = 64 << 10;
+
+/// Grows the buffer by at least `by` bytes and points libjpeg at the new space
+unsafe fn dest_grow(cinfo: j_compress_ptr, by: usize) {
+    unsafe {
+        let d = &mut *((*cinfo).dest as *mut Dest);
+        let used = d.buf.len();
+        if d.buf.try_reserve_exact(by).is_err() { error_exit(cinfo as j_common_ptr); }
+        d.buf.resize(used + by, 0);
+        d.mgr.next_output_byte = d.buf.as_mut_ptr().add(used);
+        d.mgr.free_in_buffer = by;
+    }
+}
+
+unsafe extern "C-unwind" fn dest_init(cinfo: j_compress_ptr) { unsafe { dest_grow(cinfo, DEST_CHUNK) } }
+
+unsafe extern "C-unwind" fn dest_empty(cinfo: j_compress_ptr) -> boolean {
+    unsafe {
+        let len = (*((*cinfo).dest as *mut Dest)).buf.len();
+        dest_grow(cinfo, len); // doubles
+    }
+    1
+}
+
+unsafe extern "C-unwind" fn dest_term(cinfo: j_compress_ptr) {
+    unsafe {
+        let d = &mut *((*cinfo).dest as *mut Dest);
+        let unused = d.mgr.free_in_buffer;
+        d.buf.truncate(d.buf.len() - unused);
+    }
+}
+
 fn zeroed_box<T>() -> Box<T> {
     // SAFETY: only used for libjpeg's plain-C structs, for which all-zero is valid
     unsafe { Box::new(MaybeUninit::<T>::zeroed().assume_init()) }
@@ -114,7 +156,10 @@ impl JpegImage {
     /// or would need more than 1 GiB of coefficients, or of memory for its
     /// carriers.
     pub fn load(path: &Path) -> Option<JpegImage> {
-        let data = crate::fault::read_file(path, &[0xFF, 0xD8, 0xFF]).ok()?;
+        Self::from_bytes(crate::fault::read_file(path, &[0xFF, 0xD8, 0xFF]).ok()?)
+    }
+
+    fn from_bytes(data: Vec<u8>) -> Option<JpegImage> {
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut progress: Box<jpeg_progress_mgr> = zeroed_box();
         progress.progress_monitor = Some(limit_scans);
@@ -237,8 +282,15 @@ impl JpegImage {
     /// (a quantization table redefined between scans, sampling factors too
     /// big for the scans it would generate, ...: each found by fuzzing).
     /// Encodes to nowhere to find out. True if `save` would succeed (barring I/O).
+    ///
+    /// And that what it writes reads back as the same coefficients: a
+    /// truncated progressive file (a first AC scan at Al=1 and no refinement)
+    /// is written with different values, which would corrupt a message hidden
+    /// in them. The C version doesn't check this.
     pub fn check_writable(&mut self) -> bool {
-        self.encode().is_some()
+        let Some(bytes) = self.encode() else { return false };
+        let Some(back) = JpegImage::from_bytes(bytes) else { return false };
+        back.coefs == self.coefs && back.carriers == self.carriers
     }
 
     /// Writes the coefficients and markers as a JPEG, atomically
@@ -277,11 +329,20 @@ impl JpegImage {
         let s: *mut jpeg_decompress_struct = &mut *self.src;
         guarded(|| unsafe { jpeg_CreateCompress(d, JPEG_LIB_VERSION as c_int, size_of::<jpeg_compress_struct>()) }).ok()?;
 
-        let mut out: *mut u8 = ptr::null_mut();
-        let mut out_len: c_ulong = 0;
+        // Declared before the compressor is destroyed below, so it outlives it
+        let mut dest = Box::new(Dest {
+            mgr: jpeg_destination_mgr {
+                next_output_byte: ptr::null_mut(),
+                free_in_buffer: 0,
+                init_destination: Some(dest_init),
+                empty_output_buffer: Some(dest_empty),
+                term_destination: Some(dest_term),
+            },
+            buf: Vec::new(),
+        });
         let virt = self.virt;
         let done = guarded(|| unsafe {
-            jpeg_mem_dest(d, &mut out, &mut out_len);
+            (*d).dest = &mut dest.mgr;
 
             // Same quantization, sampling, color space and coding as the cover
             jpeg_copy_critical_parameters(s, d);
@@ -315,17 +376,9 @@ impl JpegImage {
             }
             jpeg_finish_compress(d);
         });
-        let bytes = if done.is_ok() {
-            // SAFETY: jpeg_finish_compress left the whole output in `out`
-            Some(unsafe { std::slice::from_raw_parts(out, out_len as usize) }.to_vec())
-        } else {
-            None
-        };
-        unsafe {
-            jpeg_destroy_compress(d);
-            if !out.is_null() { libc::free(out.cast()); }
-        }
-        bytes
+        // jpeg_finish_compress ran dest_term, which trimmed the buffer to the output
+        unsafe { jpeg_destroy_compress(d) };
+        done.is_ok().then(|| std::mem::take(&mut dest.buf))
     }
 }
 

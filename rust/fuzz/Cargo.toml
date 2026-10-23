@@ -1,0 +1,29 @@
+[package]
+name = "scattersteg-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crc32fast = "1.5.3"
+scattersteg = { path = ".." }
+
+[[bin]]
+name = "png_load"
+path = "fuzz_targets/png_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jpeg_load"
+path = "fuzz_targets/jpeg_load.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

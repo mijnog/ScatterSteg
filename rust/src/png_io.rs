@@ -111,7 +111,7 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
 fn decoder_view(file: &mut Vec<u8>) -> bool {
     let (mut pos, mut out) = (8, 8);
     let (mut seen_plte, mut seen_trns, mut in_idat, mut idat_done) = (false, false, false, false);
-    let (mut color, mut plte_entries) = (0u8, 0usize);
+    let (mut color, mut depth, mut plte_entries) = (0u8, 0u8, 0usize);
     while pos + 12 <= file.len() {
         let len = u32::from_be_bytes(file[pos..pos + 4].try_into().unwrap()) as usize;
         if len > i32::MAX as usize || pos + 12 + len > file.len() { break; }
@@ -122,11 +122,22 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
         let keep = match &name {
             b"IHDR" => {
                 let first = out == 8;
-                if first && len == 13 { color = file[pos + 8 + 9]; }
+                if first && len == 13 { depth = file[pos + 8 + 8]; color = file[pos + 8 + 9]; }
                 if !first && !in_idat && !idat_done { return false; } // libpng: duplicate IHDR
                 first // one after the image data is ignored
             }
-            b"PLTE" if !seen_plte => { seen_plte = true; plte_entries = len / 3; true }
+            b"PLTE" if !seen_plte => {
+                seen_plte = true;
+                plte_entries = len / 3;
+                if color == 3 {
+                    // libpng fails on a palette that isn't whole entries, is
+                    // empty, or has more than the bit depth allows
+                    if len % 3 != 0 || len == 0 || plte_entries > 1usize << depth.min(8) { return false; }
+                    true
+                } else {
+                    false // ignored for other color types
+                }
+            }
             b"tRNS" if !seen_trns => {
                 seen_trns = true;
                 match color { 0 => len == 2, 2 => len == 6, 3 => seen_plte && len <= plte_entries, _ => false }

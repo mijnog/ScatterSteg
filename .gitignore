@@ -9,3 +9,6 @@ tests/build/
 __pycache__/
 !tests/fuzz/regressions/**
 rust/target/
+rust/fuzz/target/
+rust/fuzz/corpus/
+rust/fuzz/artifacts/

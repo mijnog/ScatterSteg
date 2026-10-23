@@ -163,6 +163,10 @@ impl JpegImage {
             trailing_data: false,
             _data: Vec::new(),
         };
+        // `img` owns the struct now: take the pointer from there (the Box's
+        // address is the same, but a pointer taken before the move is not
+        // derived from the Box that holds it)
+        let s: *mut jpeg_decompress_struct = &mut *img.src;
         // Reading stops at EOI: anything left in the buffer comes after
         img.trailing_data = unsafe { (*(*s).src).bytes_in_buffer } > 0;
         let collected = guarded(|| img.collect_carriers());

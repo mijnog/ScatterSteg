@@ -102,10 +102,10 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
     // One byte at a time, unbuffered, so no copy of the passphrase is left
     // in a buffer of ours. Grows by copying; Secret wipes the old buffer.
     let mut buf = Secret::new(256);
+    let mut c = 0u8;
     let mut len = 0;
     let mut hit_eof = false;
     while let Some(b) = buf.as_mut() {
-        let mut c = 0u8;
         let n = unsafe { libc::read(fd, (&raw mut c).cast(), 1) };
         if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted { continue; }
         if n <= 0 {
@@ -122,6 +122,7 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
         buf.as_mut().unwrap()[len] = c;
         len += 1;
     }
+    sodium::memzero(std::slice::from_mut(&mut c)); // the last byte read
 
     unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &old) };
     for (i, &sig) in RESTORE_SIGNALS.iter().enumerate() {

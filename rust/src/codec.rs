@@ -141,10 +141,8 @@ fn payload_order(scatter_key: &[u8; 32], count: u32, salt_px: &[u32]) -> Option<
 
 /// v1 (decode only). The scatter key comes from the passphrase alone, so
 /// guesses can be checked against the length header without Argon2id.
-fn derive_scatter_key_v1(passphrase: &[u8]) -> [u8; 32] {
-    let mut key = [0u8; 32];
-    sodium::generichash(&mut key, passphrase, b"scatter");
-    key
+fn derive_scatter_key_v1(passphrase: &[u8], key: &mut [u8; 32]) {
+    sodium::generichash(key, passphrase, b"scatter");
 }
 
 fn derive_enc_key_v1(passphrase: &[u8], salt: &[u8; SALT_BYTES]) -> Result<Secret, ()> {
@@ -277,7 +275,8 @@ fn decode_keyed(c: &Carrier, v4: bool, passphrase: &[u8]) -> Decoded {
 fn decode_v1(c: &Carrier, passphrase: &[u8]) -> Decoded {
     if c.is_coef() || c.channels() != 3 { return Ok(None); } // v1 only ever wrote RGB PNG
     let count = c.positions();
-    let mut scatter_key = derive_scatter_key_v1(passphrase);
+    let mut scatter_key = [0u8; 32]; // filled in place: a returned array would be copied
+    derive_scatter_key_v1(passphrase, &mut scatter_key);
     let order = prng::scatter(&scatter_key, count);
     sodium::memzero(&mut scatter_key);
     let order = order.ok_or("allocation failed")?;

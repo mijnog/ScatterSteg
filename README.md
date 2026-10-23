@@ -91,7 +91,7 @@ Fuzzing has found the following defects, each of which is fixed and retained as 
 - JPEG files that decode but cannot be re-encoded (out-of-range coefficients, quantization tables redefined between scans, sampling factors too large for progressive scans). The encoder now performs a trial write and rejects such covers before deriving keys.
 
 Additional safeguards:
-- Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation.
+- Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation, and a JPEG to as many carriers as 1 GiB of per-carrier working memory allows (about 44 million).
 - libpng may hold at most 128 MiB in all, so compressed text chunks cannot inflate without bound.
 - Progressive JPEGs are limited to 500 scans.
 - Output is written to a temporary file, synced and renamed into place, so a failed write never destroys an existing file. Existing permissions and group ownership are preserved, and symbolic links are written through.

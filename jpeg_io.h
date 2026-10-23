@@ -13,7 +13,7 @@ int is_jpeg_file(const char *path);  /* starts with the JPEG SOI marker */
 
 /* Loads an 8-bit DCT JPEG (baseline or progressive, Huffman or arithmetic
    coded). NULL if it can't be read, is lossless or not 8-bit, or would
-   need more than 1 GiB of coefficients. */
+   need more than 1 GiB of coefficients, or of memory for its carriers. */
 JpegImage *jpeg_load(const char *path);
 void jpeg_free(JpegImage *j);
 

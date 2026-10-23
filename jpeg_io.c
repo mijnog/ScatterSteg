@@ -8,6 +8,13 @@
 
 /* Largest coefficient storage jpeg_load will allocate (1 GiB) */
 #define JPEG_MAX_COEF_BYTES ((size_t)1 << 30)
+/* Most carriers jpeg_load will take. Each costs memory of its own beyond its
+   2-byte coefficient: its pointer and cost here, its slot in the message
+   permutation, and the bits and cost STC works on. A file of all-±2 AC
+   coefficients near the coefficient cap would otherwise need ~9 GiB on top;
+   this keeps that to 1 GiB. */
+#define JPEG_CARRIER_BYTES (sizeof(int16_t *) + sizeof(float) + sizeof(uint32_t) + 2 + sizeof(float))
+#define JPEG_MAX_CARRIERS (JPEG_MAX_COEF_BYTES / JPEG_CARRIER_BYTES)
 /* Progressive JPEGs can have any number of scans, each a full pass over the
    coefficients; a crafted file with thousands of tiny scans takes minutes to
    read. Real files have a few dozen at most (djpeg suggests the same cap). */
@@ -72,7 +79,7 @@ int is_jpeg_file(const char *path) {
    Also checks every coefficient is one the encoder can write back: corrupt
    entropy data can decode to values beyond its 11-bit DC / 10-bit AC
    range, and then saving would fail (found by fuzzing). Returns -1 if one
-   is out of range or out of memory. */
+   is out of range, there are too many carriers, or out of memory. */
 static int collect_carriers(JpegImage *j) {
     struct jpeg_decompress_struct *s = &j->src;
     for (int pass = 0; pass < 2; pass++) {
@@ -108,6 +115,7 @@ static int collect_carriers(JpegImage *j) {
             }
         }
         if (!pass) {
+            if (n > JPEG_MAX_CARRIERS) return -1;
             j->n_carriers = n;
             j->carriers = malloc((n ? n : 1) * sizeof(int16_t *));
             j->costs = malloc((n ? n : 1) * sizeof(float));

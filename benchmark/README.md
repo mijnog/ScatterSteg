@@ -29,8 +29,36 @@ coefficient (JPEG).
 | 0.20 | 0.134 | **0.228** |
 
 ScatterSteg is harder to detect than steghide at every payload, and harder than
-naive LSB matching. At low payloads (0.05 to 0.1) it is close to undetectable by
-these detectors. At 0.4 bits per pixel a PNG is detected about 80% of the time.
+naive LSB matching. At low payloads (0.05 to 0.1) these SPAM and SVM detectors
+are close to guessing. They are weak, though: the stronger detector in the next
+section catches 65% to 75% of the same files at those payloads.
+
+## Result with a stronger detector (SRM-style rich model)
+
+The same 480 Wikimedia photographs and the same stego files, scored by `srm.py`
+and `detect_srm.py`: about 7,000 features per channel (many linear residuals,
+quantized and truncated, min/max variants, fourth-order co-occurrences) and a
+Kodovsky-style ensemble of 100 regularized FLDs on random feature subsets.
+Five random 50/50 splits, standard deviation 0.005 to 0.02. Pixel images only;
+JPEG has not been rerun.
+
+| payload | LSB matching | steghide (BMP) | **ScatterSteg (PNG)** |
+|---|---|---|---|
+| 0.05 | 0.170 | 0.036 | **0.350** |
+| 0.10 | 0.092 | 0.028 | **0.253** |
+| 0.20 | 0.046 | 0.020 | **0.139** |
+| 0.40 | 0.019 | 0.018 | **0.066** |
+
+The ranking is the same as with SPAM (ScatterSteg best, then LSB matching, then
+steghide), but every number is lower. This detector catches steghide 96% to 98%
+of the time at every payload, and ScatterSteg about 65% of the time at 0.05
+and 93% at 0.4. The SPAM table above is therefore optimistic for the user, and
+this one is the better estimate. `results-srm-wikimedia.txt` has the raw output.
+
+`srm.py` is not the published SRM: the construction is the same, but the
+kernels and quantization steps were chosen here, and it has roughly a fifth of
+the published feature count. The published model and deep networks would score
+lower again.
 
 ## Method
 
@@ -53,10 +81,12 @@ Reproduce:
 
 ## Limitations
 
-- **The detectors are modest.** SPAM (2010) and a compact JPEG co-occurrence
-  feature set are not the state of the art. Rich-model (SRM), GFR and deep
-  (SRNet) detectors, trained on far more images, detect everything here more
-  easily. The ranking probably holds; the absolute numbers will be worse.
+- **The detectors are not the state of the art.** The SRM-style detector above
+  is stronger than SPAM and showed the SPAM numbers were optimistic. The
+  published SRM, GFR and deep (SRNet) detectors, trained on far more images,
+  would detect everything more easily still. The ranking has held so far; the
+  absolute numbers will be worse. JPEG was only tested with the compact feature
+  set.
 - **One cover source.** Downsampled Wikimedia JPEGs, not raw camera images
   like BOSSbase. Cover noise matters a great deal to detectability.
 - **Small training set.** 238 pairs per split. Larger sets make detectors

@@ -15,7 +15,7 @@ What ScatterSteg tries to protect, against whom, and what it explicitly doesn't.
 
 Someone who sees many images (a censor, a platform, a border check) and runs detectors over them, looking for any that carry hidden data.
 
-- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, and close to guessing at 0.05 bits per pixel by the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors). Deep-learning detectors have not been run; assume they do better.
+- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, and only partly distinguishable at 0.05 bits per pixel by the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors). Deep-learning detectors have not been run; assume they do better.
 - **How:** STC syndrome coding (few changes), ±1 changes paired as value swaps (the histogram kept), JPEG coefficients edited losslessly with costs that hold the coefficient statistics, the output in the cover's own format and metadata, and no header or marker in the image.
 - **Evidence:** measured against chi-square, sample pair analysis, HCF-COM and adjacency HCF-COM (see the README), and against trained classifiers (see [Machine-learning detectors](#machine-learning-detectors) below). The planned evaluation with Aletheia's EfficientNet-B0 detectors on ALASKA2 has not been done.
 - **Known-position test:** the salt must sit at public positions, so a warden can look exactly there. In format v3 it was written straight in (about 64 changes in 128 known samples), and a targeted test of prediction error at those positions detected it slightly above chance: AUC 0.56 over 500 ALASKA2 images, 9% detected at 5% false alarms. Format v4 carries the salt as an STC syndrome over a public region of ~8192 samples (about 18 sparse changes); the same test, and the same test over the whole region, are at chance (AUC 0.49–0.50).
@@ -90,7 +90,16 @@ What has been measured is in [`benchmark/`](benchmark/README.md): 476 Wikimedia 
 
 JPEG at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient: ScatterSteg 0.42, 0.40, 0.23; steghide 0.34, 0.24, 0.13.
 
-What this means for A1: a warden with a trained classifier of this strength catches a PNG filled to 0.4 bits per pixel about 80% of the time and does little better than chance at 0.05. ScatterSteg is harder to detect than steghide and naive LSB embedding at every payload tested. These detectors are modest, so absolute numbers are optimistic for the user. A rich-model (SRM-style) detector, a second cover set and deep-learning detectors are the next tests; results go here when they exist.
+The same files scored by a stronger, SRM-style rich-model detector (about 7,000 features per channel, an ensemble of FLD classifiers; pixel images only):
+
+| Payload (bits per pixel) | LSB matching | steghide | ScatterSteg PNG |
+|---|---|---|---|
+| 0.05 | 0.17 | 0.04 | 0.35 |
+| 0.10 | 0.09 | 0.03 | 0.25 |
+| 0.20 | 0.05 | 0.02 | 0.14 |
+| 0.40 | 0.02 | 0.02 | 0.07 |
+
+What this means for A1: the SPAM figures above are optimistic, and the rich-model ones are the better estimate. Against that detector a warden catches about 65% of ScatterSteg PNGs at 0.05 bits per pixel and about 93% at 0.4, with a training set of a few hundred images from one source. Only very small messages are hard to detect. ScatterSteg is harder to detect than steghide (caught 96–98% of the time at every payload) and naive LSB embedding at every payload tested, with both detectors. The detector is a reimplementation, not the published SRM. A second cover set and deep-learning detectors are the next tests; results go here when they exist.
 
 ## Reporting a problem
 

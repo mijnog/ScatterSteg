@@ -97,7 +97,16 @@ The classic detectors above test one statistic each. A harder test is a machine-
 | 0.10 | 0.24 | **0.40** |
 | 0.20 | 0.13 | **0.23** |
 
-At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding. Small messages are close to undetectable by them, while a PNG filled to 0.4 bits per pixel is still caught about 80% of the time. This is a relative result, not a claim of undetectability: the detectors are modest (SPAM features and a compact JPEG co-occurrence set), the covers come from one source, and the detector is trained at a known payload. Rich-model and deep-learning detectors would score every column lower. The [benchmark README](benchmark/README.md) has the method and the full list of limitations.
+A stronger, SRM-style rich-model detector (about 7,000 features per channel and an ensemble classifier) on the same files gives:
+
+| Pixel payload | LSB matching | steghide (BMP) | **ScatterSteg (PNG)** |
+|---|---|---|---|
+| 0.05 | 0.17 | 0.04 | **0.35** |
+| 0.10 | 0.09 | 0.03 | **0.25** |
+| 0.20 | 0.05 | 0.02 | **0.14** |
+| 0.40 | 0.02 | 0.02 | **0.07** |
+
+At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg about 65% of the time at 0.05 bits per pixel and about 93% at 0.4. So small messages are hard to detect, and large ones are not. This is a relative result, not a claim of undetectability: the covers come from one source, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). JPEG was only tested with the compact feature set. The [benchmark README](benchmark/README.md) has the method and the full list of limitations.
 
 Techniques that did not improve these results were not adopted; for example, content-adaptive PNG costs performed worse than uniform costs against these detectors. See [Limitations](#limitations) for where the method stops working.
 

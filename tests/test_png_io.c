@@ -289,13 +289,22 @@ int __sanitizer_install_malloc_and_free_hooks(
     void (*free_hook)(const volatile void *));
 size_t __sanitizer_get_allocated_size(const volatile void *p);
 #define HAVE_HEAP_PEAK 1
-static size_t heap_live, heap_peak;
+/* Signed: blocks allocated before tracking started may be freed during it */
+static long long heap_live, heap_peak;
+static int heap_tracking;
 static void on_malloc(const volatile void *p, size_t size) {
     (void)p;
-    if ((heap_live += size) > heap_peak) heap_peak = heap_live;
+    if (heap_tracking && (heap_live += (long long)size) > heap_peak) heap_peak = heap_live;
 }
 static void on_free(const volatile void *p) {
-    if (p) heap_live -= __sanitizer_get_allocated_size(p);
+    if (heap_tracking && p) heap_live -= (long long)__sanitizer_get_allocated_size(p);
+}
+/* Each install adds another pair of hooks, so install them once */
+static void heap_track(int on) {
+    static int installed;
+    if (!installed) installed = __sanitizer_install_malloc_and_free_hooks(on_malloc, on_free);
+    if (on) heap_live = heap_peak = 0;
+    heap_tracking = on;
 }
 #endif
 
@@ -325,16 +334,32 @@ static void test_load_zlib_bombs_capped(void) {
     free(ztxt);
 
 #ifdef HAVE_HEAP_PEAK
-    heap_live = heap_peak = 0;
-    __sanitizer_install_malloc_and_free_hooks(on_malloc, on_free);
+    heap_track(1);
 #endif
     Image *img = png_load(p);
 #ifdef HAVE_HEAP_PEAK
-    __sanitizer_install_malloc_and_free_hooks(NULL, NULL);
-    CHECK(heap_peak < ((size_t)160 << 20));
+    heap_track(0);
+    CHECK(heap_peak < 160LL << 20);
 #endif
     CHECK(img != NULL);  /* the text is dropped, not the image */
     image_free(img);
+    remove(p);
+}
+
+static void test_load_too_many_pixels(void) {
+    /* 16384 x 16385 RGB is 805 MB, under the byte cap, but one row more
+       than 2^28 pixels: the permutation over them would be over 1 GiB.
+       Refused before the pixels are allocated. */
+    const char *p = path_in_dir("wide.png");
+    write_lying_header(p, 16384, 16385);
+#ifdef HAVE_HEAP_PEAK
+    heap_track(1);
+#endif
+    CHECK(png_load(p) == NULL);
+#ifdef HAVE_HEAP_PEAK
+    heap_track(0);
+    CHECK(heap_peak < 16LL << 20);
+#endif
     remove(p);
 }
 
@@ -586,6 +611,7 @@ int main(void) {
     RUN(test_load_truncated);
     RUN(test_load_huge_dimensions);
     RUN(test_load_tall_narrow);
+    RUN(test_load_too_many_pixels);
     RUN(test_load_zlib_bombs_capped);
     RUN(test_save_roundtrip);
     RUN(test_save_gray_roundtrip);

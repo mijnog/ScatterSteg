@@ -81,7 +81,10 @@ static uint32_t uniform(Stream *s, uint32_t bound) {
 }
 
 uint32_t *prng_permutation(const uint8_t *key, uint32_t count) {
-    if (count == 0 || count > UINT32_MAX / sizeof(uint32_t)) return NULL;
+    if (count == 0) return NULL;
+#if SIZE_MAX / 4 < UINT32_MAX  /* 32-bit size_t: the byte count can overflow */
+    if (count > SIZE_MAX / sizeof(uint32_t)) return NULL;
+#endif
     uint32_t *a = malloc((size_t)count * sizeof(uint32_t));
     if (!a) return NULL;
     for (uint32_t i = 0; i < count; i++) a[i] = i;

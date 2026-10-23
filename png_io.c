@@ -17,6 +17,10 @@
 
 /* Largest decoded pixel buffer png_load will allocate (1 GiB) */
 #define PNG_MAX_PIXEL_BYTES ((size_t)1 << 30)
+/* Most pixels png_load will take: each also has a 4-byte slot in the
+   message permutation, so this keeps that to 1 GiB too. Without it a gray
+   image within the byte cap needed a 4 GiB permutation. */
+#define PNG_MAX_PIXELS ((uint64_t)1 << 28)
 /* Largest single chunk (or decompressed text/profile) libpng may allocate */
 #define PNG_MAX_CHUNK_BYTES ((png_alloc_size_t)16 << 20)
 /* Largest single allocation libpng itself may make. Its biggest legitimate
@@ -144,7 +148,7 @@ Image *png_load(const char *path) {
        making it, so a tiny file can't request terabytes. This also bounds
        height, so the row-pointer array below can't overflow. libpng rejects
        a zero height in png_read_info, so the division is safe. */
-    if (row_size > PNG_MAX_PIXEL_BYTES / height)
+    if (row_size > PNG_MAX_PIXEL_BYTES / height || (uint64_t)width * height > PNG_MAX_PIXELS)
         png_error(png, "image dimensions too large");
 
     // Allocate the Image struct and its row pointers

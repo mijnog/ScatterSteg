@@ -67,13 +67,23 @@ static void capped_free(png_structp png, png_voidp p) {
 }
 
 /* The read struct and info png_load parsed, kept so png_save can copy the
-   ancillary chunks out of it with libpng's own getters. The budget must
+   ancillary chunks out of it. The budget must
    outlive the struct, which frees through it. */
 struct PngMeta {
     png_structp png;
     png_infop info;
     AllocBudget *budget;
 };
+
+/* Read the chunks after the image data. The pixels are already in, so a
+   damaged tail only loses what comes after the damage. */
+static void read_end(png_structp png, png_infop info) {
+    jmp_buf saved;  /* png_load's handler, for after */
+    memcpy(saved, png_jmpbuf(png), sizeof(saved));
+    if (!setjmp(png_jmpbuf(png)))
+        png_read_end(png, info);
+    memcpy(png_jmpbuf(png), saved, sizeof(saved));
+}
 
 Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
@@ -104,8 +114,10 @@ Image *png_load(const char *path) {
     png_init_io(png, fp);
     png_set_chunk_malloc_max(png, PNG_MAX_CHUNK_BYTES);
     png_set_chunk_cache_max(png, 1000);  /* at most this many ancillary chunks */
-    /* Keep chunks libpng doesn't know, so safe-to-copy ones can be written back */
-    png_set_keep_unknown_chunks(png, PNG_HANDLE_CHUNK_ALWAYS, NULL, 0);
+    /* Keep every ancillary chunk as raw bytes, known to libpng or not (all
+       but IHDR, PLTE, tRNS, IDAT and IEND), for png_save to write back as
+       they were. libpng doesn't parse them, so text isn't decompressed. */
+    png_set_keep_unknown_chunks(png, PNG_HANDLE_CHUNK_ALWAYS, NULL, -1);
     // Read the image header (png_read_info) — this fills width, height, bit depth, color type
     png_read_info(png, info);
 
@@ -188,9 +200,10 @@ Image *png_load(const char *path) {
 
     // Read the pixel data (png_read_image)
     png_read_image(png, img->rows);
+    read_end(png, info);
     fclose(fp);
 
-    /* Keep the parsed chunks (those before the image data) for png_save */
+    /* Keep the chunks for png_save */
     PngMeta *meta = malloc(sizeof(PngMeta));
     if (!meta) {
         png_destroy_read_struct(&png, &info, NULL);
@@ -205,55 +218,32 @@ Image *png_load(const char *path) {
     return img;
 }
 
-/* Give the new PNG the cover's ancillary chunks, so the output looks like
-   the same file: color space (gAMA, cHRM, sRGB, iCCP), pHYs, text, tIME,
-   eXIf, and unknown chunks marked safe to copy. Unknown chunks not marked
-   safe must, per the PNG spec, be dropped once the pixels change. */
-/* png_write_tEXt and friends png_error on a keyword with no character from
-   the PNG keyword set (Latin-1 printable, other than space) */
-static int writable_keyword(png_const_charp key) {
-    for (const unsigned char *k = (const unsigned char *)key; k && *k; k++)
-        if ((*k > 32 && *k < 127) || *k > 160) return 1;
+/* Ancillary chunks the PNG spec defines whose meaning doesn't depend on
+   the exact pixel values, so they stay true once LSBs change: color space,
+   physical layout, text, time, Exif... Many are marked unsafe to copy
+   (uppercase 4th letter), but that rule is for editors that don't know
+   the chunk. */
+static const char *const kept_chunks[] = {
+    "cHRM", "cICP", "cLLI", "gAMA", "iCCP", "mDCV", "sBIT", "sRGB", "bKGD", "pHYs",
+    "sPLT", "eXIf", "tIME", "tEXt", "zTXt", "iTXt", "oFFs", "pCAL", "sCAL", "sTER",
+};
+
+static int keep_chunk(const png_byte *name) {
+    if (name[3] & 0x20) return 1;  /* lowercase 4th letter: safe to copy */
+    for (size_t i = 0; i < sizeof(kept_chunks) / sizeof(kept_chunks[0]); i++)
+        if (memcmp(name, kept_chunks[i], 4) == 0) return 1;
     return 0;
 }
 
+/* Give the new PNG the cover's ancillary chunks, byte for byte and where
+   they were (before or after the image data), so the output looks like
+   the same file. Unknown chunks not marked safe to copy must, per the PNG
+   spec, be dropped once the pixels change. */
 static void copy_metadata(png_structp w, png_infop wi, const PngMeta *m) {
-    png_structp r = m->png;
-    png_infop ri = m->info;
-    /* Odd but readable metadata shouldn't make the save fail */
-    png_set_benign_errors(w, 1);
-
-    png_fixed_point gamma, wx, wy, rx, ry, gx, gy, bx, by;
-    if (png_get_gAMA_fixed(r, ri, &gamma)) png_set_gAMA_fixed(w, wi, gamma);
-    if (png_get_cHRM_fixed(r, ri, &wx, &wy, &rx, &ry, &gx, &gy, &bx, &by))
-        png_set_cHRM_fixed(w, wi, wx, wy, rx, ry, gx, gy, bx, by);
-    int intent;
-    if (png_get_sRGB(r, ri, &intent)) png_set_sRGB(w, wi, intent);
-    png_charp name;
-    int compression;
-    png_bytep profile;
-    png_uint_32 len;
-    if (png_get_iCCP(r, ri, &name, &compression, &profile, &len))
-        png_set_iCCP(w, wi, name, compression, profile, len);
-    png_uint_32 res_x, res_y;
-    int unit;
-    if (png_get_pHYs(r, ri, &res_x, &res_y, &unit)) png_set_pHYs(w, wi, res_x, res_y, unit);
-    /* libpng reads text whose keyword it will then refuse to write (one with
-       no printable character), so skip those rather than fail the save */
-    png_textp text;
-    int n_text = png_get_text(r, ri, &text, NULL);
-    for (int i = 0; i < n_text; i++)
-        if (writable_keyword(text[i].key)) png_set_text(w, wi, &text[i], 1);
-    png_timep mod_time;
-    if (png_get_tIME(r, ri, &mod_time)) png_set_tIME(w, wi, mod_time);
-    png_bytep exif;
-    png_uint_32 exif_len;
-    if (png_get_eXIf_1(r, ri, &exif_len, &exif)) png_set_eXIf_1(w, wi, exif_len, exif);
-
     png_unknown_chunkp chunks;
-    int n_chunks = png_get_unknown_chunks(r, ri, &chunks);
+    int n_chunks = png_get_unknown_chunks(m->png, m->info, &chunks);
     for (int i = 0; i < n_chunks; i++)
-        if (chunks[i].name[3] & 0x20) {  /* lowercase 4th letter: safe to copy */
+        if (keep_chunk(chunks[i].name)) {
             png_set_keep_unknown_chunks(w, PNG_HANDLE_CHUNK_ALWAYS, chunks[i].name, 1);
             png_set_unknown_chunks(w, wi, &chunks[i], 1);
         }
@@ -288,7 +278,7 @@ static int write_png(FILE *fp, const void *ctx) {
     if (img->meta) copy_metadata(png, info, img->meta);
     png_write_info(png, info);
     png_write_image(png, img->rows);
-    png_write_end(png, NULL);
+    png_write_end(png, info);  /* with info: the chunks after the image data */
     png_destroy_write_struct(&png, &info);
     return 0;
 }

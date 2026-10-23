@@ -698,7 +698,7 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         chunks = png_chunks(out)
         def normalized(kind, data):
-            # libpng recompresses the profile, so compare it decompressed
+            # Compare the profile decompressed, however it is stored
             if kind == b"iCCP":
                 name, rest = data.split(b"\x00", 1)
                 return kind, name, zlib.decompress(rest[1:])
@@ -718,9 +718,10 @@ class CliTest(CliBase):
         self.assertEqual(self.encode(b"m", out, src=src)[0], 0)
         self.assertIn((b"sRGB", bytes([0])), png_chunks(out))
 
-    def test_unwritable_text_chunk_dropped(self):
-        # libpng reads a tEXt chunk with an empty keyword but refuses to write
-        # one; the cover must still encode, without that chunk (found by fuzzing)
+    def test_odd_text_chunk_copied_verbatim(self):
+        # libpng reads a tEXt chunk with an empty keyword but won't write one
+        # it made itself (found by fuzzing); copied as raw bytes, it is kept
+        # as the cover had it
         src = self.path("badtext.png")
         write_png(src, 64, 64, cover_pixel,
                   extra=_chunk(b"tEXt", b"\x00no keyword") + _chunk(b"tEXt", b"Fine\x00kept"))
@@ -729,8 +730,41 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         chunks = png_chunks(out)
         self.assertIn((b"tEXt", b"Fine\x00kept"), chunks)
-        self.assertNotIn((b"tEXt", b"\x00no keyword"), chunks)
+        self.assertIn((b"tEXt", b"\x00no keyword"), chunks)
         self.assertDecodes(out, "despite bad text")
+
+    def test_all_ancillary_chunks_kept_in_place(self):
+        # Chunks the PNG spec defines beyond the common ones (several marked
+        # unsafe to copy, like cICP), and chunks after the image data, come
+        # out in the same order and place as in the cover
+        before = [
+            (b"cICP", bytes([9, 16, 0, 1])),
+            (b"sBIT", bytes([8, 8, 8])),
+            (b"bKGD", struct.pack(">HHH", 10, 20, 30)),
+            (b"oFFs", struct.pack(">iiB", 5, 7, 0)),
+            (b"zTXt", b"Note\x00\x00" + zlib.compress(b"compressed, kept as is")),
+        ]
+        after = [
+            (b"tEXt", b"Comment\x00written after the pixels"),
+            (b"tIME", struct.pack(">HBBBBB", 2025, 1, 2, 3, 4, 5)),
+            (b"prVt", b"private, safe to copy"),
+        ]
+        src = self.path("rich.png")
+        write_png(src, 64, 64, cover_pixel, extra=b"".join(_chunk(k, d) for k, d in before))
+        with open(src, "rb") as f:
+            data = f.read()
+        tail = b"".join(_chunk(k, d) for k, d in after) + _chunk(b"IEND", b"")
+        with open(src, "wb") as f:
+            f.write(data[:-12] + tail)  # in place of the IEND chunk
+        out = self.path("steg.png")
+        code, log = self.encode(b"rich metadata", out, src=src)
+        self.assertEqual(code, 0, log)
+        chunks = [(k, d) for k, d in png_chunks(out) if k not in (b"IHDR", b"IDAT", b"IEND")]
+        self.assertEqual(chunks, before + after)
+        kinds = [k for k, _ in png_chunks(out)]
+        self.assertLess(kinds.index(b"zTXt"), kinds.index(b"IDAT"))
+        self.assertGreater(kinds.index(b"tEXt"), len(kinds) - 1 - kinds[::-1].index(b"IDAT"))
+        self.assertDecodes(out, "rich metadata")
 
     def test_empty_message_writes_nothing(self):
         out = self.path("steg.png")

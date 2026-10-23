@@ -87,7 +87,7 @@ Techniques that did not improve these results were not adopted; for example, con
 Fuzzing has found the following defects, each of which is fixed and retained as a regression test in `tests/fuzz/regressions`:
 
 - A 290-byte PNG that caused Ubuntu's libpng to allocate 1.3 GB. libpng now uses a capped allocator.
-- A text chunk that libpng reads but refuses to write. Such chunks are now skipped.
+- A text chunk that libpng reads but refuses to write. Ancillary chunks are now copied as raw bytes, so such chunks are kept as they were.
 - JPEG files that decode but cannot be re-encoded (out-of-range coefficients, quantization tables redefined between scans, sampling factors too large for progressive scans). The encoder now performs a trial write and rejects such covers before deriving keys.
 
 Additional safeguards:
@@ -117,7 +117,7 @@ make coverage   # line coverage over the whole suite (~98%); annotated sources i
 | Kinds | 8-bit RGB or grayscale, no transparency | 8-bit baseline or progressive, Huffman or arithmetic coding |
 | Carriers | every sample (3 bits per RGB pixel) | AC coefficients with \|value\| ≥ 2 |
 | Typical capacity | ~760 KB in a 1080p image | ~0.12–0.15 bits/pixel (~68 KB in 4.5 MP) |
-| Kept from the cover | gAMA, cHRM, sRGB, iCCP, pHYs, text, tIME, eXIf, safe-to-copy chunks | quantization, sampling, coding mode, restart interval, APPn/COM markers |
+| Kept from the cover | every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) and safe-to-copy chunks, byte for byte and in place, before or after the image data | quantization, sampling, coding mode, restart interval, APPn/COM markers |
 | Refused | palette, transparency, 16-bit, <8-bit gray | 12-bit, lossless, not re-encodable |
 
 ## File format (v3)
@@ -145,7 +145,7 @@ The image contains no header or version marker, as either would reveal the prese
 - **High payloads.** As the message approaches the number of carrier bits, STC and value exchange have less freedom, and the JPEG coefficient-ratio shift reappears beyond about half of capacity.
 - **Cover selection.** Noisy photographs are the most suitable covers. Flat regions, gradients and posterized images (few distinct values or gaps in the histogram) conceal changes poorly, since a ±1 change is conspicuous among identical neighbours and no adjacent value is available for exchange.
 - **JPEG capacity.** JPEG covers carry less data than PNG covers and are more detectable per bit. Only embedded coefficients change, but the file is not byte-identical to the cover: optimized Huffman tables are regenerated, and progressive files are written with libjpeg's standard scan sequence.
-- **Metadata.** PNG chunks located after the image data are not retained, and PNG image data is recompressed. Anyone holding the original cover can locate the changes by comparison.
+- **Metadata.** PNG image data is recompressed, and unknown chunks not marked safe to copy are dropped, as the PNG specification requires. Anyone holding the original cover can locate the changes by comparison.
 - **Earlier formats.** Format v1 images remain readable but produce a warning recommending re-encoding, because v1 allowed most wrong passphrases to be rejected without an Argon2id computation. Format v2 images are read without a warning; they are equally well protected but more detectable.
 - **Job control.** Suspending the program (Ctrl+Z) at the passphrase prompt can leave terminal echo disabled. Ctrl+C, SIGTERM and SIGHUP are handled.
 

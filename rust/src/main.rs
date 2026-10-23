@@ -136,6 +136,9 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
         eprintln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
         return None;
     }
+    // The C version held the passphrase as a C string, so it ends at the first
+    // NUL (Ctrl+@, or pasted): keep that, or its images wouldn't decode here
+    let len = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
     match Secret::from_slice(&buf[..len]) {
         Some(p) => Some(p),
         None => fail(),

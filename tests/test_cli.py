@@ -627,6 +627,24 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "meet at the old bridge")
 
+    def test_passphrase_ends_at_nul(self):
+        # A NUL typed or pasted ends the passphrase, as when it was a C string
+        out = self.path("steg.png")
+        pw = "correct horse\x00ignored"
+        code, log = self.encode(b"nul message", out, pw)
+        self.assertEqual(code, 0, log)
+        self.assertDecodes(out, "nul message", pw)
+        self.assertDecodes(out, "nul message", "correct horse")
+
+    def test_non_image_refused_without_reading_it_all(self):
+        for src in ("/dev/zero", self.path("text.png")):
+            if src != "/dev/zero":
+                with open(src, "wb") as f:
+                    f.write(b"not an image" * 1000)
+            code, log = run(["decode", "-i", src], passphrases=["correct horse"])
+            self.assertEqual(code, 1, log)
+            self.assertIn("could not load", log)
+
     def test_roundtrip_multiline_utf8(self):
         msg = "line one\nligne deux — été\n\tthird ✓"
         out = self.path("steg.png")

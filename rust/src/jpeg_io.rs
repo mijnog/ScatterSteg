@@ -113,7 +113,7 @@ impl JpegImage {
     /// or would need more than 1 GiB of coefficients, or of memory for its
     /// carriers.
     pub fn load(path: &Path) -> Option<JpegImage> {
-        let data = crate::fault::read_file(path).ok()?;
+        let data = crate::fault::read_file(path, &[0xFF, 0xD8, 0xFF]).ok()?;
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut progress: Box<jpeg_progress_mgr> = zeroed_box();
         progress.progress_monitor = Some(limit_scans);

@@ -98,7 +98,7 @@ fn parse_chunks(file: &[u8]) -> Vec<Chunk> {
 }
 
 pub fn load(path: &Path) -> Option<Image> {
-    let file = crate::fault::read_file(path).ok()?;
+    let file = crate::fault::read_file(path, &SIGNATURE).ok()?;
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
     // Text and profile chunks are copied as raw bytes (see parse_chunks), so
     // the decoder needn't parse them, and a malformed one can't stop the load

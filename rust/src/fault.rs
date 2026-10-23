@@ -59,11 +59,25 @@ mod imp {
 
 pub use imp::{init, should_fail};
 
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
-/// `std::fs::read`, which can fail like fopen
-pub fn read_file(path: &Path) -> io::Result<Vec<u8>> {
+/// Largest image file read into memory. The decoded-size caps in png_io and
+/// jpeg_io bound what a valid image needs; this bounds what an invalid one can
+/// make us buffer (the C version streamed).
+pub const MAX_FILE_BYTES: u64 = (1 << 30) + (64 << 20);
+
+/// The whole file, if it starts with `signature` and is at most
+/// MAX_FILE_BYTES; the signature is checked before anything else is read, so a
+/// device or a huge non-image is refused without buffering it. Can fail like fopen.
+pub fn read_file(path: &Path, signature: &[u8]) -> io::Result<Vec<u8>> {
     if should_fail("fopen") { return Err(io::Error::from_raw_os_error(libc::EMFILE)); }
-    std::fs::read(path)
+    let mut f = std::fs::File::open(path)?;
+    let mut head = vec![0u8; signature.len()];
+    f.read_exact(&mut head)?;
+    if head != signature { return Err(io::Error::from(io::ErrorKind::InvalidData)); }
+    let mut data = head;
+    f.take(MAX_FILE_BYTES + 1 - data.len() as u64).read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_FILE_BYTES { return Err(io::Error::from(io::ErrorKind::InvalidData)); }
+    Ok(data)
 }

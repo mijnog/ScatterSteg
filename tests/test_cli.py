@@ -647,6 +647,13 @@ class CliTest(CliBase):
             self.assertNotIn(kind, [k for k, _ in png_chunks(out)])
             self.assertDecodes(out, "big chunk")
 
+    def test_unwritable_stderr_is_not_a_crash(self):
+        # A diagnostic that can't be printed must not turn into a panic (101)
+        import subprocess
+        with open("/dev/full", "wb") as full:
+            code = subprocess.run([BINARY, "bogus"], stderr=full).returncode
+        self.assertEqual(code, 1)
+
     def test_non_image_refused_without_reading_it_all(self):
         for src in ("/dev/zero", self.path("text.png")):
             if src != "/dev/zero":

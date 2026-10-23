@@ -66,7 +66,7 @@ fn errno_message(e: &io::Error) -> String {
 /// Read a passphrase from the terminal with echo off. On EOF or error,
 /// prints why and returns None.
 fn read_passphrase(prompt: &str) -> Option<Secret> {
-    let fail = || { eprintln!("Error: could not read passphrase"); None };
+    let fail = || { scattersteg::errln!("Error: could not read passphrase"); None };
     if scattersteg::fault::should_fail("fopen") { return fail(); }
     let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
     if fd < 0 { return fail(); }
@@ -133,7 +133,7 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
     let Some(buf) = buf else { return fail() }; // out of memory
     if hit_eof && len == 0 { return fail(); } // Ctrl+D
     if len > PASSPHRASE_MAX_LEN {
-        eprintln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
+        scattersteg::errln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
         return None;
     }
     // The C version held the passphrase as a C string, so it ends at the first
@@ -156,7 +156,7 @@ enum ReadError {
 /// longer than max_len, so a huge stdin can't exhaust memory or overflow the
 /// payload length.
 fn read_message(max_len: usize) -> Result<Secret, ReadError> {
-    if unsafe { libc::isatty(0) } == 1 { eprintln!("Message (Ctrl+D when done):"); }
+    if unsafe { libc::isatty(0) } == 1 { scattersteg::errln!("Message (Ctrl+D when done):"); }
 
     let oom = || ReadError::Io(io::Error::from_raw_os_error(libc::ENOMEM));
     let mut cap = 1024;
@@ -223,10 +223,10 @@ fn protect_process() {
 }
 
 fn usage(prog: &str) {
-    eprintln!("Usage: {prog} encode -i <cover.png|jpg> -o <output.png|jpg>");
-    eprintln!("       {prog} decode -i <image.png|jpg>");
-    eprintln!("       {prog} passphrase");
-    eprintln!("Message is read from stdin. `passphrase` prints a strong random passphrase.");
+    scattersteg::errln!("Usage: {prog} encode -i <cover.png|jpg> -o <output.png|jpg>");
+    scattersteg::errln!("       {prog} decode -i <image.png|jpg>");
+    scattersteg::errln!("       {prog} passphrase");
+    scattersteg::errln!("Message is read from stdin. `passphrase` prints a strong random passphrase.");
 }
 
 /// The output has the cover's format; refuse a name that says otherwise
@@ -238,7 +238,7 @@ fn output_name_matches(input: &Path, output: &Path) -> bool {
     let says_png = ext.eq_ignore_ascii_case(b".png");
     let jpeg = jpeg_io::is_jpeg_file(input);
     if if jpeg { says_png } else { says_jpeg } {
-        eprintln!("Error: the output is a {}, like the cover; give it a {} name",
+        scattersteg::errln!("Error: the output is a {}, like the cover; give it a {} name",
                   if jpeg { "JPEG" } else { "PNG" }, if jpeg { ".jpg" } else { ".png" });
         return false;
     }
@@ -276,26 +276,26 @@ fn encode(input: &Path, output: &Path) -> ExitCode {
     // Checked again when writing; here, before the passphrase prompt
     if let Ok(m) = std::fs::metadata(output) {
         if !m.is_file() {
-            eprintln!("Error: '{}' exists and is not a regular file", output.display());
+            scattersteg::errln!("Error: '{}' exists and is not a regular file", output.display());
             return ExitCode::FAILURE;
         }
     }
 
     let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
     if passphrase.len() < PASSPHRASE_MIN_LEN {
-        eprintln!("Error: passphrase too short (min {PASSPHRASE_MIN_LEN} bytes); \
+        scattersteg::errln!("Error: passphrase too short (min {PASSPHRASE_MIN_LEN} bytes); \
                    `scattersteg passphrase` generates a strong one");
         return ExitCode::FAILURE;
     }
     let Some(confirm) = read_passphrase("Confirm passphrase: ") else { return ExitCode::FAILURE };
     if *passphrase != *confirm {
-        eprintln!("Error: passphrases do not match");
+        scattersteg::errln!("Error: passphrases do not match");
         return ExitCode::FAILURE;
     }
     drop(confirm);
 
     let Some(mut cover) = Cover::load(input) else {
-        eprintln!("Error: could not load '{}'", input.display());
+        scattersteg::errln!("Error: could not load '{}'", input.display());
         return ExitCode::FAILURE;
     };
 
@@ -303,18 +303,18 @@ fn encode(input: &Path, output: &Path) -> ExitCode {
     // visibly different format, which gives it away
     match &mut cover {
         Cover::Png(img) => if let Some(why) = img.unsuitable {
-            eprintln!("Error: '{}' has {why}, which the output can't keep; use an 8-bit RGB or \
+            scattersteg::errln!("Error: '{}' has {why}, which the output can't keep; use an 8-bit RGB or \
                        grayscale PNG without transparency as the cover", input.display());
             return ExitCode::FAILURE;
         },
         Cover::Jpeg(j) => {
             if let Some(why) = j.unsuitable() {
-                eprintln!("Error: '{}' has {why}, which the output can't keep; use another cover",
+                scattersteg::errln!("Error: '{}' has {why}, which the output can't keep; use another cover",
                           input.display());
                 return ExitCode::FAILURE;
             }
             if !j.check_writable() {
-                eprintln!("Error: '{}' is a JPEG that can't be rewritten losslessly; use another cover",
+                scattersteg::errln!("Error: '{}' is a JPEG that can't be rewritten losslessly; use another cover",
                           input.display());
                 return ExitCode::FAILURE;
             }
@@ -324,11 +324,11 @@ fn encode(input: &Path, output: &Path) -> ExitCode {
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,
         Err(None) => {
-            eprintln!("Error: image too small to hide a message");
+            scattersteg::errln!("Error: image too small to hide a message");
             return ExitCode::FAILURE;
         }
         Err(Some(msg)) => {
-            eprintln!("Error: {msg}");
+            scattersteg::errln!("Error: {msg}");
             return ExitCode::FAILURE;
         }
     };
@@ -337,24 +337,24 @@ fn encode(input: &Path, output: &Path) -> ExitCode {
     let message = match read_message(prepared.max_message()) {
         Ok(m) => m,
         Err(ReadError::TooLong) => {
-            eprintln!("Error: message too long for this image");
+            scattersteg::errln!("Error: message too long for this image");
             return ExitCode::FAILURE;
         }
         Err(ReadError::Io(e)) => {
-            eprintln!("Error: could not read message: {}", errno_message(&e));
+            scattersteg::errln!("Error: could not read message: {}", errno_message(&e));
             return ExitCode::FAILURE;
         }
     };
     // Empty message: nothing to hide, so write nothing
     if message.is_empty() {
-        eprintln!("Message is empty; nothing written");
+        scattersteg::errln!("Message is empty; nothing written");
         return ExitCode::SUCCESS;
     }
 
     if let Err(e) = prepared.embed(&mut cover.carrier(), &message) {
         match e {
-            EmbedError::TooLong => eprintln!("Error: message too long for this image"),
-            EmbedError::Alloc => eprintln!("Error: allocation failed"),
+            EmbedError::TooLong => scattersteg::errln!("Error: message too long for this image"),
+            EmbedError::Alloc => scattersteg::errln!("Error: allocation failed"),
         }
         return ExitCode::FAILURE;
     }
@@ -365,7 +365,7 @@ fn encode(input: &Path, output: &Path) -> ExitCode {
             Some(0) | None => if cover.is_jpeg() { "JPEG encoding failed" } else { "PNG encoding failed" }.to_string(),
             Some(_) => errno_message(&e),
         };
-        eprintln!("Error: could not write '{}': {why}", output.display());
+        scattersteg::errln!("Error: could not write '{}': {why}", output.display());
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -374,12 +374,12 @@ fn encode(input: &Path, output: &Path) -> ExitCode {
 fn decode(input: &Path) -> ExitCode {
     let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
     let Some(mut cover) = Cover::load(input) else {
-        eprintln!("Error: could not load '{}'", input.display());
+        scattersteg::errln!("Error: could not load '{}'", input.display());
         return ExitCode::FAILURE;
     };
     let carrier = cover.carrier();
     if carrier.positions() < codec::header_pixels(carrier.channels()) {
-        eprintln!("Error: image too small to contain a message");
+        scattersteg::errln!("Error: image too small to contain a message");
         return ExitCode::FAILURE;
     }
 
@@ -389,16 +389,16 @@ fn decode(input: &Path) -> ExitCode {
     let mut found = match result {
         Ok(Some(f)) => f,
         Ok(None) => {
-            eprintln!("Error: decryption failed — wrong passphrase, or no message in this image");
+            scattersteg::errln!("Error: decryption failed — wrong passphrase, or no message in this image");
             return ExitCode::FAILURE;
         }
         Err(msg) => {
-            eprintln!("Error: {msg}");
+            scattersteg::errln!("Error: {msg}");
             return ExitCode::FAILURE;
         }
     };
     if found.v1 {
-        eprintln!("Warning: this image uses the old v1 format, which protects the passphrase less \
+        scattersteg::errln!("Warning: this image uses the old v1 format, which protects the passphrase less \
                    well; re-encode it");
     }
 
@@ -408,7 +408,7 @@ fn decode(input: &Path) -> ExitCode {
         found.plaintext[found.len] = b'\n';
         if let Err(e) = write_fd(1, &found.plaintext[..found.len + 1]) {
             // e.g. a full disk: the message was not saved
-            eprintln!("Error: could not write the message: {}", errno_message(&e));
+            scattersteg::errln!("Error: could not write the message: {}", errno_message(&e));
             return ExitCode::FAILURE;
         }
     }
@@ -419,7 +419,7 @@ fn main() -> ExitCode {
     scattersteg::fault::init();
     protect_process();
     if sodium::init().is_err() {
-        eprintln!("Error: failed to initialise libsodium");
+        scattersteg::errln!("Error: failed to initialise libsodium");
         return ExitCode::FAILURE;
     }
 
@@ -438,14 +438,14 @@ fn main() -> ExitCode {
         b"passphrase" => match generate_passphrase() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("Error: could not write the passphrase: {}", errno_message(&e));
+                scattersteg::errln!("Error: could not write the passphrase: {}", errno_message(&e));
                 ExitCode::FAILURE
             }
         },
         b"encode" => match (&opts.input, &opts.output) {
             (Some(i), Some(o)) => encode(Path::new(i), Path::new(o)),
             _ => {
-                eprintln!("Error: encode requires -i and -o");
+                scattersteg::errln!("Error: encode requires -i and -o");
                 usage(&prog);
                 ExitCode::FAILURE
             }
@@ -453,13 +453,13 @@ fn main() -> ExitCode {
         b"decode" => match &opts.input {
             Some(i) => decode(Path::new(i)),
             None => {
-                eprintln!("Error: decode requires -i");
+                scattersteg::errln!("Error: decode requires -i");
                 usage(&prog);
                 ExitCode::FAILURE
             }
         },
         other => {
-            eprintln!("Error: unknown command '{}'", String::from_utf8_lossy(other));
+            scattersteg::errln!("Error: unknown command '{}'", String::from_utf8_lossy(other));
             usage(&prog);
             ExitCode::FAILURE
         }

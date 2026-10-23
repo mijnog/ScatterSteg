@@ -33,7 +33,7 @@ mod imp {
     }
 
     extern "C" fn report() {
-        // Not through eprintln!: it can panic once stderr is gone
+        // Not through crate::errln!: it can panic once stderr is gone
         let line = match *FIRED.lock().unwrap() {
             Some(name) => format!("FAULT_FIRED {name}\n"),
             None => "FAULT_NOT_REACHED\n".to_string(),

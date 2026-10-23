@@ -39,8 +39,7 @@ The same 480 Wikimedia photographs and the same stego files, scored by `srm.py`
 and `detect_srm.py`: about 7,000 features per channel (many linear residuals,
 quantized and truncated, min/max variants, fourth-order co-occurrences) and a
 Kodovsky-style ensemble of 100 regularized FLDs on random feature subsets.
-Five random 50/50 splits, standard deviation 0.005 to 0.02. Pixel images only;
-JPEG has not been rerun.
+Five random 50/50 splits, standard deviation 0.005 to 0.02.
 
 | payload | LSB matching | steghide (BMP) | **ScatterSteg (PNG)** |
 |---|---|---|---|
@@ -54,6 +53,22 @@ steghide), but every number is lower. This detector catches steghide 96% to 98%
 of the time at every payload, and ScatterSteg about 65% of the time at 0.05
 and 93% at 0.4. The SPAM table above is therefore optimistic for the user, and
 this one is the better estimate. `results-srm-wikimedia.txt` has the raw output.
+
+**JPEG, DCTR-style detector** (`dctr.py`, `detect_dctr.py`): the unrounded
+decompressed luminance correlated with the 64 DCT basis patterns, quantized and
+truncated at T=4, histogrammed per folded phase: 5,120 features, the same
+ensemble classifier. Payload is bits per non-zero AC coefficient.
+
+| payload | steghide | **ScatterSteg** |
+|---|---|---|
+| 0.05 | 0.210 | **0.467** |
+| 0.10 | 0.102 | **0.402** |
+| 0.20 | 0.026 | **0.261** |
+
+Again the same ranking. steghide's error falls from 0.34/0.24/0.13 with the
+compact features to 0.21/0.10/0.03 here; ScatterSteg's changes little, because
+the compact features were already well matched to its changes (0.42/0.40/0.23).
+Raw output is in `results-dctr-jpeg.txt`.
 
 `srm.py` is not the published SRM: the construction is the same, but the
 kernels and quantization steps were chosen here, and it has roughly a fifth of
@@ -85,8 +100,8 @@ Reproduce:
   is stronger than SPAM and showed the SPAM numbers were optimistic. The
   published SRM, GFR and deep (SRNet) detectors, trained on far more images,
   would detect everything more easily still. The ranking has held so far; the
-  absolute numbers will be worse. JPEG was only tested with the compact feature
-  set.
+  absolute numbers will be worse. JPEG was tested with the compact feature set
+  and a DCTR-style one (the latter reimplemented here).
 - **One cover source.** Downsampled Wikimedia JPEGs, not raw camera images
   like BOSSbase. Cover noise matters a great deal to detectability.
 - **Small training set.** 238 pairs per split. Larger sets make detectors

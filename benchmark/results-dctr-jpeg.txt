@@ -1,0 +1,6 @@
+RESULT jpeg ss payload=0.05 PE=0.467 sd=0.010 n=480
+RESULT jpeg ss payload=0.1 PE=0.402 sd=0.014 n=480
+RESULT jpeg ss payload=0.2 PE=0.261 sd=0.014 n=480
+RESULT jpeg sh payload=0.05 PE=0.210 sd=0.014 n=480
+RESULT jpeg sh payload=0.1 PE=0.102 sd=0.020 n=480
+RESULT jpeg sh payload=0.2 PE=0.026 sd=0.007 n=480

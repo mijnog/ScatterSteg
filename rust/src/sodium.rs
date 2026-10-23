@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Maxime de Montbron
+
+//! A thin safe layer over libsodium, so the rest of the crate stays free of
+//! `unsafe` and raw pointers.
+
+use libsodium_sys as sys;
+use std::ops::{Deref, DerefMut};
+use std::os::raw::c_ulonglong;
+
+pub const SALT_BYTES: usize = 16;
+pub const CHACHA_KEY_BYTES: usize = 32;
+pub const SECRETBOX_KEY_BYTES: usize = 32;
+pub const NONCE_BYTES: usize = 24;
+pub const MAC_BYTES: usize = 16;
+pub const KDF_KEY_BYTES: usize = 32;
+
+pub fn init() -> Result<(), ()> {
+    // SAFETY: sodium_init has no preconditions; <0 means failure
+    if unsafe { sys::sodium_init() } < 0 { Err(()) } else { Ok(()) }
+}
+
+pub fn random_bytes(buf: &mut [u8]) {
+    unsafe { sys::randombytes_buf(buf.as_mut_ptr().cast(), buf.len()) }
+}
+
+/// Uniform in [0, bound)
+pub fn random_uniform(bound: u32) -> u32 {
+    unsafe { sys::randombytes_uniform(bound) }
+}
+
+pub fn memzero(buf: &mut [u8]) {
+    unsafe { sys::sodium_memzero(buf.as_mut_ptr().cast(), buf.len()) }
+}
+
+/// Unkeyed BLAKE2b with `out.len()` bytes of output
+pub fn generichash(out: &mut [u8], input: &[u8], key: &[u8]) {
+    let key_ptr = if key.is_empty() { std::ptr::null() } else { key.as_ptr() };
+    let r = unsafe {
+        sys::crypto_generichash(out.as_mut_ptr(), out.len(), input.as_ptr(), input.len() as c_ulonglong,
+                                key_ptr, key.len())
+    };
+    assert_eq!(r, 0, "crypto_generichash rejected its parameters");
+}
+
+/// XORs `buf` with the ChaCha20-IETF keystream (zero nonce) from `block`
+pub fn chacha20_ietf_xor_ic(buf: &mut [u8], block: u32, key: &[u8; CHACHA_KEY_BYTES]) {
+    let nonce = [0u8; 12];
+    let r = unsafe {
+        sys::crypto_stream_chacha20_ietf_xor_ic(buf.as_mut_ptr(), buf.as_ptr(), buf.len() as c_ulonglong,
+                                                nonce.as_ptr(), block, key.as_ptr())
+    };
+    assert_eq!(r, 0);
+}
+
+/// The original ChaCha20 keystream (zero 8-byte nonce), for format v1
+pub fn chacha20_stream(out: &mut [u8], key: &[u8; CHACHA_KEY_BYTES]) {
+    let nonce = [0u8; 8];
+    let r = unsafe {
+        sys::crypto_stream_chacha20(out.as_mut_ptr(), out.len() as c_ulonglong, nonce.as_ptr(), key.as_ptr())
+    };
+    assert_eq!(r, 0);
+}
+
+#[derive(Clone, Copy)]
+pub enum PwhashStrength {
+    Interactive,
+    Moderate,
+}
+
+/// Argon2id13. Err on out of memory.
+pub fn pwhash(out: &mut [u8], passphrase: &[u8], salt: &[u8; SALT_BYTES], strength: PwhashStrength)
+    -> Result<(), ()> {
+    let (ops, mem) = match strength {
+        PwhashStrength::Interactive => (sys::crypto_pwhash_OPSLIMIT_INTERACTIVE, sys::crypto_pwhash_MEMLIMIT_INTERACTIVE),
+        PwhashStrength::Moderate => (sys::crypto_pwhash_OPSLIMIT_MODERATE, sys::crypto_pwhash_MEMLIMIT_MODERATE),
+    };
+    let r = unsafe {
+        sys::crypto_pwhash(out.as_mut_ptr(), out.len() as c_ulonglong, passphrase.as_ptr().cast(),
+                           passphrase.len() as c_ulonglong, salt.as_ptr(), ops as c_ulonglong, mem as usize,
+                           sys::crypto_pwhash_ALG_ARGON2ID13 as i32)
+    };
+    if r == 0 { Ok(()) } else { Err(()) }
+}
+
+pub fn kdf_derive(out: &mut [u8], id: u64, context: &[u8; 8], master: &[u8; KDF_KEY_BYTES]) {
+    let r = unsafe {
+        sys::crypto_kdf_derive_from_key(out.as_mut_ptr(), out.len(), id, context.as_ptr().cast(), master.as_ptr())
+    };
+    assert_eq!(r, 0);
+}
+
+/// `out` is `msg.len() + MAC_BYTES` long
+pub fn secretbox_easy(out: &mut [u8], msg: &[u8], nonce: &[u8; NONCE_BYTES], key: &[u8; SECRETBOX_KEY_BYTES]) {
+    assert_eq!(out.len(), msg.len() + MAC_BYTES);
+    let r = unsafe {
+        sys::crypto_secretbox_easy(out.as_mut_ptr(), msg.as_ptr(), msg.len() as c_ulonglong,
+                                   nonce.as_ptr(), key.as_ptr())
+    };
+    assert_eq!(r, 0);
+}
+
+/// `out` is `boxed.len() - MAC_BYTES` long; false if it doesn't authenticate
+pub fn secretbox_open_easy(out: &mut [u8], boxed: &[u8], nonce: &[u8; NONCE_BYTES],
+                           key: &[u8; SECRETBOX_KEY_BYTES]) -> bool {
+    assert_eq!(out.len() + MAC_BYTES, boxed.len());
+    let r = unsafe {
+        sys::crypto_secretbox_open_easy(out.as_mut_ptr(), boxed.as_ptr(), boxed.len() as c_ulonglong,
+                                        nonce.as_ptr(), key.as_ptr())
+    };
+    r == 0
+}
+
+/// Memory from sodium_malloc: locked against swapping, fenced by guard
+/// pages, wiped on drop. Holds secrets (passphrase, message, keys).
+pub struct Secret {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl Secret {
+    /// `len` zeroed-or-garbage bytes (sodium fills with 0xdb); None if out of memory
+    pub fn new(len: usize) -> Option<Secret> {
+        let ptr = unsafe { sys::sodium_malloc(len.max(1)) } as *mut u8;
+        if ptr.is_null() { return None; }
+        let mut s = Secret { ptr, len };
+        s.fill(0);
+        Some(s)
+    }
+
+    pub fn from_slice(data: &[u8]) -> Option<Secret> {
+        let mut s = Secret::new(data.len())?;
+        s.copy_from_slice(data);
+        Some(s)
+    }
+}
+
+impl Deref for Secret {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { unsafe { std::slice::from_raw_parts(self.ptr, self.len) } }
+}
+
+impl DerefMut for Secret {
+    fn deref_mut(&mut self) -> &mut [u8] { unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) } }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) { unsafe { sys::sodium_free(self.ptr.cast()) } }
+}

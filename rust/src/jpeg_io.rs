@@ -22,9 +22,10 @@ use std::ptr;
 /// Largest coefficient storage load will allocate (1 GiB)
 const MAX_COEF_BYTES: usize = 1 << 30;
 /// Most carriers load will take. Each costs memory of its own beyond its
-/// 2-byte coefficient: its index and cost here, its slot in the message
+/// 2-byte coefficient: its index (a pointer in the C version, whose cap this
+/// must equal) and cost here, its slot in the message
 /// permutation, and the bits and cost STC works on.
-const CARRIER_BYTES: usize = size_of::<u32>() + size_of::<f32>() + size_of::<u32>() + 2 + size_of::<f32>();
+const CARRIER_BYTES: usize = size_of::<*const i16>() + size_of::<f32>() + size_of::<u32>() + 2 + size_of::<f32>();
 const MAX_CARRIERS: usize = MAX_COEF_BYTES / CARRIER_BYTES;
 /// Progressive JPEGs can have any number of scans, each a full pass over the
 /// coefficients; a crafted file with thousands of tiny scans takes minutes to
@@ -353,4 +354,17 @@ unsafe fn standard_tables(s: *const jpeg_decompress_struct, d: *const jpeg_compr
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// jpeg_io.c's JPEG_CARRIER_BYTES counts an 8-byte pointer per carrier. A
+    /// different cap here lets us write JPEGs C refuses to read.
+    #[test]
+    fn carrier_cap_matches_c() {
+        assert_eq!(CARRIER_BYTES, 22);
+        assert_eq!(MAX_CARRIERS, (1usize << 30) / 22);
+    }
 }

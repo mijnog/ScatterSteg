@@ -66,7 +66,7 @@ fn keep_chunk(name: &[u8; 4]) -> bool {
 /// The cover's ancillary chunks, in order, with whether each follows the
 /// image data. Stops at the first damaged chunk; chunks failing their CRC
 /// are dropped.
-fn parse_chunks(file: &[u8]) -> Vec<Chunk> {
+fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
     let mut out = Vec::new();
     let mut total = 0usize;
     let mut pos = 8;
@@ -78,6 +78,10 @@ fn parse_chunks(file: &[u8]) -> Vec<Chunk> {
         let data = &file[pos + 8..pos + 8 + len];
         let crc = u32::from_be_bytes(file[pos + 8 + len..pos + 12 + len].try_into().unwrap());
         pos += 12 + len;
+        // libpng refuses the whole file over a name that isn't four letters
+        // with an uppercase third; so must we, or we'd write such a chunk
+        // back out and C couldn't read the result
+        if !name.iter().all(u8::is_ascii_alphabetic) || name[2] & 0x20 != 0 { return None; }
         match &name {
             b"IDAT" => { after_idat = true; continue; }
             b"IEND" => break,
@@ -94,11 +98,69 @@ fn parse_chunks(file: &[u8]) -> Vec<Chunk> {
             out.push(Chunk { name, data: data.to_vec(), after_idat });
         }
     }
-    out
+    Some(out)
+}
+
+/// Rewrites `file` in place to the chunks the decoder needs: IHDR, PLTE, tRNS,
+/// IDAT and a closing IEND. The `png` crate parses and rejects ancillary
+/// chunks (a gAMA of the wrong length, a bad fcTL, ...) that libpng only
+/// warns about, and wants an IEND libpng doesn't; none of that may decide
+/// whether a cover loads. Like libpng, a repeated PLTE or tRNS and a tRNS of
+/// the wrong size are ignored. False if image data is interrupted by another
+/// chunk, which libpng refuses.
+fn decoder_view(file: &mut Vec<u8>) -> bool {
+    let (mut pos, mut out) = (8, 8);
+    let (mut seen_plte, mut seen_trns, mut in_idat, mut idat_done) = (false, false, false, false);
+    let (mut color, mut plte_entries) = (0u8, 0usize);
+    while pos + 12 <= file.len() {
+        let len = u32::from_be_bytes(file[pos..pos + 4].try_into().unwrap()) as usize;
+        if len > i32::MAX as usize || pos + 12 + len > file.len() { break; }
+        let name: [u8; 4] = file[pos + 4..pos + 8].try_into().unwrap();
+        let end = pos + 12 + len;
+        if &name == b"IEND" { break; }
+        if &name != b"IDAT" && in_idat { in_idat = false; idat_done = true; }
+        let keep = match &name {
+            b"IHDR" => {
+                let first = out == 8;
+                if first && len == 13 { color = file[pos + 8 + 9]; }
+                if !first && !in_idat && !idat_done { return false; } // libpng: duplicate IHDR
+                first // one after the image data is ignored
+            }
+            b"PLTE" if !seen_plte => { seen_plte = true; plte_entries = len / 3; true }
+            b"tRNS" if !seen_trns => {
+                seen_trns = true;
+                match color { 0 => len == 2, 2 => len == 6, 3 => seen_plte && len <= plte_entries, _ => false }
+            }
+            b"IDAT" => {
+                if idat_done { return false; }
+                in_idat = true;
+                true
+            }
+            _ => {
+                // libpng fails on a bad CRC in any critical chunk, kept or not
+                if name[0] & 0x20 == 0 {
+                    let mut h = crc32fast::Hasher::new();
+                    h.update(&file[pos + 4..pos + 8 + len]);
+                    if h.finalize() != u32::from_be_bytes(file[pos + 8 + len..end].try_into().unwrap()) { return false; }
+                }
+                false
+            }
+        };
+        if keep {
+            file.copy_within(pos..end, out);
+            out += end - pos;
+        }
+        pos = end;
+    }
+    file.truncate(out);
+    file.extend_from_slice(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]);
+    true
 }
 
 pub fn load(path: &Path) -> Option<Image> {
-    let file = crate::fault::read_file(path, &SIGNATURE).ok()?;
+    let mut file = crate::fault::read_file(path, &SIGNATURE).ok()?;
+    let chunks = parse_chunks(&file)?;
+    if !decoder_view(&mut file) { return None; }
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
     // Text and profile chunks are copied as raw bytes (see parse_chunks), so
     // the decoder needn't parse them, and a malformed one can't stop the load
@@ -161,7 +223,7 @@ pub fn load(path: &Path) -> Option<Image> {
 
     Some(Image {
         width, height, channels, pixels, unsuitable,
-        meta: Some(PngMeta { interlaced, chunks: parse_chunks(&file) }),
+        meta: Some(PngMeta { interlaced, chunks }),
     })
 }
 

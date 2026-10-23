@@ -647,6 +647,38 @@ class CliTest(CliBase):
             self.assertNotIn(kind, [k for k, _ in png_chunks(out)])
             self.assertDecodes(out, "big chunk")
 
+    def test_malformed_ancillary_chunks_still_load(self):
+        # libpng only warns about these; a cover (or an image C wrote from
+        # one) carrying them must load in every implementation
+        bad = [(b"gAMA", b"\0\0"), (b"cHRM", b"\0" * 5), (b"pHYs", b"\0" * 8 + b"\x09"),
+               (b"sRGB", b"\x09"), (b"tRNS", b"\0\0"), (b"acTL", b"\0\0")]
+        for kind, data in bad:
+            src = self.path("bad.png")
+            write_png(src, 64, 64, cover_pixel, extra=_chunk(kind, data))
+            out = self.path("steg.png")
+            code, log = self.encode(b"odd chunk", out, src=src)
+            self.assertEqual(code, 0, (kind, log))
+            self.assertDecodes(out, "odd chunk")
+
+    def test_invalid_chunk_name_refused(self):
+        # libpng rejects such a file, so writing the chunk back out would
+        # make an image C can't read
+        for name in (b"te1t", b"abcd", b"a\xe9bc"):
+            src = self.path("name.png")
+            write_png(src, 64, 64, cover_pixel, extra=_chunk(name, b"xx"))
+            code, log = self.encode(b"x", self.path("steg.png"), src=src)
+            self.assertEqual(code, 1, (name, log))
+            self.assertIn("could not load", log)
+
+    def test_critical_chunk_bad_crc_refused(self):
+        src = self.path("crc.png")
+        chunk = bytearray(_chunk(b"JECt", b"xx"))
+        chunk[-1] ^= 1
+        write_png(src, 64, 64, cover_pixel, extra=bytes(chunk))
+        code, log = self.encode(b"x", self.path("steg.png"), src=src)
+        self.assertEqual(code, 1, log)
+        self.assertIn("could not load", log)
+
     def test_unwritable_stderr_is_not_a_crash(self):
         # A diagnostic that can't be printed must not turn into a panic (101)
         import subprocess

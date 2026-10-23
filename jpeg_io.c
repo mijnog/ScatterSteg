@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
    Copyright (C) 2026 Maxime de Montbron */
+#define _POSIX_C_SOURCE 200809L  /* open_memstream, fmemopen */
 #include "jpeg_io.h"
 #include "atomic_write.h"
 #include <setjmp.h>
@@ -128,10 +129,9 @@ static int collect_carriers(JpegImage *j) {
     return 0;
 }
 
-JpegImage *jpeg_load(const char *path) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return NULL;
-    JpegImage *j = calloc(1, sizeof(JpegImage));
+/* Loads from fp, which it closes */
+static JpegImage *load_stream(FILE *fp) {
+    JpegImage *volatile j = calloc(1, sizeof(JpegImage));  /* survives the longjmp */
     if (!j) {
         fclose(fp);
         return NULL;
@@ -174,6 +174,11 @@ JpegImage *jpeg_load(const char *path) {
     j->err.pub.error_exit = unexpected_error;
     j->src.progress = NULL;
     return j;
+}
+
+JpegImage *jpeg_load(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    return fp ? load_stream(fp) : NULL;
 }
 
 void jpeg_free(JpegImage *j) {
@@ -287,6 +292,42 @@ int jpeg_save(const JpegImage *j, const char *path) {
     return atomic_write(path, write_jpeg, j);
 }
 
+/* Are a's coefficients exactly b's, every one of them? */
+static int same_coefficients(JpegImage *a, JpegImage *b) {
+    if (a->src.num_components != b->src.num_components) return 0;
+    for (int ci = 0; ci < a->src.num_components; ci++) {
+        jpeg_component_info *ca = &a->src.comp_info[ci], *cb = &b->src.comp_info[ci];
+        if (ca->width_in_blocks != cb->width_in_blocks || ca->height_in_blocks != cb->height_in_blocks)
+            return 0;
+        for (JDIMENSION by = 0; by < ca->height_in_blocks; by++) {
+            JBLOCKARRAY ra = a->src.mem->access_virt_barray((j_common_ptr)&a->src, a->coefs[ci], by, 1, FALSE);
+            JBLOCKARRAY rb = b->src.mem->access_virt_barray((j_common_ptr)&b->src, b->coefs[ci], by, 1, FALSE);
+            if (memcmp(ra[0], rb[0], ca->width_in_blocks * sizeof(JBLOCK)) != 0) return 0;
+        }
+    }
+    return 1;
+}
+
 int jpeg_check_writable(JpegImage *j) {
-    return write_coefficients(j, NULL);
+    /* Encode it, then read that back: some files (a truncated progressive
+       one with a first AC scan at Al=1 and no refinement, found by fuzzing)
+       are written with different coefficients, which would corrupt a
+       message hidden in them. */
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *out = open_memstream(&buf, &len);
+    if (!out) return -1;
+    int rc = write_coefficients(j, out);
+    if (fclose(out) != 0) rc = -1;  /* also sets buf and len */
+    if (rc != 0) {
+        free(buf);
+        return -1;
+    }
+    FILE *in = fmemopen(buf, len, "rb");
+    JpegImage *back = in ? load_stream(in) : NULL;
+    free(buf);
+    if (!back) return -1;
+    int same = same_coefficients(j, back);
+    jpeg_free(back);
+    return same ? 0 : -1;
 }

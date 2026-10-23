@@ -347,6 +347,10 @@ static void test_fuzz_regressions(void) {
             JpegImage *k = jpeg_load(out);
             Carrier a = jpeg_carrier(j);
             CHECK(k && jpeg_carrier(k).n_coefs == a.n_coefs);
+            if (k && jpeg_carrier(k).n_coefs == a.n_coefs) {
+                Carrier b = jpeg_carrier(k);
+                for (uint32_t i = 0; i < a.n_coefs; i++) CHECK(*a.coefs[i] == *b.coefs[i]);
+            }
             jpeg_free(k);
             jpeg_free(j);
         }

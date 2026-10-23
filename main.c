@@ -460,8 +460,12 @@ static int output_name_matches(const char *input, const char *output) {
 }
 
 /* Read the entire contents of stdin into a sodium_malloc buffer.
-   Prints a prompt first if stdin is a terminal. Caller must sodium_free. */
-static char *read_message(void) {
+   Prints a prompt first if stdin is a terminal. Caller must sodium_free.
+   Stops reading once the message (less a final newline) is longer than
+   max_len, so a huge stdin can't exhaust memory or overflow the payload
+   length: then sets *too_long and returns NULL. */
+static char *read_message(size_t max_len, int *too_long) {
+    *too_long = 0;
     if (isatty(STDIN_FILENO))
         fprintf(stderr, "Message (Ctrl+D when done):\n");
 
@@ -472,6 +476,11 @@ static char *read_message(void) {
 
     int c;
     while ((c = getchar()) != EOF) {
+        if (len > max_len) {  /* max_len + 1 bytes is fine if the last is '\n' */
+            sodium_free(buf);
+            *too_long = 1;
+            return NULL;
+        }
         if (len + 1 >= cap) {
             /* Grow by copying; sodium_free wipes the old buffer */
             char *bigger = sodium_malloc(cap * 2);
@@ -486,6 +495,11 @@ static char *read_message(void) {
 
     if (len > 0 && buf[len - 1] == '\n')
         len--;
+    if (len > max_len) {
+        sodium_free(buf);
+        *too_long = 1;
+        return NULL;
+    }
     buf[len] = '\0';
     return buf;
 }
@@ -636,12 +650,19 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char *message = read_message();
+        /* The most the v3 layout holds (see embed_payload_v3): one payload
+           bit per sample after the 32-bit header. Under 2^32, as positions
+           are 32-bit and 3 samples each at most. */
+        size_t samples = (size_t)(count - k) * carrier_channels(&carrier) - 32;
+        size_t max_msg = samples / 8 > V2_OVERHEAD ? samples / 8 - V2_OVERHEAD : 0;
+        int too_long;
+        char *message = read_message(max_msg, &too_long);
         if (!message) {
             sodium_free(keys);
             free(order);
             cover_free(&cover);
-            fprintf(stderr, "Error: could not read message\n");
+            fprintf(stderr, too_long ? "Error: message too long for this image\n"
+                                     : "Error: could not read message\n");
             return 1;
         }
         uint32_t msg_len = (uint32_t)strlen(message);

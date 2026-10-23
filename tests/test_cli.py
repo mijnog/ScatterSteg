@@ -57,9 +57,11 @@ def jpeg_segments(path):
     return out
 
 
-def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None):
+def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
+        stdin_path=None):
     """Run scattersteg, answer each passphrase prompt in order. The message
-    goes in on stdin, or with `typed`, is typed at the terminal instead.
+    goes in on stdin (from the file stdin_path, if given), or with `typed`,
+    is typed at the terminal instead.
     Returns (exit_code, combined stdout+stderr as text)."""
     binary = binary or BINARY
     with tempfile.TemporaryFile() as stdin:
@@ -68,7 +70,9 @@ def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None):
         stdin.seek(0)
         pid, master = pty.fork()
         if pid == 0:
-            if typed is None:
+            if stdin_path is not None:
+                os.dup2(os.open(stdin_path, os.O_RDONLY), 0)
+            elif typed is None:
                 os.dup2(stdin.fileno(), 0)
             os.execve(binary, [binary] + list(args), {**os.environ, **(env or {})})
 
@@ -1098,6 +1102,17 @@ class CliTest(CliBase):
         code, log = self.encode(("x" * 1476).encode(), out)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
+        self.assertFalse(os.path.exists(out))
+
+    def test_endless_message_refused(self):
+        # Reading stops past the image's capacity: an endless stdin is
+        # refused quickly, rather than read until memory runs out (or, past
+        # 4 GiB, its 32-bit length wrapping)
+        out = self.path("steg.png")
+        code, log = run(["encode", "-i", self.cover, "-o", out],
+                        passphrases=["correct horse"] * 2, stdin_path="/dev/zero")
+        self.assertEqual(code, 1, log)
+        self.assertIn("message too long for this image", log)
         self.assertFalse(os.path.exists(out))
 
     def test_failed_encode_keeps_existing_output(self):

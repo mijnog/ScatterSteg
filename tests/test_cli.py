@@ -1078,6 +1078,16 @@ class CliTest(CliBase):
         self.assertTrue(os.path.islink(link))
         self.assertDecodes(out, "via link")
 
+    def test_non_regular_output_left_alone(self):
+        # A FIFO (or device, or directory) at the output path is neither
+        # written to nor replaced by a regular file
+        fifo = self.path("out.png")
+        os.mkfifo(fifo)
+        code, log = self.encode(b"x", fifo)
+        self.assertEqual(code, 1, log)
+        self.assertIn("is not a regular file", log)
+        self.assertTrue(stat.S_ISFIFO(os.stat(fifo).st_mode))
+
     def test_signal_at_prompt_restores_echo(self):
         # Killed while echo is off, the terminal must get echo back, and the
         # process must still die from that signal

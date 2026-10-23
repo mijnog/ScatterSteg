@@ -434,6 +434,20 @@ static void test_save_keeps_interlacing(void) {
     remove(dst);
 }
 
+static void test_save_leaves_fifo_alone(void) {
+    /* rename would replace the FIFO with a regular file */
+    const char *p = path_in_dir("fifo.png");
+    CHECK(mkfifo(p, 0600) == 0);
+    Image *img = make_image(4, 4);
+    errno = 0;
+    CHECK(png_save(img, p) == -1 && errno == EINVAL);
+    struct stat st;
+    CHECK(stat(p, &st) == 0 && S_ISFIFO(st.st_mode));
+    CHECK(count_dir_entries() == 1);  /* no leftover temp file */
+    image_free(img);
+    remove(p);
+}
+
 static void test_save_overwrites(void) {
     const char *p = path_in_dir("over.png");
     write_bytes(p, "old contents", 12);
@@ -638,6 +652,7 @@ int main(void) {
     RUN(test_save_roundtrip);
     RUN(test_save_gray_roundtrip);
     RUN(test_save_keeps_interlacing);
+    RUN(test_save_leaves_fifo_alone);
     RUN(test_save_overwrites);
     RUN(test_save_mode_follows_umask);
     RUN(test_save_keeps_existing_mode);

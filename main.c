@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <termios.h>
 #ifdef __linux__
@@ -573,6 +574,12 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         if (!output_name_matches(input, output)) return 1;
+        /* Checked again when writing; here, before the passphrase prompt */
+        struct stat out_st;
+        if (stat(output, &out_st) == 0 && !S_ISREG(out_st.st_mode)) {
+            fprintf(stderr, "Error: '%s' exists and is not a regular file\n", output);
+            return 1;
+        }
 
         char *passphrase = read_passphrase("Passphrase: ");
         if (!passphrase) return 1;

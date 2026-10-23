@@ -13,6 +13,13 @@ int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), cons
     const char *dest = target ? target : path;
     struct stat existing;
     int replacing = stat(dest, &existing) == 0;
+    /* rename would replace a FIFO, socket or device (even /dev/null, as
+       root) with a regular file, rather than write to it: refuse */
+    if (replacing && !S_ISREG(existing.st_mode)) {
+        free(target);
+        errno = EINVAL;
+        return -1;
+    }
 
     errno = 0;
     size_t len = strlen(dest);

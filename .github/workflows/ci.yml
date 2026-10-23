@@ -82,11 +82,25 @@ jobs:
           rustup toolchain install nightly --profile minimal
           cargo install cargo-fuzz --locked
 
+      - name: Seed the fuzz corpora
+        working-directory: rust
+        run: |
+          mkdir -p fuzz/corpus/png_load fuzz/corpus/jpeg_load fuzz/corpus/diff_png fuzz/corpus/diff_jpeg
+          python3 ../tests/fuzz/make_seeds.py fuzz/corpus/png_load
+          i=0
+          for opts in "" progressive optimize arith restart markers nojfif 444; do
+            for c in 1 3; do ../tests/build/jpeg_fixture fuzz/corpus/jpeg_load/seed$i.jpg 40 32 $c 85 $opts; i=$((i+1)); done
+          done
+          cp fuzz/regressions/png_load/* ../tests/fuzz/regressions/png_load/* fuzz/regressions/diff_png/* fuzz/corpus/png_load/
+          cp fuzz/regressions/jpeg_load/* ../tests/fuzz/regressions/jpeg_load/* fuzz/corpus/jpeg_load/
+          cp fuzz/corpus/png_load/* fuzz/corpus/diff_png/
+          cp fuzz/corpus/jpeg_load/* fuzz/corpus/diff_jpeg/
+
       - name: Fuzz the Rust loaders, and C against Rust, for a minute each
         working-directory: rust
         run: |
           for t in png_load jpeg_load diff_png diff_jpeg; do
-            case $t in *png*) dict=dicts/png.dict;; *) dict=dicts/jpeg.dict;; esac
+            case $t in *png*) dict=fuzz/dicts/png.dict;; *) dict=fuzz/dicts/jpeg.dict;; esac
             cargo +nightly fuzz run $t -- -dict=$dict -max_total_time=60 -rss_limit_mb=7000 -max_len=20000 -timeout=60
           done
 

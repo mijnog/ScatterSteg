@@ -58,10 +58,11 @@ def jpeg_segments(path):
 
 
 def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
-        stdin_path=None):
+        stdin_path=None, stdout_path=None):
     """Run scattersteg, answer each passphrase prompt in order. The message
     goes in on stdin (from the file stdin_path, if given), or with `typed`,
-    is typed at the terminal instead.
+    is typed at the terminal instead. stdout goes to the terminal, or to
+    the file stdout_path.
     Returns (exit_code, combined stdout+stderr as text)."""
     binary = binary or BINARY
     with tempfile.TemporaryFile() as stdin:
@@ -74,6 +75,8 @@ def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
                 os.dup2(os.open(stdin_path, os.O_RDONLY), 0)
             elif typed is None:
                 os.dup2(stdin.fileno(), 0)
+            if stdout_path is not None:
+                os.dup2(os.open(stdout_path, os.O_WRONLY), 1)
             os.execve(binary, [binary] + list(args), {**os.environ, **(env or {})})
 
     answers = list(passphrases)
@@ -1158,6 +1161,28 @@ class CliTest(CliBase):
         self.assertEqual(code, 1, log)
         self.assertIn("message too long for this image", log)
         self.assertFalse(os.path.exists(out))
+
+    def test_message_read_error(self):
+        # A read error isn't the end of the message: nothing partial is hidden
+        out = self.path("steg.png")
+        code, log = run(["encode", "-i", self.cover, "-o", out],
+                        passphrases=["correct horse"] * 2, stdin_path=self.dir)
+        self.assertEqual(code, 1, log)
+        self.assertIn("could not read message: Is a directory", log)
+        self.assertFalse(os.path.exists(out))
+
+    def test_output_write_error(self):
+        # A message (or passphrase) that couldn't be written out is an error,
+        # or the user might delete the image thinking it was saved
+        out = self.path("steg.png")
+        self.assertEqual(self.encode(b"keep me", out)[0], 0)
+        code, log = run(["decode", "-i", out], passphrases=["correct horse"],
+                        stdout_path="/dev/full")
+        self.assertEqual(code, 1, log)
+        self.assertIn("could not write the message: No space left on device", log)
+        code, log = run(["passphrase"], stdout_path="/dev/full")
+        self.assertEqual(code, 1, log)
+        self.assertIn("could not write the passphrase", log)
 
     def test_failed_encode_keeps_existing_output(self):
         out = self.path("steg.png")

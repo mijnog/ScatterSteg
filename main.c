@@ -466,7 +466,8 @@ static int output_name_matches(const char *input, const char *output) {
    The message may hold any bytes, NUL included: its length (less a final
    newline) goes in *out_len. Stops reading once that is longer than
    max_len, so a huge stdin can't exhaust memory or overflow the payload
-   length: then sets *too_long and returns NULL. */
+   length: then sets *too_long and returns NULL. Also NULL on a read error
+   or out of memory, with errno set. */
 static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
     *too_long = 0;
     if (isatty(STDIN_FILENO))
@@ -494,7 +495,13 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
         if (want > max_len + 2 - len) want = max_len + 2 - len;
         ssize_t n = read(STDIN_FILENO, buf + len, want);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
+        if (n < 0) {  /* not the end: don't hide a partial message */
+            int err = errno;
+            sodium_free(buf);
+            errno = err;
+            return NULL;
+        }
+        if (n == 0) break;
         len += (size_t)n;
         if (len > max_len + 1) {  /* max_len + 1 is fine if the last is '\n' */
             sodium_free(buf);
@@ -530,8 +537,9 @@ static int write_all(int fd, const void *data, size_t n) {
 }
 
 /* Print a random passphrase: 5 groups of 5 characters from a 31-character
-   alphabet without look-alikes (0/o, 1/l/i), about 124 bits in all */
-static void generate_passphrase(void) {
+   alphabet without look-alikes (0/o, 1/l/i), about 124 bits in all.
+   Returns 0, or -1 (and says why) if it couldn't be written. */
+static int generate_passphrase(void) {
     static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
     char out[30];
     size_t n = 0;
@@ -541,8 +549,10 @@ static void generate_passphrase(void) {
             out[n++] = alphabet[randombytes_uniform(sizeof(alphabet) - 1)];
     }
     out[n++] = '\n';
-    write_all(STDOUT_FILENO, out, n);
+    int r = write_all(STDOUT_FILENO, out, n);
     sodium_memzero(out, sizeof(out));
+    if (r != 0) fprintf(stderr, "Error: could not write the passphrase: %s\n", strerror(errno));
+    return r;
 }
 
 /* Keep secrets out of core dumps, and (Linux) stop other processes of the
@@ -589,7 +599,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(argv[1], "passphrase") == 0) {
-        generate_passphrase();
+        if (generate_passphrase() != 0) return 1;
 
     } else if (strcmp(argv[1], "encode") == 0) {
         if (!input || !output) {
@@ -697,12 +707,13 @@ int main(int argc, char *argv[]) {
         int too_long;
         size_t message_len;
         char *message = read_message(max_msg, &message_len, &too_long);
+        int read_err = errno;  /* before the cleanup below changes it */
         if (!message) {
             sodium_free(keys);
             free(order);
             cover_free(&cover);
-            fprintf(stderr, too_long ? "Error: message too long for this image\n"
-                                     : "Error: could not read message\n");
+            if (too_long) fprintf(stderr, "Error: message too long for this image\n");
+            else fprintf(stderr, "Error: could not read message: %s\n", strerror(read_err));
             return 1;
         }
         uint32_t msg_len = (uint32_t)message_len;  /* at most max_msg */
@@ -806,7 +817,12 @@ int main(int argc, char *argv[]) {
             /* All of it, NULs too. The newline goes in the same write, so
                the plaintext buffer has room: open_box allocates pt_len + 1. */
             plaintext[pt_len] = '\n';
-            write_all(STDOUT_FILENO, plaintext, pt_len + 1);
+            if (write_all(STDOUT_FILENO, plaintext, pt_len + 1) != 0) {
+                /* e.g. a full disk: the message was not saved */
+                fprintf(stderr, "Error: could not write the message: %s\n", strerror(errno));
+                sodium_free(plaintext);
+                return 1;
+            }
         }
         sodium_free(plaintext);
 

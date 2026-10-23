@@ -462,10 +462,11 @@ static int output_name_matches(const char *input, const char *output) {
 
 /* Read the entire contents of stdin into a sodium_malloc buffer.
    Prints a prompt first if stdin is a terminal. Caller must sodium_free.
-   Stops reading once the message (less a final newline) is longer than
+   The message may hold any bytes, NUL included: its length (less a final
+   newline) goes in *out_len. Stops reading once that is longer than
    max_len, so a huge stdin can't exhaust memory or overflow the payload
    length: then sets *too_long and returns NULL. */
-static char *read_message(size_t max_len, int *too_long) {
+static char *read_message(size_t max_len, size_t *out_len, int *too_long) {
     *too_long = 0;
     if (isatty(STDIN_FILENO))
         fprintf(stderr, "Message (Ctrl+D when done):\n");
@@ -502,6 +503,7 @@ static char *read_message(size_t max_len, int *too_long) {
         return NULL;
     }
     buf[len] = '\0';
+    *out_len = len;
     return buf;
 }
 
@@ -671,7 +673,8 @@ int main(int argc, char *argv[]) {
         size_t samples = (size_t)(count - k) * carrier_channels(&carrier) - 32;
         size_t max_msg = samples / 8 > V2_OVERHEAD ? samples / 8 - V2_OVERHEAD : 0;
         int too_long;
-        char *message = read_message(max_msg, &too_long);
+        size_t message_len;
+        char *message = read_message(max_msg, &message_len, &too_long);
         if (!message) {
             sodium_free(keys);
             free(order);
@@ -680,7 +683,7 @@ int main(int argc, char *argv[]) {
                                      : "Error: could not read message\n");
             return 1;
         }
-        uint32_t msg_len = (uint32_t)strlen(message);
+        uint32_t msg_len = (uint32_t)message_len;  /* at most max_msg */
         /* Empty message: nothing to hide, so write nothing */
         if (msg_len == 0) {
             sodium_free(keys);
@@ -777,8 +780,10 @@ int main(int argc, char *argv[]) {
                             "or no message in this image\n");
         if (r != DECODED) return 1;
 
-        if (pt_len > 0)  /* empty message: print nothing */
-            printf("%s\n", (char *)plaintext);
+        if (pt_len > 0) {  /* empty message: print nothing */
+            fwrite(plaintext, 1, pt_len, stdout);  /* all of it, NULs too */
+            putchar('\n');
+        }
         sodium_free(plaintext);
 
     } else {

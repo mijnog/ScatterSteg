@@ -557,15 +557,15 @@ class CliTest(CliBase):
         self.assertEqual(self.encode(msg.encode(), out)[0], 0)
         self.assertDecodes(out, msg)
 
-    def test_roundtrip_binary_safe_up_to_nul(self):
-        # Plaintext is printed with %s, so it is truncated at the first NUL;
-        # pin that behaviour so a change is noticed.
+    def test_roundtrip_binary(self):
+        # Every byte value, NUL included, goes in and comes back out
+        msg = bytes(range(256)) + b"after the NULs"
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"before\x00after", out)[0], 0)
+        self.assertEqual(self.encode(msg, out)[0], 0)
         code, log = self.decode(out)
         self.assertEqual(code, 0, log)
-        self.assertIn("before\n", log)
-        self.assertNotIn("after", log)
+        # The pty turns "\n" into "\r\n" (undone by run) and keeps the rest
+        self.assertIn(msg.decode(errors="surrogateescape").replace("\r\n", "\n") + "\n", log)
 
     def test_in_place(self):
         # -i and -o the same file: the atomic save must not clobber the input

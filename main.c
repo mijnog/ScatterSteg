@@ -131,16 +131,20 @@ static char *read_passphrase(const char *prompt) {
 
 /* ---- File format ----------------------------------------------------------
 
-   v2 (written by encode):
+   v3 (written by encode):
      salt     16 random bytes, in the first 43 pixels (RGB; 128 for gray)
               of a public permutation (prng_permutation keyed with BLAKE2b
               of V2_SALT_LABEL), so it is spread over the image
      keys     master = Argon2id(passphrase, salt, "moderate": 3 passes,
               256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
               and 2 of master, context V2_KDF_CONTEXT
-     payload  32-bit little-endian length, then [nonce 24 | secretbox], in
-              the order of prng_permutation(scatter key) with the salt
-              pixels removed
+     order    prng_permutation(scatter key) with the salt pixels removed
+     payload  [nonce 24 | secretbox]: its 32-bit little-endian length in
+              the first 32 samples in that order, then its bits as the STC
+              syndrome of the samples after them (see v3_carriers, stc.h)
+
+   v2 (decode only): salt, keys and order as v3; the length, then the
+     payload's bits written straight into the samples in order.
 
    v1 (decode only): scatter key = keyed BLAKE2b of the passphrase alone,
      which let a wrong passphrase be rejected without Argon2id; payload =
@@ -148,8 +152,9 @@ static char *read_passphrase(const char *prompt) {
      encryption key = Argon2id(passphrase, salt, "interactive").
 
    Every pixel carries one bit per sample (R, G, B, or gray LSBs), written
-   by LSB matching. There is no version marker, which would itself give the
-   image away: decode tries v2, then v1 (RGB only). */
+   by LSB matching (a JPEG: one per carrier coefficient). There is no
+   version marker, which would itself give the image away: decode tries
+   v3, then v2, then v1 (RGB PNG only). */
 
 #define SALT_BYTES      crypto_pwhash_SALTBYTES             /* 16 */
 #define MAX_SALT_PIXELS (SALT_BYTES * 8)                    /* gray: 1 bit each */
@@ -263,18 +268,30 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     return DECODED;
 }
 
-/* v3: the same 32-bit length, written straight into the first 32 samples,
-   then the payload's bits as the STC syndrome of the samples after it (see
-   stc.h). NO_MATCH if the length doesn't fit. */
+/* The v3 layout over n positions of ch samples, shared by encode and
+   decode so it can't drift between them: the 32-bit length goes straight
+   into the first 32 samples, and the payload's bits are the STC syndrome
+   of samples from 32 on. */
+
+/* Samples after the length header; 0 if the header doesn't fit */
+static size_t v3_samples(uint32_t n, uint32_t ch) {
+    return n < header_pixels(ch) ? 0 : (size_t)n * ch - 32;
+}
+
+/* How many samples from 32 on carry a len-byte payload's syndrome (*mlen
+   = 8 * len message bits); 0 if it doesn't fit */
+static size_t v3_carriers(uint32_t n, uint32_t ch, uint32_t len, size_t *mlen) {
+    *mlen = (size_t)len * 8;
+    return stc_carriers(v3_samples(n, ch), *mlen);
+}
+
+/* v3 (see v3_samples). NO_MATCH if the length doesn't fit. */
 static int read_payload_v3(const Carrier *c, const uint32_t *order, uint32_t n,
                            uint8_t **payload, uint32_t *len) {
-    uint32_t ch = carrier_channels(c);
-    if (n < header_pixels(ch)) return NO_MATCH;
-    size_t samples = (size_t)n * ch - 32;
+    if (n < header_pixels(carrier_channels(c))) return NO_MATCH;
     *len = embed_peek_len(c, order, n);
-    if (*len < V2_OVERHEAD || (uint64_t)*len * 8 > samples) return NO_MATCH;
-    size_t mlen = (size_t)*len * 8;
-    size_t used = stc_carriers(samples, mlen);
+    size_t mlen;
+    size_t used = *len < V2_OVERHEAD ? 0 : v3_carriers(n, carrier_channels(c), *len, &mlen);
     if (!used) return NO_MATCH;
 
     uint8_t *y = malloc(used), *m = malloc(mlen);
@@ -293,17 +310,14 @@ static int read_payload_v3(const Carrier *c, const uint32_t *order, uint32_t n,
     return DECODED;
 }
 
-/* Records the v3 changes for payload (see read_payload_v3) in plan: the
+/* Records the v3 changes for payload (see v3_samples) in plan: the
    STC picks, among all sample bits with the right syndrome, the set
    cheapest to reach under embed_costs. Returns 0, -1 if it doesn't fit,
    or -2 if out of memory. */
 static int embed_payload_v3(const Carrier *c, const uint32_t *order, uint32_t n,
                             const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
-    uint32_t ch = carrier_channels(c);
-    if (n < header_pixels(ch)) return -1;
-    size_t samples = (size_t)n * ch - 32;
-    size_t mlen = (size_t)len * 8;
-    size_t used = stc_carriers(samples, mlen);
+    size_t mlen;
+    size_t used = v3_carriers(n, carrier_channels(c), len, &mlen);
     if (!used) return -1;
 
     uint8_t header[4] = {(uint8_t)len, (uint8_t)(len >> 8), (uint8_t)(len >> 16), (uint8_t)(len >> 24)};
@@ -704,10 +718,10 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        /* The most the v3 layout holds (see embed_payload_v3): one payload
-           bit per sample after the 32-bit header. Under 2^32, as positions
-           are 32-bit and 3 samples each at most. */
-        size_t samples = (size_t)(count - k) * carrier_channels(&carrier) - 32;
+        /* The most the v3 layout holds: one payload bit per sample after
+           the 32-bit header. Under 2^32, as positions are 32-bit and 3
+           samples each at most. */
+        size_t samples = v3_samples(count - k, carrier_channels(&carrier));
         size_t max_msg = samples / 8 > V2_OVERHEAD ? samples / 8 - V2_OVERHEAD : 0;
         int too_long;
         size_t message_len;

@@ -17,7 +17,7 @@
 #define STC_CHUNK_CARRIERS ((size_t)1 << 20)
 
 size_t stc_carriers(size_t n_avail, size_t mlen) {
-    if (mlen == 0 || n_avail < mlen) return 0;
+    if (mlen == 0 || n_avail < mlen || mlen > UINT32_MAX) return 0;  /* see block_start */
     return n_avail / mlen >= STC_MAX_W ? mlen * STC_MAX_W : n_avail;
 }
 
@@ -37,9 +37,12 @@ static void submatrix(size_t width, uint32_t *cols) {
     }
 }
 
-/* First carrier of message bit i's block */
+/* First carrier of message bit i's block: floor(i * n / mlen), computed as
+   i * (n / mlen) + floor(i * (n % mlen) / mlen) so that, with i <= mlen <
+   2^32 (stc_carriers), every product fits 64 bits. Portable: unsigned
+   __int128 only exists on 64-bit targets. */
 static size_t block_start(size_t i, size_t mlen, size_t n) {
-    return (size_t)(((unsigned __int128)i * n) / mlen);
+    return (size_t)((uint64_t)i * (n / mlen) + (uint64_t)i * (n % mlen) / mlen);
 }
 
 /* Message bits per trellis run, so a run spans at most about

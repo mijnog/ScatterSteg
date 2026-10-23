@@ -21,7 +21,8 @@
    byte (0 or 1). */
 
 /* How many carriers to use for mlen message bits when n_avail are there:
-   all of them, up to a cap that bounds the work. 0 if they don't fit. */
+   all of them, up to a cap that bounds the work. 0 if they don't fit, or
+   mlen is 2^32 or more. */
 size_t stc_carriers(size_t n_avail, size_t mlen);
 
 /* Finds stego bits y (n of them, from stc_carriers) with syndrome m,

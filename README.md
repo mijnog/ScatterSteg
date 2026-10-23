@@ -1,5 +1,7 @@
 # ScatterSteg
 
+[![CI](https://github.com/mijnog/ScatterSteg/actions/workflows/ci.yml/badge.svg)](https://github.com/mijnog/ScatterSteg/actions/workflows/ci.yml)
+
 ScatterSteg is a command-line tool for hiding encrypted messages in PNG and JPEG images. It combines authenticated encryption and memory-hard key derivation with steganographic techniques from the research literature (syndrome-trellis coding, LSB matching and histogram-preserving value exchange), so that the output image is statistically close to the cover it was made from.
 
 ```bash
@@ -41,6 +43,27 @@ echo "your message" | ./scattersteg encode -i cover.png -o steg.png
 ```
 
 The passphrase is read from the terminal with echo disabled and is never accepted as a command-line argument, so it does not appear in the process list. New images require a passphrase of at least 12 bytes. The message is read from standard input, or typed at the terminal and terminated with Ctrl+D. The output is written in the cover's format.
+
+There is also a Rust port in [`rust/`](rust/README.md) with the same command line and file format: an image written by one decodes with the other. Build it with `cargo build --release` (it needs libsodium, libjpeg-turbo, pkg-config and libclang).
+
+## Coming from steghide
+
+| steghide | ScatterSteg |
+|---|---|
+| `steghide embed -cf cover.jpg -ef secret.txt -sf out.jpg` | `./scattersteg encode -i cover.jpg -o out.jpg < secret.txt` |
+| `steghide extract -sf out.jpg -xf secret.txt` | `./scattersteg decode -i out.jpg > secret.txt` |
+| `-p passphrase` | not accepted: the passphrase is typed at the terminal, echo off, so it never appears in the process list or shell history |
+| `steghide info` | none: the image carries no header to read, so there is nothing to report without the passphrase |
+| `-e`, `-z`, `-N`, `-K` (algorithm, compression, filename, checksum) | none: always XSalsa20-Poly1305 with an Argon2id key; the message is read from standard input and no filename is stored |
+
+What differs:
+
+- **Formats.** ScatterSteg handles PNG and JPEG. It does not read BMP, WAV or AU. PNG covers must be 8-bit RGB or grayscale without transparency.
+- **Output.** `decode` writes the message to standard output, any bytes included, and adds a newline, so a file that goes in comes out one byte longer.
+- **Passphrase.** At least 12 bytes for a new image. `./scattersteg passphrase` prints a random one.
+- **Not compatible.** Neither tool can read the other's images.
+- **Detectability.** Against the rich-model detectors in [`benchmark/`](benchmark/README.md), steghide is caught 96–98% of the time at every payload tested, and ScatterSteg about 65% at 0.05 bits per pixel. See [Steganalysis results](#steganalysis-results) for the numbers and what they do not show.
+- **Speed.** Every encode and every decode costs one Argon2id run (about 0.2 s and 256 MiB), by design.
 
 ## How it works
 

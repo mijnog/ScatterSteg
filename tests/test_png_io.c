@@ -412,6 +412,28 @@ static void test_save_gray_roundtrip(void) {
     remove(p);
 }
 
+static void test_save_keeps_interlacing(void) {
+    /* An interlaced cover comes back out interlaced, with the same pixels */
+    const char *src = path_in_dir("adam7.png"), *dst = path_in_dir("adam7-out.png");
+    Fmt f = {PNG_COLOR_TYPE_RGB, 8, PNG_INTERLACE_ADAM7, 0};
+    write_fixture(src, &f, 37, 23);
+    Image *img = png_load(src);
+    CHECK(img != NULL);
+    if (!img) return;
+    CHECK(png_save(img, dst) == 0);
+    uint8_t ihdr[8 + 8 + 13];
+    FILE *fp = fopen(dst, "rb");
+    CHECK(fp && fread(ihdr, 1, sizeof(ihdr), fp) == sizeof(ihdr));
+    if (fp) fclose(fp);
+    CHECK(ihdr[8 + 8 + 12] == PNG_INTERLACE_ADAM7);
+    Image *back = png_load(dst);
+    CHECK(back && images_equal(img, back));
+    image_free(back);
+    image_free(img);
+    remove(src);
+    remove(dst);
+}
+
 static void test_save_overwrites(void) {
     const char *p = path_in_dir("over.png");
     write_bytes(p, "old contents", 12);
@@ -615,6 +637,7 @@ int main(void) {
     RUN(test_load_zlib_bombs_capped);
     RUN(test_save_roundtrip);
     RUN(test_save_gray_roundtrip);
+    RUN(test_save_keeps_interlacing);
     RUN(test_save_overwrites);
     RUN(test_save_mode_follows_umask);
     RUN(test_save_keeps_existing_mode);

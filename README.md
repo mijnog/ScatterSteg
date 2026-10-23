@@ -117,7 +117,7 @@ make coverage   # line coverage over the whole suite (~98%); annotated sources i
 | Kinds | 8-bit RGB or grayscale, no transparency | 8-bit baseline or progressive, Huffman or arithmetic coding |
 | Carriers | every sample (3 bits per RGB pixel) | AC coefficients with \|value\| ≥ 2 |
 | Typical capacity | ~760 KB in a 1080p image | ~0.12–0.15 bits/pixel (~68 KB in 4.5 MP) |
-| Kept from the cover | every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) and safe-to-copy chunks, byte for byte and in place, before or after the image data | quantization, sampling, coding mode, restart interval, APPn/COM markers |
+| Kept from the cover | interlacing, every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) and safe-to-copy chunks, byte for byte and in place, before or after the image data | quantization, sampling, coding mode, restart interval, APPn/COM markers |
 | Refused | palette, transparency, 16-bit, <8-bit gray | 12-bit, lossless, not re-encodable |
 
 ## File format (v3)

@@ -268,15 +268,19 @@ static int write_png(FILE *fp, const void *ctx) {
     }
 
     png_init_io(png, fp);
+    /* Interlaced like the cover, so the format doesn't change */
+    int interlace = img->meta ? png_get_interlace_type(img->meta->png, img->meta->info)
+                              : PNG_INTERLACE_NONE;
     png_set_IHDR(png, info,
         img->width, img->height,
         8,
         img->channels == 1 ? PNG_COLOR_TYPE_GRAY : PNG_COLOR_TYPE_RGB,
-        PNG_INTERLACE_NONE,
+        interlace == PNG_INTERLACE_ADAM7 ? PNG_INTERLACE_ADAM7 : PNG_INTERLACE_NONE,
         PNG_COMPRESSION_TYPE_DEFAULT,
         PNG_FILTER_TYPE_DEFAULT);
     if (img->meta) copy_metadata(png, info, img->meta);
     png_write_info(png, info);
+    if (interlace == PNG_INTERLACE_ADAM7) png_set_interlace_handling(png);
     png_write_image(png, img->rows);
     png_write_end(png, info);  /* with info: the chunks after the image data */
     png_destroy_write_struct(&png, &info);

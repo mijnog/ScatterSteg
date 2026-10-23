@@ -636,6 +636,17 @@ class CliTest(CliBase):
         self.assertDecodes(out, "nul message", pw)
         self.assertDecodes(out, "nul message", "correct horse")
 
+    def test_oversized_chunk_dropped_not_fatal(self):
+        # Past the 16 MiB per-chunk cap a chunk is left out, but the cover loads
+        for kind in (b"abCd", b"sPLT", b"zTXt"):
+            src = self.path("big.png")
+            write_png(src, 64, 64, cover_pixel, extra=_chunk(kind, bytes(80 << 20)))
+            out = self.path("steg.png")
+            code, log = self.encode(b"big chunk", out, src=src)
+            self.assertEqual(code, 0, log)
+            self.assertNotIn(kind, [k for k, _ in png_chunks(out)])
+            self.assertDecodes(out, "big chunk")
+
     def test_non_image_refused_without_reading_it_all(self):
         for src in ("/dev/zero", self.path("text.png")):
             if src != "/dev/zero":

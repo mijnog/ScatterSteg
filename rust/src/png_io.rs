@@ -105,6 +105,11 @@ pub fn load(path: &Path) -> Option<Image> {
     decoder.set_ignore_text_chunk(true);
     decoder.set_ignore_iccp_chunk(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    // The decoder buffers the chunks it parses (and refuses past 64 MiB by
+    // default); an oversized one is dropped by parse_chunks, not a reason to
+    // refuse the image. The file is already in memory and capped, so that
+    // bounds this too.
+    decoder.set_limits(png::Limits { bytes: crate::fault::MAX_FILE_BYTES as usize });
     let mut reader = decoder.read_info().ok()?;
     let info = reader.info();
     let (width, height) = (info.width, info.height);
@@ -130,7 +135,10 @@ pub fn load(path: &Path) -> Option<Image> {
 
     // The header's dimensions are untrusted: cap the total allocation before
     // making it, so a tiny file can't request terabytes
-    let row_size = width as usize * channels as usize;
+    // (the buffer holds what the decoder outputs, up to 4 samples a pixel when
+    // it expands a palette or tRNS to alpha; the alpha is dropped after)
+    let out_channels = reader.output_color_type().0.samples();
+    let row_size = width as usize * out_channels;
     if width == 0 || height == 0 || row_size > MAX_PIXEL_BYTES / height as usize
         || width as u64 * height as u64 > MAX_PIXELS {
         return None;

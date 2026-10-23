@@ -2,6 +2,7 @@
 #include "atomic_write.h"
 #include <png.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,32 +26,62 @@
    a 1.3 GB tEXt buffer from a 290-byte file (found by CI's fuzzer). */
 #define PNG_MAX_LIB_ALLOC ((png_alloc_size_t)64 << 20)
 
+/* Largest total libpng may hold at once. The per-chunk and per-allocation
+   caps don't bound the sum: up to 1000 text chunks are kept, and a zTXt of
+   a few KiB can inflate to nearly 16 MiB, so a 16 MB file could otherwise
+   make libpng hold 16 GiB (and did hold 498 MiB for a 490 KB one). Past this, libpng drops the chunk it was
+   reading (a benign error on read). */
+#define PNG_MAX_LIB_TOTAL ((size_t)128 << 20)
+
+/* What one libpng struct has allocated and not yet freed. Each block has a
+   header recording its size, so capped_free can take it off. */
+typedef struct {
+    size_t live;
+} AllocBudget;
+
+typedef union {
+    size_t size;
+    max_align_t align;
+} AllocHeader;
+
 static png_voidp capped_malloc(png_structp png, png_alloc_size_t size) {
-    (void)png;
-    return size <= PNG_MAX_LIB_ALLOC ? malloc(size) : NULL;  /* NULL: png_error */
+    AllocBudget *budget = png_get_mem_ptr(png);
+    if (size > PNG_MAX_LIB_ALLOC || size > PNG_MAX_LIB_TOTAL - budget->live)
+        return NULL;  /* NULL: png_error, or a benign error for a chunk */
+    AllocHeader *h = malloc(sizeof(AllocHeader) + size);
+    if (!h) return NULL;
+    h->size = size;
+    budget->live += size;
+    return h + 1;
 }
 
 static void capped_free(png_structp png, png_voidp p) {
-    (void)png;
-    free(p);
+    if (!p) return;
+    AllocHeader *h = (AllocHeader *)p - 1;
+    ((AllocBudget *)png_get_mem_ptr(png))->live -= h->size;
+    free(h);
 }
 
 /* The read struct and info png_load parsed, kept so png_save can copy the
-   ancillary chunks out of it with libpng's own getters */
+   ancillary chunks out of it with libpng's own getters. The budget must
+   outlive the struct, which frees through it. */
 struct PngMeta {
     png_structp png;
     png_infop info;
+    AllocBudget *budget;
 };
 
 Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
+    AllocBudget *budget = calloc(1, sizeof(AllocBudget));
+    if (!budget) { fclose(fp); return NULL; }
 
     png_structp png = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL,
-                                               NULL, capped_malloc, capped_free);
-    if (!png) { fclose(fp); return NULL; }
+                                               budget, capped_malloc, capped_free);
+    if (!png) { free(budget); fclose(fp); return NULL; }
     png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_read_struct(&png, NULL, NULL); fclose(fp); return NULL; }
+    if (!info) { png_destroy_read_struct(&png, NULL, NULL); free(budget); fclose(fp); return NULL; }
 
     /* volatile: assigned after setjmp, so must survive the longjmp intact */
     Image *volatile img = NULL;
@@ -60,6 +91,7 @@ Image *png_load(const char *path) {
         image_free(img);  /* NULL for the size checks below; fully allocated
                              by the time png_read_image can fail */
         png_destroy_read_struct(&png, &info, NULL);
+        free(budget);
         fclose(fp);
         return NULL;
     }
@@ -119,6 +151,7 @@ Image *png_load(const char *path) {
     img = malloc(sizeof(Image));
     if (!img) {
         png_destroy_read_struct(&png, &info, NULL);
+        free(budget);
         fclose(fp);
         return NULL;
     }
@@ -131,6 +164,7 @@ Image *png_load(const char *path) {
     if (!img->rows) {
         free(img);
         png_destroy_read_struct(&png, &info, NULL);
+        free(budget);
         fclose(fp);
         return NULL;
     }
@@ -142,6 +176,7 @@ Image *png_load(const char *path) {
             free(img->rows);
             free(img);
             png_destroy_read_struct(&png, &info, NULL);
+            free(budget);
             fclose(fp);
             return NULL;
         }
@@ -155,11 +190,13 @@ Image *png_load(const char *path) {
     PngMeta *meta = malloc(sizeof(PngMeta));
     if (!meta) {
         png_destroy_read_struct(&png, &info, NULL);
+        free(budget);
         image_free(img);
         return NULL;
     }
-    meta->png  = png;
-    meta->info = info;
+    meta->png    = png;
+    meta->info   = info;
+    meta->budget = budget;
     img->meta  = meta;
     return img;
 }
@@ -222,8 +259,9 @@ static void copy_metadata(png_structp w, png_infop wi, const PngMeta *m) {
    errno at 0 so a libpng error reports as such. */
 static int write_png(FILE *fp, const void *ctx) {
     const Image *img = ctx;
+    AllocBudget budget = {0};
     png_structp png = png_create_write_struct_2(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL,
-                                                NULL, capped_malloc, capped_free);
+                                                &budget, capped_malloc, capped_free);
     if (!png) return -1;
     png_infop info = png_create_info_struct(png);
     if (!info) {
@@ -260,6 +298,7 @@ void image_free(Image *img) {
     if (!img) return;
     if (img->meta) {
         png_destroy_read_struct(&img->meta->png, &img->meta->info, NULL);
+        free(img->meta->budget);
         free(img->meta);
     }
     for (uint32_t y = 0; y < img->height; y++)

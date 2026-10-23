@@ -92,6 +92,7 @@ Fuzzing has found the following defects, each of which is fixed and retained as 
 
 Additional safeguards:
 - Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation.
+- libpng may hold at most 128 MiB in all, so compressed text chunks cannot inflate without bound.
 - Progressive JPEGs are limited to 500 scans.
 - Output is written to a temporary file, synced and renamed into place, so a failed write never destroys an existing file. Existing permissions and group ownership are preserved, and symbolic links are written through.
 - The terminal is restored if the program is interrupted at the passphrase prompt.

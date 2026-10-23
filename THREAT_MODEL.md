@@ -41,7 +41,7 @@ Someone who sees many images (a censor, a platform, a border check) and runs det
 Images may come from anyone, so the decoder parses hostile input.
 
 - **Claim:** no input file causes memory corruption, unbounded memory use or unbounded time.
-- **How:** capped allocations (1 GiB of pixels or coefficients, libpng behind a 64 MiB-per-allocation allocator, 16 MiB per chunk), at most 500 JPEG scans, libjpeg errors caught rather than exiting, coefficients range-checked before re-encoding.
+- **How:** capped allocations (1 GiB of pixels or coefficients, libpng behind an allocator capped at 64 MiB per allocation and 128 MiB in all, 16 MiB per chunk), at most 500 JPEG scans, libjpeg errors caught rather than exiting, coefficients range-checked before re-encoding.
 - **Evidence:** five libFuzzer targets run on every push, fault injection on every failing call, ASan and UBSan across the test suite; every crash fuzzing found is kept as a regression test.
 - **Assumes:** libpng, libjpeg-turbo and libsodium are themselves sound.
 

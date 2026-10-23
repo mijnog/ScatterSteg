@@ -280,6 +280,64 @@ static void test_load_tall_narrow(void) {
     remove(p);
 }
 
+/* Peak heap use, via ASan's allocation hooks (unit tests build with ASan;
+   the coverage build doesn't, and skips the check) */
+#if defined(__SANITIZE_ADDRESS__)
+/* From <sanitizer/allocator_interface.h>, which not every GCC ships */
+int __sanitizer_install_malloc_and_free_hooks(
+    void (*malloc_hook)(const volatile void *, size_t),
+    void (*free_hook)(const volatile void *));
+size_t __sanitizer_get_allocated_size(const volatile void *p);
+#define HAVE_HEAP_PEAK 1
+static size_t heap_live, heap_peak;
+static void on_malloc(const volatile void *p, size_t size) {
+    (void)p;
+    if ((heap_live += size) > heap_peak) heap_peak = heap_live;
+}
+static void on_free(const volatile void *p) {
+    if (p) heap_live -= __sanitizer_get_allocated_size(p);
+}
+#endif
+
+static void test_load_zlib_bombs_capped(void) {
+    /* 30 zTXt chunks, each a few KiB inflating to just under the 16 MiB
+       chunk limit: ~490 KB of file once made libpng hold 498 MiB */
+    const char *p = path_in_dir("bombs.png");
+    FILE *fp = fopen(p, "wb");
+    fwrite("\x89PNG\r\n\x1a\n", 1, 8, fp);
+    uint8_t ihdr[13] = {0, 0, 0, 8, 0, 0, 0, 8, 8, PNG_COLOR_TYPE_RGB, 0, 0, 0};
+    png_chunk(fp, "IHDR", ihdr, 13);
+    size_t plain = ((size_t)16 << 20) - 4096;
+    uint8_t *text = malloc(plain);
+    memset(text, 'A', plain);  /* not NULs: libpng keeps text up to the first */
+    uLongf zlen = compressBound(plain);
+    uint8_t *ztxt = malloc(zlen + 6);
+    memcpy(ztxt, "Bomb\0\0", 6);  /* keyword, NUL, compression method 0 */
+    compress2(ztxt + 6, &zlen, text, plain, 9);
+    for (int i = 0; i < 30; i++) png_chunk(fp, "zTXt", ztxt, (uint32_t)zlen + 6);
+    uint8_t raw[8 * 25] = {0}, z[256];
+    uLongf rawz = sizeof(z);
+    compress(z, &rawz, raw, sizeof(raw));
+    png_chunk(fp, "IDAT", z, (uint32_t)rawz);
+    png_chunk(fp, "IEND", NULL, 0);
+    fclose(fp);
+    free(text);
+    free(ztxt);
+
+#ifdef HAVE_HEAP_PEAK
+    heap_live = heap_peak = 0;
+    __sanitizer_install_malloc_and_free_hooks(on_malloc, on_free);
+#endif
+    Image *img = png_load(p);
+#ifdef HAVE_HEAP_PEAK
+    __sanitizer_install_malloc_and_free_hooks(NULL, NULL);
+    CHECK(heap_peak < ((size_t)160 << 20));
+#endif
+    CHECK(img != NULL);  /* the text is dropped, not the image */
+    image_free(img);
+    remove(p);
+}
+
 /* ---- png_save ------------------------------------------------------------ */
 
 static Image *make_image(uint32_t w, uint32_t h) {
@@ -528,6 +586,7 @@ int main(void) {
     RUN(test_load_truncated);
     RUN(test_load_huge_dimensions);
     RUN(test_load_tall_narrow);
+    RUN(test_load_zlib_bombs_capped);
     RUN(test_save_roundtrip);
     RUN(test_save_gray_roundtrip);
     RUN(test_save_overwrites);

@@ -5,6 +5,7 @@ pub mod atomic_write;
 pub mod codec;
 pub mod cover;
 pub mod embed;
+pub mod fault;
 pub mod png_io;
 pub mod prng;
 pub mod sodium;

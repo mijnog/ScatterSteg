@@ -76,6 +76,7 @@ fn zeroed_box<T>() -> Box<T> {
 
 pub fn is_jpeg_file(path: &Path) -> bool {
     let mut sig = [0u8; 3];
+    if crate::fault::should_fail("fopen") { return false; }
     std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut sig)).is_ok() && sig == [0xFF, 0xD8, 0xFF]
 }
 
@@ -112,7 +113,7 @@ impl JpegImage {
     /// or would need more than 1 GiB of coefficients, or of memory for its
     /// carriers.
     pub fn load(path: &Path) -> Option<JpegImage> {
-        let data = std::fs::read(path).ok()?;
+        let data = crate::fault::read_file(path).ok()?;
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut progress: Box<jpeg_progress_mgr> = zeroed_box();
         progress.progress_monitor = Some(limit_scans);

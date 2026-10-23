@@ -71,6 +71,7 @@ pub enum PwhashStrength {
 /// Argon2id13. Err on out of memory.
 pub fn pwhash(out: &mut [u8], passphrase: &[u8], salt: &[u8; SALT_BYTES], strength: PwhashStrength)
     -> Result<(), ()> {
+    if crate::fault::should_fail("crypto_pwhash") { return Err(()); }
     let (ops, mem) = match strength {
         PwhashStrength::Interactive => (sys::crypto_pwhash_OPSLIMIT_INTERACTIVE, sys::crypto_pwhash_MEMLIMIT_INTERACTIVE),
         PwhashStrength::Moderate => (sys::crypto_pwhash_OPSLIMIT_MODERATE, sys::crypto_pwhash_MEMLIMIT_MODERATE),
@@ -121,6 +122,7 @@ pub struct Secret {
 impl Secret {
     /// `len` zeroed-or-garbage bytes (sodium fills with 0xdb); None if out of memory
     pub fn new(len: usize) -> Option<Secret> {
+        if crate::fault::should_fail("sodium_malloc") { return None; }
         let ptr = unsafe { sys::sodium_malloc(len.max(1)) } as *mut u8;
         if ptr.is_null() { return None; }
         let mut s = Secret { ptr, len };

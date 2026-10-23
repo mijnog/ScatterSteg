@@ -14,3 +14,7 @@ zeroize = "1.9.1"
 [build-dependencies]
 bindgen = "0.73.2"
 pkg-config = "0.3.34"
+
+[features]
+# Lets tests make the Nth faultable call fail (see src/fault.rs)
+fault-injection = []

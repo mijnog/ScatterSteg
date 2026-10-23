@@ -98,7 +98,7 @@ fn parse_chunks(file: &[u8]) -> Vec<Chunk> {
 }
 
 pub fn load(path: &Path) -> Option<Image> {
-    let file = std::fs::read(path).ok()?;
+    let file = crate::fault::read_file(path).ok()?;
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
     // Text and profile chunks are copied as raw bytes (see parse_chunks), so
     // the decoder needn't parse them, and a malformed one can't stop the load
@@ -259,7 +259,11 @@ fn write_png(img: &Image, w: &mut impl Write) -> io::Result<()> {
 }
 
 pub fn save(img: &Image, path: &Path) -> io::Result<()> {
-    atomic_write(path, |f| write_png(img, &mut io::BufWriter::new(f)))
+    atomic_write(path, |f| {
+        let mut w = io::BufWriter::new(f);
+        write_png(img, &mut w)?;
+        w.flush() // BufWriter's drop would swallow a failure here
+    })
 }
 
 pub fn is_png_signature(bytes: &[u8]) -> bool { bytes.starts_with(&SIGNATURE) }

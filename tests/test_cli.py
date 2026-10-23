@@ -31,6 +31,10 @@ TIMEOUT = 60  # seconds per run; Argon2id takes a fraction of that
 
 
 FAULT_BINARY = os.environ.get("SCATTERSTEG_FAULT")  # built with tests/fault.h
+# Faultable calls the long-message sweep must reach. The C version allocates
+# every image row separately; the Rust one reads the pixels into one buffer,
+# so it makes far fewer (set 15 there).
+FAULT_LONG_MIN = int(os.environ.get("FAULT_LONG_MIN", "60"))
 JPEG_FIXTURE = os.environ.get(
     "JPEG_FIXTURE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "build", "jpeg_fixture"))
@@ -1599,7 +1603,7 @@ class FaultSweepTest(CliBase):
     def test_encode_sweep_long_message(self):
         # Over read_message's initial 1 KiB buffer, so its realloc can fail too
         write_png(self.cover, 64, 64, cover_pixel)
-        self.assertGreater(self.encode_sweep(b"y" * 1300), 60)
+        self.assertGreater(self.encode_sweep(b"y" * 1300), FAULT_LONG_MIN)
 
     def test_decode_sweep(self):
         steg = self.path("steg.png")

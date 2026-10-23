@@ -67,6 +67,7 @@ fn errno_message(e: &io::Error) -> String {
 /// prints why and returns None.
 fn read_passphrase(prompt: &str) -> Option<Secret> {
     let fail = || { eprintln!("Error: could not read passphrase"); None };
+    if scattersteg::fault::should_fail("fopen") { return fail(); }
     let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
     if fd < 0 { return fail(); }
     let mut old = MaybeUninit::<libc::termios>::uninit();
@@ -129,13 +130,16 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
     let _ = write_fd(fd, b"\n");
     unsafe { libc::close(fd) };
 
-    let buf = buf?;
+    let Some(buf) = buf else { return fail() }; // out of memory
     if hit_eof && len == 0 { return fail(); } // Ctrl+D
     if len > PASSPHRASE_MAX_LEN {
         eprintln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
         return None;
     }
-    Secret::from_slice(&buf[..len])
+    match Secret::from_slice(&buf[..len]) {
+        Some(p) => Some(p),
+        None => fail(),
+    }
 }
 
 enum ReadError {
@@ -409,6 +413,7 @@ fn decode(input: &Path) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    scattersteg::fault::init();
     protect_process();
     if sodium::init().is_err() {
         eprintln!("Error: failed to initialise libsodium");

@@ -80,6 +80,25 @@ All detectability figures below were measured on real images (two photographs; t
 | Chi-square attack, any payload | triggered by sequential LSB | **not triggered** |
 | Sample pair analysis | tracks payload with LSB overwriting (≈0.5 at half capacity) | **stays within 0.1 of the cover's value** |
 
+### Against a trained classifier, and against steghide
+
+The classic detectors above test one statistic each. A harder test is a machine-learning detector trained on cover/stego pairs. [`benchmark/`](benchmark/) embeds the same random messages with ScatterSteg, steghide 0.5.1 and plain LSB embedding into 476 photographs (512×512, from Wikimedia Commons) and trains an RBF SVM on half the pairs. The table gives its detection error on the other half: 0.5 means it cannot beat guessing, and lower means easier to detect. Payload is bits per pixel for PNG and BMP, and per non-zero AC coefficient for JPEG. Standard error is about ±0.02.
+
+| Pixel payload | LSB matching | steghide (BMP) | **ScatterSteg (PNG)** |
+|---|---|---|---|
+| 0.05 | 0.34 | 0.14 | **0.46** |
+| 0.10 | 0.25 | 0.12 | **0.41** |
+| 0.20 | 0.16 | 0.10 | **0.31** |
+| 0.40 | 0.10 | 0.07 | **0.20** |
+
+| JPEG payload | steghide | **ScatterSteg** |
+|---|---|---|
+| 0.05 | 0.34 | **0.42** |
+| 0.10 | 0.24 | **0.40** |
+| 0.20 | 0.13 | **0.23** |
+
+At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding. Small messages are close to undetectable by them, while a PNG filled to 0.4 bits per pixel is still caught about 80% of the time. This is a relative result, not a claim of undetectability: the detectors are modest (SPAM features and a compact JPEG co-occurrence set), the covers come from one source, and the detector is trained at a known payload. Rich-model and deep-learning detectors would score every column lower. The [benchmark README](benchmark/README.md) has the method and the full list of limitations.
+
 Techniques that did not improve these results were not adopted; for example, content-adaptive PNG costs performed worse than uniform costs against these detectors. See [Limitations](#limitations) for where the method stops working.
 
 ## Robustness

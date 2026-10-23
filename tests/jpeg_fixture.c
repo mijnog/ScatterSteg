@@ -4,6 +4,7 @@
      progressive  progressive scans          optimize  optimized Huffman tables
      arith        arithmetic coding          restart   restart markers every row
      markers      EXIF (APP1), ICC (APP2) and comment markers
+     nojfif       no JFIF (APP0) header, as many cameras write
      444          no chroma subsampling (default 4:2:0 for color)
      manyscans    progressive with 568 scans (each AC coefficient of each
                   component refined bit by bit): a valid but slow-to-read
@@ -23,6 +24,7 @@ int main(int argc, char **argv) {
     }
     int w = atoi(argv[2]), h = atoi(argv[3]), comps = atoi(argv[4]), quality = atoi(argv[5]);
     int progressive = 0, optimize = 0, arith = 0, restart = 0, markers = 0, full = 0, many = 0;
+    int nojfif = 0;
     for (int i = 6; i < argc; i++) {
         progressive |= !strcmp(argv[i], "progressive");
         optimize    |= !strcmp(argv[i], "optimize");
@@ -31,6 +33,7 @@ int main(int argc, char **argv) {
         markers     |= !strcmp(argv[i], "markers");
         full        |= !strcmp(argv[i], "444");
         many        |= !strcmp(argv[i], "manyscans");
+        nojfif      |= !strcmp(argv[i], "nojfif");
     }
 
     FILE *fp = fopen(argv[1], "wb");
@@ -73,6 +76,7 @@ int main(int argc, char **argv) {
     c.optimize_coding = optimize;
     c.arith_code = arith;
     if (restart) c.restart_in_rows = 1;
+    if (nojfif) c.write_JFIF_header = FALSE;
     if (full && comps == 3)
         for (int i = 0; i < 3; i++) c.comp_info[i].h_samp_factor = c.comp_info[i].v_samp_factor = 1;
     jpeg_start_compress(&c, TRUE);

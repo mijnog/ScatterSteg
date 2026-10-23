@@ -1267,12 +1267,24 @@ class JpegTest(CliBase):
         out = self.path("steg.jpg")
         self.assertEqual(self.encode(b"keep it all", out, src=src)[0], 0)
         before, after = jpeg_segments(src), jpeg_segments(out)
-        app_and_com = lambda segs: [s for s in segs if 0xE1 <= s[0] <= 0xEF or s[0] == 0xFE]
+        app_and_com = lambda segs: [s for s in segs if 0xE0 <= s[0] <= 0xEF or s[0] == 0xFE]
         self.assertEqual(app_and_com(before), app_and_com(after))
         markers = [m for m, _ in after]
         self.assertIn(0xC2, markers)  # still progressive
         self.assertIn(0xDD, markers)  # still has a restart interval
         self.assertDecodes(out, "keep it all")
+
+    def test_no_jfif_header_added(self):
+        # A camera file starts SOI, APP1 (Exif) with no JFIF APP0; adding
+        # one in front of the Exif would show the file was rewritten
+        src = self.path("camera.jpg")
+        make_jpeg(src, 200, 150, 3, 90, "nojfif", "markers")
+        out = self.path("steg.jpg")
+        self.assertEqual(self.encode(b"no jfif", out, src=src)[0], 0)
+        markers = [m for m, _ in jpeg_segments(out)]
+        self.assertEqual(markers[0], 0xE1)
+        self.assertNotIn(0xE0, markers)
+        self.assertDecodes(out, "no jfif")
 
     def test_gray(self):
         src = self.path("gray.jpg")

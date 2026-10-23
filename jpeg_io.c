@@ -242,6 +242,10 @@ static int write_coefficients(JpegImage *j, FILE *fp) {
 
     /* Same quantization, sampling, color space and coding as the cover */
     jpeg_copy_critical_parameters(&j->src, &dst);
+    /* It turns on the JFIF (or Adobe) header for the color space; write
+       one only if the cover had one, as a camera's Exif-only file doesn't */
+    dst.write_JFIF_header = j->src.saw_JFIF_marker;
+    dst.write_Adobe_marker = j->src.saw_Adobe_marker;
     dst.arith_code = j->src.arith_code;
     dst.restart_interval = j->src.restart_interval;
     if (j->src.progressive_mode) jpeg_simple_progression(&dst);
@@ -253,7 +257,7 @@ static int write_coefficients(JpegImage *j, FILE *fp) {
     jpeg_write_coefficients(&dst, j->coefs);
 
     /* Markers, as jpegtran copies them: libjpeg writes the JFIF and Adobe
-       headers itself when it should, so skip the cover's copies of those */
+       headers itself when the cover had them, so skip the cover's copies */
     for (jpeg_saved_marker_ptr m = j->src.marker_list; m; m = m->next) {
         if (dst.write_JFIF_header && is_marker(m, JPEG_APP0, "JFIF", 5)) continue;
         if (dst.write_Adobe_marker && is_marker(m, JPEG_APP0 + 14, "Adobe", 5)) continue;

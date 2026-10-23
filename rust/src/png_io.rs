@@ -147,8 +147,13 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
                 }
             }
             b"tRNS" if !seen_trns => {
-                seen_trns = true;
-                match color { 0 => len == 2, 2 => len == 6, 3 => seen_plte && len <= plte_entries, _ => false }
+                // libpng discards one of the wrong size or with a bad CRC
+                // (a warning, as it is ancillary) and takes a later one
+                let sized = match color { 0 => len == 2, 2 => len == 6, 3 => seen_plte && len <= plte_entries, _ => false };
+                let ok = sized && crc32fast::hash(&file[pos + 4..pos + 8 + len])
+                    == u32::from_be_bytes(file[pos + 8 + len..end].try_into().unwrap());
+                seen_trns |= ok;
+                ok
             }
             b"IDAT" => {
                 // More image data after another chunk: libpng reads it only if

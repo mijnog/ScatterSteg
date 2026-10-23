@@ -101,6 +101,11 @@ def png_cases():
         "trns_rgb": png(pre=ch(b"tRNS", b"\0" * 6)),
         "trns_bad_len": png(pre=ch(b"tRNS", b"\0" * 3)),
         "trns_dup": png(pre=ch(b"tRNS", b"\0" * 6) * 2),
+        # libpng drops a tRNS of the wrong size or with a bad CRC, and takes a later one
+        "trns_gray": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0\5") + idat(c=1) + ch(b"IEND", b""),
+        "trns_gray_badcrc": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0\5")[:-1] + b"\0" + idat(c=1) + ch(b"IEND", b""),
+        "trns_gray_badlen_then_ok": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0") + ch(b"tRNS", b"\0\5") + idat(c=1) + ch(b"IEND", b""),
+        "trns_gray_badcrc_then_ok": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0\5")[:-1] + b"\0" + ch(b"tRNS", b"\0\5") + idat(c=1) + ch(b"IEND", b""),
         "rgba": SIG + ihdr(ctype=6) + idat(c=4) + ch(b"IEND", b""),
         "gray16": SIG + ihdr(depth=16, ctype=0) + ch(b"IDAT", zlib.compress(raw(c=2))) + ch(b"IEND", b""),
         "chunk_after_iend": png() + ch(b"tEXt", b"a\0b"),
@@ -196,6 +201,13 @@ def loads(binary, path):
     return "could not load" not in log, code
 
 
+def transparent(binary, path):
+    """Does `encode` refuse the cover for its transparency?"""
+    code, log = T.run(["encode", "-i", path, "-o", path + ".out"], message=b"x",
+                      passphrases=["correct horse"] * 2, binary=binary)
+    return "transparency" in log
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         cases = {**png_cases(), **mutated_pngs(), **png_fuzz_regressions(), **jpeg_cases(tmp)}
@@ -207,7 +219,10 @@ def main():
                 f.write(data)
 
         def one(name):
-            return name, loads(C, files[name]), loads(RUST, files[name])
+            c, r = loads(C, files[name]), loads(RUST, files[name])
+            if c == r and c[0] and files[name].endswith(".png"):  # both load: same verdict on transparency
+                c, r = c + (transparent(C, files[name]),), r + (transparent(RUST, files[name]),)
+            return name, c, r
 
         bad = []
         with ThreadPoolExecutor(4) as ex:

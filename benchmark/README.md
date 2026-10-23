@@ -75,6 +75,25 @@ kernels and quantization steps were chosen here, and it has roughly a fifth of
 the published feature count. The published model and deep networks would score
 lower again.
 
+### Second cover set: BOSSbase
+
+1000 grayscale 512×512 images drawn at random from BOSSbase 1.01
+(`fetch_boss.py`; `embed_boss.py`, `results-srm-bossbase.txt`). Same detector.
+steghide is absent: it has no grayscale PNG or PGM support, and its 8-bit BMP
+mode embeds differently. One sample per pixel, so a payload of 0.05 bits per
+pixel is three times heavier per sample than in the colour tables above.
+
+| Payload (bits per pixel) | LSB matching | ScatterSteg |
+|---|---|---|
+| 0.05 | 0.18 | **0.32** |
+| 0.10 | 0.13 | **0.23** |
+| 0.20 | 0.08 | **0.15** |
+| 0.40 | 0.04 | **0.08** |
+
+The ranking and the trend match the Wikimedia result (ScatterSteg caught 68%
+of the time at 0.05 and 92% at 0.4, LSB matching 82% and 96%), with a larger
+training set (500 pairs) and a different source.
+
 ## Method
 
 1. `fetch_images.py`: 480 photos from Wikimedia Commons, resized and cropped to
@@ -102,8 +121,9 @@ Reproduce:
   would detect everything more easily still. The ranking has held so far; the
   absolute numbers will be worse. JPEG was tested with the compact feature set
   and a DCTR-style one (the latter reimplemented here).
-- **One cover source.** Downsampled Wikimedia JPEGs, not raw camera images
-  like BOSSbase. Cover noise matters a great deal to detectability.
+- **Two cover sources.** Downsampled Wikimedia JPEGs, and BOSSbase (grayscale,
+  one camera pipeline). Neither is a collection of what real users would use;
+  cover noise matters a great deal to detectability.
 - **Small training set.** 238 pairs per split. Larger sets make detectors
   stronger.
 - **The detector knows the payload size.** It is trained and tested at a single

@@ -1,0 +1,8 @@
+RESULT boss ss payload=0.05 PE=0.315 sd=0.006 n=1000
+RESULT boss ss payload=0.1 PE=0.225 sd=0.007 n=1000
+RESULT boss ss payload=0.2 PE=0.149 sd=0.003 n=1000
+RESULT boss ss payload=0.4 PE=0.079 sd=0.002 n=1000
+RESULT boss lsbm payload=0.05 PE=0.178 sd=0.006 n=1000
+RESULT boss lsbm payload=0.1 PE=0.125 sd=0.004 n=1000
+RESULT boss lsbm payload=0.2 PE=0.076 sd=0.006 n=1000
+RESULT boss lsbm payload=0.4 PE=0.039 sd=0.003 n=1000

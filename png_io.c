@@ -9,14 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/*
-
-
-
-
-  10.
-*/
-
 /* Largest decoded pixel buffer png_load will allocate (1 GiB) */
 #define PNG_MAX_PIXEL_BYTES ((size_t)1 << 30)
 /* Most pixels png_load will take: each also has a 4-byte slot in the

@@ -20,6 +20,7 @@ uint32_t *prng_scatter(const uint8_t *key, uint32_t count) {
     /* Fill indices array: [0, 1, 2, ..., count-1] */
     uint32_t *indices = malloc(count * sizeof(uint32_t));
     if (!indices) {
+        sodium_memzero(stream, stream_len);
         free(stream);
         return NULL;
     }
@@ -37,6 +38,7 @@ uint32_t *prng_scatter(const uint8_t *key, uint32_t count) {
         indices[j]   = tmp;
     }
 
+    sodium_memzero(stream, stream_len);  /* the order can be told from it */
     free(stream);
     return indices;
 }

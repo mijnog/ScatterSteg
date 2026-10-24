@@ -708,11 +708,17 @@ class CliTest(CliBase):
     def encode_raw(self, message, out, passphrase="correct horse"):
         return run(["encode", "-r", "-i", self.cover, "-o", out], message, [passphrase, passphrase])
 
-    def test_passphrase_ends_at_nul(self):
-        # A NUL typed or pasted ends the passphrase, as when it was a C string
+    def test_nul_in_passphrase(self):
+        # A NUL typed or pasted would end the passphrase, as a C string does,
+        # silently: encode refuses it. Decode still ends it there, so images
+        # earlier versions made that way still open.
         out = self.path("steg.png")
         pw = "correct horse\x00ignored"
         code, log = self.encode(b"nul message", out, pw)
+        self.assertEqual(code, 1, log)
+        self.assertIn("NUL byte", log)
+        self.assertFalse(os.path.exists(out))
+        code, log = self.encode(b"nul message", out, "correct horse")
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "nul message", pw)
         self.assertDecodes(out, "nul message", "correct horse")

@@ -40,6 +40,7 @@
 use crate::embed::{self, Carrier, EmbedPlan};
 use crate::sodium::{self, Secret, PwhashStrength, MAC_BYTES, NONCE_BYTES, SALT_BYTES};
 use crate::{prng, stc};
+use zeroize::Zeroizing;
 
 /// The v4 salt region, in samples, when the image allows
 const V4_SALT_SAMPLES: u32 = 8192;
@@ -130,11 +131,12 @@ fn salt_pixels(count: u32, k: u32) -> Option<Vec<u32>> {
 }
 
 /// The message order: the secret permutation with the k salt pixels taken
-/// out, count - k entries.
-fn payload_order(scatter_key: &[u8; 32], count: u32, salt_px: &[u32]) -> Option<Vec<u32>> {
+/// out, count - k entries. It says where the message is, so it is wiped
+/// when dropped.
+fn payload_order(scatter_key: &[u8; 32], count: u32, salt_px: &[u32]) -> Option<Zeroizing<Vec<u32>>> {
     let mut sorted = salt_px.to_vec();
     sorted.sort_unstable();
-    let mut order = prng::permutation(scatter_key, count)?;
+    let mut order = Zeroizing::new(prng::permutation(scatter_key, count)?);
     order.retain(|p| sorted.binary_search(p).is_err());
     Some(order)
 }
@@ -277,7 +279,7 @@ fn decode_v1(c: &Carrier, passphrase: &[u8]) -> Decoded {
     let count = c.positions();
     let mut scatter_key = [0u8; 32]; // filled in place: a returned array would be copied
     derive_scatter_key_v1(passphrase, &mut scatter_key);
-    let order = prng::scatter(&scatter_key, count);
+    let order = prng::scatter(&scatter_key, count).map(Zeroizing::new);
     sodium::memzero(&mut scatter_key);
     let order = order.ok_or("allocation failed")?;
 
@@ -312,7 +314,7 @@ pub fn decode(c: &Carrier, passphrase: &[u8]) -> Result<Option<Decrypted>, Strin
 pub struct Prepared {
     salt: [u8; SALT_BYTES],
     keys: Keys,
-    order: Vec<u32>,
+    order: Zeroizing<Vec<u32>>,
     salt_px: Vec<u32>,
     k: u32,
     count: u32,

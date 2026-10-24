@@ -48,7 +48,8 @@ Needed for compatibility:
   every JPEG Rust writes can be read by C.
 - `check_writable` reads the encoded JPEG back and requires identical
   coefficients, as the C version now does.
-- A passphrase ends at its first NUL, as the C string did.
+- A passphrase ends at its first NUL, as the C string does: encode refuses
+  one with a NUL, and decode cuts it there, so images made that way still open.
 - libjpeg's `error_exit` unwinds through its C frames instead of `longjmp`.
   That needs libjpeg built with unwind tables (the default on x86-64 and
   aarch64 Linux); without them the process aborts.

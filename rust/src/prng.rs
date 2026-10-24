@@ -19,6 +19,7 @@ pub fn scatter(key: &[u8; KEY], count: u32) -> Option<Vec<u32>> {
         let r = u32::from_ne_bytes(stream[i * 4..i * 4 + 4].try_into().unwrap());
         indices.swap(i, (r as usize) % (i + 1));
     }
+    sodium::memzero(&mut stream); // the order can be told from it
     Some(indices)
 }
 

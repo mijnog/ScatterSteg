@@ -21,4 +21,4 @@ Things the threat model lists as non-goals (robustness to recompression, deniabi
 
 ## Supported versions
 
-Only the latest release and `main` get fixes. The image format is versioned (currently v3) and older formats stay readable, so upgrading never strands a message.
+Only the latest release and `main` get fixes. The image format is versioned (currently v4) and older formats stay readable, so upgrading never strands a message.

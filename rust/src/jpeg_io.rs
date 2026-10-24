@@ -313,7 +313,7 @@ impl JpegImage {
     /// And that what it writes reads back as the same coefficients: a
     /// truncated progressive file (a first AC scan at Al=1 and no refinement)
     /// is written with different values, which would corrupt a message hidden
-    /// in them. The C version doesn't check this.
+    /// in them.
     pub fn check_writable(&mut self) -> bool {
         let Some(bytes) = self.encode() else { return false };
         let Some(back) = JpegImage::from_bytes(bytes) else { return false };

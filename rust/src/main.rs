@@ -65,8 +65,11 @@ fn errno_message(e: &io::Error) -> String {
 }
 
 /// Read a passphrase from the terminal with echo off. On EOF or error,
-/// prints why and returns None.
-fn read_passphrase(prompt: &str) -> Option<Secret> {
+/// prints why and returns None. It ends at the first NUL (typed as Ctrl+@,
+/// or pasted), as in C, which would silently cut it short: refused unless
+/// allow_nul, which decode passes so images made with such a passphrase
+/// still open.
+fn read_passphrase(prompt: &str, allow_nul: bool) -> Option<Secret> {
     let fail = || { scattersteg::errln!("Error: could not read passphrase"); None };
     if scattersteg::fault::should_fail("fopen") { return fail(); }
     let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
@@ -140,7 +143,12 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
     }
     // The C version held the passphrase as a C string, so it ends at the first
     // NUL (Ctrl+@, or pasted): keep that, or its images wouldn't decode here
-    let len = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
+    let nul = buf[..len].iter().position(|&b| b == 0);
+    if nul.is_some() && !allow_nul {
+        scattersteg::errln!("Error: the passphrase contains a NUL byte (Ctrl+@), which would cut it short");
+        return None;
+    }
+    let len = nul.unwrap_or(len);
     match Secret::from_slice(&buf[..len]) {
         Some(p) => Some(p),
         None => fail(),
@@ -313,13 +321,13 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
         }
     }
 
-    let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
+    let Some(passphrase) = read_passphrase("Passphrase: ", false) else { return ExitCode::FAILURE };
     if passphrase.len() < PASSPHRASE_MIN_LEN {
         scattersteg::errln!("Error: passphrase too short (min {PASSPHRASE_MIN_LEN} bytes); \
                    `scattersteg passphrase` generates a strong one");
         return ExitCode::FAILURE;
     }
-    let Some(confirm) = read_passphrase("Confirm passphrase: ") else { return ExitCode::FAILURE };
+    let Some(confirm) = read_passphrase("Confirm passphrase: ", false) else { return ExitCode::FAILURE };
     if *passphrase != *confirm {
         scattersteg::errln!("Error: passphrases do not match");
         return ExitCode::FAILURE;
@@ -406,7 +414,7 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
 }
 
 fn decode(input: &Path, raw: bool) -> ExitCode {
-    let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
+    let Some(passphrase) = read_passphrase("Passphrase: ", true) else { return ExitCode::FAILURE };
     let Some(mut cover) = Cover::load(input) else {
         scattersteg::errln!("Error: could not load '{}'", input.display());
         return ExitCode::FAILURE;

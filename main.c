@@ -56,8 +56,11 @@ static void restore_tty_and_die(int sig) {
 }
 
 /* Read a passphrase from the terminal with echo off. Returns it in a heap
-   buffer for free_passphrase; on EOF or error, prints why and returns NULL. */
-static char *read_passphrase(const char *prompt) {
+   buffer for free_passphrase; on EOF or error, prints why and returns NULL.
+   As a C string it ends at the first NUL (typed as Ctrl+@, or pasted), which
+   would silently cut it short: refused unless allow_nul, which decode
+   passes so images made with such a passphrase still open. */
+static char *read_passphrase(const char *prompt, int allow_nul) {
     FILE *tty = fopen("/dev/tty", "r+");
     if (!tty) {
         fprintf(stderr, "Error: could not read passphrase\n");
@@ -126,6 +129,12 @@ static char *read_passphrase(const char *prompt) {
     if (len > PASSPHRASE_MAX_LEN) {
         sodium_free(buf);
         fprintf(stderr, "Error: passphrase too long (max %d bytes)\n", PASSPHRASE_MAX_LEN);
+        return NULL;
+    }
+    if (!allow_nul && memchr(buf, '\0', len)) {
+        sodium_free(buf);
+        fprintf(stderr, "Error: the passphrase contains a NUL byte (Ctrl+@), "
+                        "which would cut it short\n");
         return NULL;
     }
     buf[len] = '\0';
@@ -271,6 +280,13 @@ static int salt_pixels(uint32_t count, uint32_t k, uint32_t *out) {
 static int cmp_u32(const void *a, const void *b) {
     uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
     return (x > y) - (x < y);
+}
+
+/* The secret order says where the message is: wipe it before freeing.
+   count is what payload_order or prng_scatter allocated. */
+static void free_order(uint32_t *order, uint32_t count) {
+    if (order) sodium_memzero(order, (size_t)count * sizeof(uint32_t));
+    free(order);
 }
 
 /* The message order: the secret permutation with the k salt pixels taken
@@ -464,7 +480,7 @@ static int decode_keyed(const Carrier *c, int v4, const char *passphrase,
         if (payload) sodium_memzero(payload, len);
         free(payload);
     }
-    free(order);
+    free_order(order, count);
     sodium_free(keys);
     return r;
 }
@@ -485,7 +501,7 @@ static int decode_v1(const Carrier *c, const char *passphrase,
     uint8_t *payload = NULL;
     uint32_t len = 0;
     int r = read_payload(c, order, count, V1_OVERHEAD, &payload, &len);
-    free(order);
+    free_order(order, count);
     if (r != DECODED) return r;
 
     /* v1 payload = [salt | nonce | secretbox] */
@@ -729,7 +745,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char *passphrase = read_passphrase("Passphrase: ");
+        char *passphrase = read_passphrase("Passphrase: ", 0);
         if (!passphrase) return 1;
         if (strlen(passphrase) < PASSPHRASE_MIN_LEN) {
             free_passphrase(passphrase);
@@ -737,7 +753,7 @@ int main(int argc, char *argv[]) {
                             "`scattersteg passphrase` generates a strong one\n", PASSPHRASE_MIN_LEN);
             return 1;
         }
-        char *confirm = read_passphrase("Confirm passphrase: ");
+        char *confirm = read_passphrase("Confirm passphrase: ", 0);
         if (!confirm) {
             free_passphrase(passphrase);
             return 1;
@@ -825,7 +841,7 @@ int main(int argc, char *argv[]) {
         int read_err = errno;  /* before the cleanup below changes it */
         if (!message) {
             sodium_free(keys);
-            free(order);
+            free_order(order, count);
             free(salt_px);
             cover_free(&cover);
             if (too_long) fprintf(stderr, "Error: message too long for this image\n");
@@ -838,7 +854,7 @@ int main(int argc, char *argv[]) {
         if (msg_len == 0) {
             sodium_free(keys);
             sodium_free(message);
-            free(order);
+            free_order(order, count);
             free(salt_px);
             cover_free(&cover);
             fprintf(stderr, "Message is empty; nothing written\n");
@@ -851,7 +867,7 @@ int main(int argc, char *argv[]) {
         if (!payload) {
             sodium_free(keys);
             sodium_free(message);
-            free(order);
+            free_order(order, count);
             free(salt_px);
             cover_free(&cover);
             fprintf(stderr, "Error: allocation failed\n");
@@ -869,7 +885,7 @@ int main(int argc, char *argv[]) {
         int embedded = plan ? embed_payload_v3(&carrier, order, count - k, payload, payload_len, plan) : -2;
         sodium_memzero(payload, payload_len);
         free(payload);
-        free(order);
+        free_order(order, count);
         if (embedded == -1) {
             embed_plan_free(plan);
             free(salt_px);
@@ -902,7 +918,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char *passphrase = read_passphrase("Passphrase: ");
+        char *passphrase = read_passphrase("Passphrase: ", 1);
         if (!passphrase) return 1;
 
         Cover cover;

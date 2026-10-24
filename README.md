@@ -58,7 +58,7 @@ There is also a Rust port in [`rust/`](rust/README.md) with the same command lin
 
 What differs:
 
-- **Formats.** ScatterSteg handles PNG and JPEG. It does not read BMP, WAV or AU. PNG covers must be 8-bit RGB or grayscale without transparency.
+- **Formats.** ScatterSteg handles PNG and JPEG. It does not read BMP, WAV or AU. PNG covers must be 8-bit RGB or grayscale without transparency. A grayscale image saved as RGB, or one whose `sBIT` chunk says fewer than 8 bits are significant, is refused too: changing its low bits would show.
 - **Newlines.** Use `-r` (raw) on both commands to store and print a file byte for byte, any bytes included. Without it, `encode` drops one trailing newline from the message and `decode` adds one, which suits `echo "text" | encode` and prints a clean line at the terminal but changes a file that does not end in a newline. A message stored with `-r` and read without it gains a newline; one stored without it and read with `-r` loses its last newline.
 - **Passphrase.** At least 12 bytes for a new image. `./scattersteg passphrase` prints a random one.
 - **Not compatible.** Neither tool can read the other's images.
@@ -182,7 +182,7 @@ make coverage   # line coverage over the whole suite (~98%); annotated sources i
 | Carriers | every sample (3 bits per RGB pixel) | AC coefficients with \|value\| ≥ 2 |
 | Typical capacity | ~760 KB in a 1080p image | ~0.12–0.15 bits/pixel (~68 KB in 4.5 MP) |
 | Kept from the cover | interlacing, every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) and safe-to-copy chunks, byte for byte and in place, before or after the image data | quantization, sampling, coding mode, restart interval, APPn/COM markers |
-| Refused | palette, transparency, 16-bit, <8-bit gray | 12-bit, lossless, not re-encodable, data after the image (MPO, Ultra HDR) |
+| Refused | palette, transparency, 16-bit, <8-bit gray, `sBIT` under 8, RGB whose pixels are all gray | 12-bit, lossless, not re-encodable, data after the image (MPO, Ultra HDR) |
 
 ## File format (v4)
 

@@ -44,8 +44,9 @@ pub struct Image {
     pub channels: u32,
     /// `pixels[(y * width + x) * channels + channel]`
     pub pixels: Vec<u8>,
-    /// why a cover this way would come out visibly changed, e.g.
-    /// "transparency"; None for 8-bit RGB or gray without transparency
+    /// why a cover this way would come out visibly changed, or give its
+    /// changes away, e.g. "transparency"; None for 8-bit RGB or gray without
+    /// transparency, sBIT < 8 or RGB that is all gray
     pub unsuitable: Option<&'static str>,
     pub meta: Option<PngMeta>,
 }
@@ -64,10 +65,12 @@ fn keep_chunk(name: &[u8; 4]) -> bool {
 }
 
 /// The cover's ancillary chunks, in order, with whether each follows the
-/// image data. Stops at the first damaged chunk; chunks failing their CRC
-/// are dropped.
-fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
+/// image data, and whether an sBIT says a channel has fewer than 8
+/// significant bits (see `load`). Stops at the first damaged chunk; chunks
+/// failing their CRC are dropped.
+fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
     let mut out = Vec::new();
+    let mut low_sbit = false;
     let mut total = 0usize;
     let mut pos = 8;
     let mut after_idat = false;
@@ -94,6 +97,9 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
             _ => {}
         }
         if name[0] & 0x20 == 0 { continue; } // an unknown critical chunk
+        // libpng keeps an ancillary chunk with a bad CRC, so C sees this one
+        // whatever its CRC (and writes it back, CRC fixed)
+        low_sbit |= &name == b"sBIT" && data.iter().any(|&b| b < 8);
         let mut h = crc32fast::Hasher::new();
         h.update(&name);
         h.update(data);
@@ -103,7 +109,7 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
             out.push(Chunk { name, data: data.to_vec(), after_idat });
         }
     }
-    Some(out)
+    Some((out, low_sbit))
 }
 
 /// Rewrites `file` in place to the chunks the decoder needs: IHDR, PLTE, tRNS,
@@ -192,9 +198,15 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
     true
 }
 
+/// Gray stored as RGB: R = G = B in every pixel. Changing the channels
+/// independently breaks that, which a one-line check finds.
+fn all_gray(pixels: &[u8], channels: u32) -> bool {
+    channels == 3 && pixels.as_chunks::<3>().0.iter().all(|&[r, g, b]| r == g && g == b)
+}
+
 pub fn load(path: &Path) -> Option<Image> {
     let mut file = crate::fault::read_file(path, &SIGNATURE).ok()?;
-    let chunks = parse_chunks(&file)?;
+    let (chunks, low_sbit) = parse_chunks(&file)?;
     if !decoder_view(&mut file) { return None; }
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
     // Text and profile chunks are copied as raw bytes (see parse_chunks), so
@@ -255,6 +267,20 @@ pub fn load(path: &Path) -> Option<Image> {
     } else {
         src.chunks_exact(src_channels).flat_map(|px| px[..channels as usize].iter().copied()).collect()
     };
+
+    // Covers whose low bits are visibly structured: the changes would stand
+    // out. An sBIT under 8 means structured low bits (zeros, or the high bits
+    // repeated), which +-1 changes break, and the chunk itself, kept in the
+    // output, tells a warden to look.
+    let unsuitable = unsuitable.or_else(|| {
+        if low_sbit {
+            Some("fewer than 8 significant bits (an sBIT chunk)")
+        } else if all_gray(&pixels, channels) {
+            Some("only gray pixels, stored as RGB (save it as grayscale)")
+        } else {
+            None
+        }
+    });
 
     Some(Image {
         width, height, channels, pixels, unsuitable,

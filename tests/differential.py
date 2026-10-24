@@ -14,6 +14,7 @@ the file was refused, anything else means it loaded.
 
 import os
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -106,6 +107,20 @@ def png_cases():
         "trns_gray_badcrc": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0\5")[:-1] + b"\0" + idat(c=1) + ch(b"IEND", b""),
         "trns_gray_badlen_then_ok": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0") + ch(b"tRNS", b"\0\5") + idat(c=1) + ch(b"IEND", b""),
         "trns_gray_badcrc_then_ok": SIG + ihdr(ctype=0) + ch(b"tRNS", b"\0\5")[:-1] + b"\0" + ch(b"tRNS", b"\0\5") + idat(c=1) + ch(b"IEND", b""),
+        # Refused as covers: low significant bits, gray stored as RGB
+        "sbit_5": png(pre=ch(b"sBIT", b"\5\5\5")),
+        "sbit_8": png(pre=ch(b"sBIT", b"\x08\x08\x08")),
+        "sbit_one_low": png(pre=ch(b"sBIT", b"\x08\x07\x08")),
+        "sbit_wrong_size": png(pre=ch(b"sBIT", b"\5")),
+        "sbit_after_idat": png(post=ch(b"sBIT", b"\5\5\5")),
+        "sbit_badcrc": png(pre=ch(b"sBIT", b"\5\5\5")[:-1] + b"\0"),
+        "sbit_badcrc_then_ok": png(pre=ch(b"sBIT", b"\5\5\5")[:-1] + b"\0" + ch(b"sBIT", b"\x08\x08\x08")),
+        "gray_as_rgb": SIG + ihdr() + ch(b"IDAT", zlib.compress(b"".join(
+            b"\0" + bytes(v for x in range(W) for v in [(x * 7 + y * 3) & 255] * 3) for y in range(H))))
+            + ch(b"IEND", b""),
+        "gray_as_rgb_but_one": SIG + ihdr() + ch(b"IDAT", zlib.compress(b"".join(
+            b"\0" + bytes(v for x in range(W) for v in [(x * 7 + y * 3) & 255] * 3) for y in range(H - 1))
+            + b"\0" + bytes([1, 2, 3]) + bytes(3 * (W - 1)))) + ch(b"IEND", b""),
         "rgba": SIG + ihdr(ctype=6) + idat(c=4) + ch(b"IEND", b""),
         "gray16": SIG + ihdr(depth=16, ctype=0) + ch(b"IDAT", zlib.compress(raw(c=2))) + ch(b"IEND", b""),
         "chunk_after_iend": png() + ch(b"tEXt", b"a\0b"),
@@ -201,11 +216,13 @@ def loads(binary, path):
     return "could not load" not in log, code
 
 
-def transparent(binary, path):
-    """Does `encode` refuse the cover for its transparency?"""
+def refusal(binary, path):
+    """Why `encode` refuses the cover (transparency, gray pixels stored as RGB,
+    ...), or None"""
     code, log = T.run(["encode", "-i", path, "-o", path + ".out"], message=b"x",
                       passphrases=["correct horse"] * 2, binary=binary)
-    return "transparency" in log
+    m = re.search(r"has (.*?), which the output can't keep", log)
+    return m and m.group(1)
 
 
 def main():
@@ -220,8 +237,8 @@ def main():
 
         def one(name):
             c, r = loads(C, files[name]), loads(RUST, files[name])
-            if c == r and c[0] and files[name].endswith(".png"):  # both load: same verdict on transparency
-                c, r = c + (transparent(C, files[name]),), r + (transparent(RUST, files[name]),)
+            if c == r and c[0] and files[name].endswith(".png"):  # both load: same verdict on the cover
+                c, r = c + (refusal(C, files[name]),), r + (refusal(RUST, files[name]),)
             return name, c, r
 
         bad = []

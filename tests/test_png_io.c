@@ -206,6 +206,59 @@ static void test_load_reports_unsuitable(void) {
     }
 }
 
+/* An 8-bit RGB image, gray (R = G = B) or not, with an sBIT chunk if sbit */
+static void write_rgb(const char *path, int gray, int sbit) {
+    FILE *fp = fopen(path, "wb");
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    png_infop info = png_create_info_struct(png);
+    png_init_io(png, fp);
+    png_set_IHDR(png, info, 5, 5, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    if (sbit) {
+        png_color_8 bits = {.red = (png_byte)sbit, .green = 8, .blue = 8};
+        png_set_sBIT(png, info, &bits);
+    }
+    png_write_info(png, info);
+    for (uint32_t y = 0; y < 5; y++) {
+        uint8_t row[15];
+        for (uint32_t x = 0; x < 5; x++) {
+            uint8_t v = (uint8_t)(x * 40 + y * 8);
+            row[x * 3] = v;
+            row[x * 3 + 1] = gray ? v : (uint8_t)(v + 1);
+            row[x * 3 + 2] = v;
+        }
+        png_write_row(png, row);
+    }
+    png_write_end(png, info);
+    png_destroy_write_struct(&png, &info);
+    fclose(fp);
+}
+
+static void test_load_reports_structured_lsbs(void) {
+    struct { int gray, sbit; const char *unsuitable; } cases[] = {
+        {0, 0, NULL},
+        {0, 8, NULL},
+        {1, 0, "only gray pixels, stored as RGB (save it as grayscale)"},
+        {0, 5, "fewer than 8 significant bits (an sBIT chunk)"},
+        {1, 5, "fewer than 8 significant bits (an sBIT chunk)"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const char *p = path_in_dir("structured.png");
+        write_rgb(p, cases[i].gray, cases[i].sbit);
+        Image *img = png_load(p);
+        CHECK(img != NULL);
+        if (img) {
+            const char *want = cases[i].unsuitable, *got = img->unsuitable;
+            int ok = want ? got && strcmp(got, want) == 0 : got == NULL;
+            CHECK(ok);
+            if (!ok) fprintf(stderr, "    (gray %d, sBIT %d: unsuitable = %s)\n",
+                             cases[i].gray, cases[i].sbit, got ? got : "NULL");
+        }
+        image_free(img);
+        remove(p);
+    }
+}
+
 /* ---- png_load: bad input ------------------------------------------------ */
 
 static void png_chunk(FILE *fp, const char *type, const uint8_t *data, uint32_t len) {
@@ -643,6 +696,7 @@ int main(void) {
     RUN(test_load_interlaced);
     RUN(test_load_interlaced_palette);
     RUN(test_load_reports_unsuitable);
+    RUN(test_load_reports_structured_lsbs);
     RUN(test_load_missing_file);
     RUN(test_load_empty_file);
     RUN(test_load_not_png);

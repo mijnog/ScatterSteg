@@ -77,6 +77,32 @@ struct PngMeta {
     AllocBudget *budget;
 };
 
+/* An sBIT chunk (kept raw, like every ancillary chunk) saying a channel
+   has fewer than 8 significant bits: such images have structured low bits
+   (zeros, or the high bits repeated), which +-1 changes break, and the
+   chunk itself, kept in the output, tells a warden to look */
+static int low_sbit(png_structp png, png_infop info) {
+    png_unknown_chunkp chunks;
+    int n = png_get_unknown_chunks(png, info, &chunks);
+    for (int i = 0; i < n; i++)
+        if (memcmp(chunks[i].name, "sBIT", 4) == 0)
+            for (size_t k = 0; k < chunks[i].size; k++)
+                if (chunks[i].data[k] < 8) return 1;
+    return 0;
+}
+
+/* Gray stored as RGB: R = G = B in every pixel. Changing the channels
+   independently breaks that, which a one-line check finds. */
+static int all_gray(const Image *img) {
+    if (img->channels != 3) return 0;
+    for (uint32_t y = 0; y < img->height; y++) {
+        const uint8_t *p = img->rows[y];
+        for (uint32_t x = 0; x < img->width; x++, p += 3)
+            if (p[0] != p[1] || p[1] != p[2]) return 0;
+    }
+    return 1;
+}
+
 /* Read the chunks after the image data. The pixels are already in, so a
    damaged tail only loses what comes after the damage. */
 static void read_end(png_structp png, png_infop info) {
@@ -204,6 +230,13 @@ Image *png_load(const char *path) {
     png_read_image(png, img->rows);
     read_end(png, info);
     fclose(fp);
+
+    /* Covers whose low bits are visibly structured: the changes would stand
+       out. Checked once the pixels and every chunk are in. */
+    if (!img->unsuitable && low_sbit(png, info))
+        img->unsuitable = "fewer than 8 significant bits (an sBIT chunk)";
+    else if (!img->unsuitable && all_gray(img))
+        img->unsuitable = "only gray pixels, stored as RGB (save it as grayscale)";
 
     /* Keep the chunks for png_save */
     PngMeta *meta = malloc(sizeof(PngMeta));

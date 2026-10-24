@@ -864,6 +864,14 @@ class CliTest(CliBase):
                            b"", "has fewer than 8 bits per sample"),
             "gray + tRNS": (8, 0, b"".join(b"\x00" + bytes(range(32)) for y in range(32)),
                             _chunk(b"tRNS", struct.pack(">H", 5)), "has transparency"),
+            # Embedding would make some pixels' R, G and B differ
+            "gray as RGB": (8, 2, b"".join(b"\x00" + bytes(v for x in range(32) for v in [(x * 8 + y) & 0xFF] * 3)
+                                           for y in range(32)),
+                            b"", "has only gray pixels, stored as RGB"),
+            # Low bits structured (and the chunk says so)
+            "sBIT 5": (8, 2, b"".join(b"\x00" + bytes((x * 8 + y + k) & 0xF8 for x in range(32) for k in range(3))
+                                      for y in range(32)),
+                       _chunk(b"sBIT", bytes([5, 5, 5])), "has fewer than 8 significant bits"),
         }
         for name, (depth, ctype, rows, extra, message) in cases.items():
             with self.subTest(cover=name):

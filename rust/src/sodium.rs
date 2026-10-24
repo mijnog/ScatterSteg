@@ -130,6 +130,13 @@ impl Secret {
         Some(s)
     }
 
+    /// Locks the first `len` bytes against swapping. sodium_malloc tries, but
+    /// only within the locked memory limit (RLIMIT_MEMLOCK, often 8 MiB), and
+    /// says nothing when it can't; locking again tells. False if they can't be.
+    pub fn lock(&mut self, len: usize) -> bool {
+        len == 0 || unsafe { sys::sodium_mlock(self.ptr.cast(), len.min(self.len)) } == 0
+    }
+
     pub fn from_slice(data: &[u8]) -> Option<Secret> {
         let mut s = Secret::new(data.len())?;
         s.copy_from_slice(data);

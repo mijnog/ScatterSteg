@@ -30,7 +30,8 @@
 #define PASSPHRASE_MIN_LEN 12
 
 /* Secrets (passphrase, message, keys, plaintext) live in sodium_malloc
-   memory: locked so it can't be swapped to disk, fenced by guard pages, and
+   memory: locked so it can't be swapped to disk (within the locked memory
+   limit: see warn_if_swappable), fenced by guard pages, and
    wiped by sodium_free. They are read and written with read() and write(),
    never through a stdio buffer, which would keep a copy outside it. */
 
@@ -643,11 +644,33 @@ static int generate_passphrase(void) {
     return r;
 }
 
+/* sodium_malloc locks memory against swapping only within the locked
+   memory limit (RLIMIT_MEMLOCK, often 8 MiB), and says nothing when it
+   can't. Locking len bytes at p again tells: say so if they aren't. */
+static void warn_if_swappable(void *p, size_t len) {
+    if (len == 0 || sodium_mlock(p, len) == 0) return;
+    struct rlimit lock;
+    if (getrlimit(RLIMIT_MEMLOCK, &lock) == 0 && lock.rlim_cur != RLIM_INFINITY)
+        fprintf(stderr, "Warning: the message is larger than the memory this process may lock "
+                        "(%llu KiB, see `ulimit -l`), so it may be written to swap\n",
+                (unsigned long long)lock.rlim_cur / 1024);
+    else
+        fprintf(stderr, "Warning: the message could not be locked in memory, "
+                        "so it may be written to swap\n");
+}
+
 /* Keep secrets out of core dumps, and (Linux) stop other processes of the
    same user from attaching a debugger to read them */
 static void protect_process(void) {
     struct rlimit none = {0, 0};
     setrlimit(RLIMIT_CORE, &none);
+    /* Let sodium_malloc lock as much as we may: the soft limit can be
+       below the hard one */
+    struct rlimit lock;
+    if (getrlimit(RLIMIT_MEMLOCK, &lock) == 0 && lock.rlim_cur < lock.rlim_max) {
+        lock.rlim_cur = lock.rlim_max;
+        setrlimit(RLIMIT_MEMLOCK, &lock);
+    }
 #ifdef __linux__
     prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
 #endif
@@ -810,6 +833,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         uint32_t msg_len = (uint32_t)message_len;  /* at most max_msg */
+        warn_if_swappable(message, msg_len);
         /* Empty message: nothing to hide, so write nothing */
         if (msg_len == 0) {
             sodium_free(keys);
@@ -912,6 +936,7 @@ int main(int argc, char *argv[]) {
                             "or no message in this image\n");
         if (r != DECODED) return 1;
 
+        warn_if_swappable(plaintext, pt_len);
         if (pt_len > 0) {  /* empty message: print nothing */
             /* All of it, NULs too. The newline goes in the same write, so
                the plaintext buffer has room: open_box allocates pt_len + 1. */

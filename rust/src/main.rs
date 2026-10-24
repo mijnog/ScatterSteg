@@ -22,7 +22,8 @@ const PASSPHRASE_MAX_LEN: usize = 4094;
 const PASSPHRASE_MIN_LEN: usize = 12;
 
 // Secrets (passphrase, message, keys, plaintext) live in sodium_malloc
-// memory: locked so it can't be swapped to disk, fenced by guard pages, and
+// memory: locked so it can't be swapped to disk (within the locked memory
+// limit: see warn_if_swappable), fenced by guard pages, and
 // wiped when dropped. They are read and written with read() and write(),
 // never through a stdio buffer, which would keep a copy outside it.
 
@@ -212,12 +213,31 @@ fn generate_passphrase() -> io::Result<()> {
     r
 }
 
+/// Say so if the message's `len` bytes in `s` can't be locked against swapping
+fn warn_if_swappable(s: &mut Secret, len: usize) {
+    if s.lock(len) { return; }
+    let mut lock = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut lock) } == 0 && lock.rlim_cur != libc::RLIM_INFINITY {
+        scattersteg::errln!("Warning: the message is larger than the memory this process may lock \
+                   ({} KiB, see `ulimit -l`), so it may be written to swap", lock.rlim_cur / 1024);
+    } else {
+        scattersteg::errln!("Warning: the message could not be locked in memory, so it may be written to swap");
+    }
+}
+
 /// Keep secrets out of core dumps, and (Linux) stop other processes of the
 /// same user from attaching a debugger to read them
 fn protect_process() {
     let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     unsafe {
         libc::setrlimit(libc::RLIMIT_CORE, &none);
+        // Let sodium_malloc lock as much as we may: the soft limit can be
+        // below the hard one
+        let mut lock = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut lock) == 0 && lock.rlim_cur < lock.rlim_max {
+            lock.rlim_cur = lock.rlim_max;
+            libc::setrlimit(libc::RLIMIT_MEMLOCK, &lock);
+        }
         #[cfg(target_os = "linux")]
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
@@ -346,7 +366,7 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
     };
     drop(passphrase);
 
-    let message = match read_message(prepared.max_message(), raw) {
+    let mut message = match read_message(prepared.max_message(), raw) {
         Ok(m) => m,
         Err(ReadError::TooLong) => {
             scattersteg::errln!("Error: message too long for this image");
@@ -362,6 +382,8 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
         scattersteg::errln!("Message is empty; nothing written");
         return ExitCode::SUCCESS;
     }
+    let len = message.len();
+    warn_if_swappable(&mut message, len);
 
     if let Err(e) = prepared.embed(&mut cover.carrier(), &message) {
         match e {
@@ -414,6 +436,7 @@ fn decode(input: &Path, raw: bool) -> ExitCode {
                    well; re-encode it");
     }
 
+    warn_if_swappable(&mut found.plaintext, found.len);
     if found.len > 0 { // empty message: print nothing
         // All of it, NULs too. The newline goes in the same write, so the
         // plaintext buffer has room: it has a spare byte.

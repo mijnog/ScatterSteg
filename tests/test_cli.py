@@ -13,6 +13,7 @@ import ctypes.util
 import hashlib
 import os
 import pty
+import resource
 import select
 import signal
 import stat
@@ -64,7 +65,7 @@ def jpeg_segments(path):
 
 
 def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
-        stdin_path=None, stdout_path=None):
+        stdin_path=None, stdout_path=None, memlock=None):
     """Run scattersteg, answer each passphrase prompt in order. The message
     goes in on stdin (from the file stdin_path, if given), or with `typed`,
     is typed at the terminal instead. stdout goes to the terminal, or to
@@ -83,6 +84,8 @@ def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
                 os.dup2(stdin.fileno(), 0)
             if stdout_path is not None:
                 os.dup2(os.open(stdout_path, os.O_WRONLY), 1)
+            if memlock is not None:  # the locked memory limit, soft and hard
+                resource.setrlimit(resource.RLIMIT_MEMLOCK, (memlock, memlock))
             os.execve(binary, [binary] + list(args), {**os.environ, **(env or {})})
 
     answers = list(passphrases)
@@ -635,6 +638,34 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         with open(out, "rb") as f:
             return f.read()
+
+    def test_warns_when_message_cannot_be_locked(self):
+        # Past the locked memory limit, the message can reach swap: say so
+        with open(BINARY, "rb") as f:
+            if b"__asan_init" in f.read():
+                self.skipTest("ASan makes mlock a no-op that succeeds")
+        cover = self.path("big.png")
+        write_png(cover, 800, 800, lambda x, y: ((x * 7 + y * 13) & 255, (x * y) & 255, (x ^ y) & 255))
+        message = os.urandom(200_000)
+        out = self.path("steg.png")
+        limit = 64 << 10
+        code, log = run(["encode", "-r", "-i", cover, "-o", out], message, ["correct horse"] * 2,
+                        memlock=limit)
+        self.assertEqual(code, 0, log)
+        self.assertIn("may be written to swap", log)
+        decoded = self.path("decoded.bin")
+        open(decoded, "wb").close()
+        code, log = run(["decode", "-r", "-i", out], passphrases=["correct horse"],
+                        stdout_path=decoded, memlock=limit)
+        self.assertEqual(code, 0, log)
+        self.assertIn("may be written to swap", log)
+        with open(decoded, "rb") as f:
+            self.assertEqual(f.read(), message)
+        # A short message fits
+        code, log = run(["encode", "-i", self.cover, "-o", self.path("short.png")], b"short",
+                        ["correct horse"] * 2, memlock=limit)
+        self.assertEqual(code, 0, log)
+        self.assertNotIn("swap", log)
 
     def test_raw_keeps_every_byte(self):
         # -r: nothing is stripped on the way in or added on the way out

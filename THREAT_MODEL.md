@@ -50,6 +50,7 @@ Images may come from anyone, so the decoder parses hostile input.
 ### A6 — Someone on the same machine
 
 - **Partly protected.** Secrets live in libsodium guarded memory (locked against swap, guard pages, wiped on release), core dumps are disabled, and on Linux other processes of the same user can't attach a debugger.
+- **Limit:** memory is locked only up to the process's locked memory limit (`ulimit -l`, often 8 MiB; ScatterSteg raises its soft limit to the hard one). A message past it may be written to swap, and `encode` and `decode` warn when that happens. Raise the limit, or use encrypted swap, for large messages.
 - **Not protected against:** root, a keylogger, a compromised terminal or a malicious build of ScatterSteg or its libraries. The message is also read from stdin and printed to stdout, so wherever those go (shell history, files, pipes) is outside its control.
 
 ## Explicit non-goals

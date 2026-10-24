@@ -323,6 +323,13 @@ static void test_extreme_dc_accepted(void) {
     jpeg_free(j);
 }
 
+static void test_many_scans_refused(void) {
+    /* 500 empty scans of an 8192x8192 frame, 5 KB: each scan is a pass over
+       the frame, so it took seconds to read (at 23000x23000, 16 s). Past
+       the cap on blocks visited, it is refused. */
+    CHECK(jpeg_load("tests/fuzz/regressions/jpeg_load/many-scans-large-frame.jpg") == NULL);
+}
+
 static void test_fuzz_regressions(void) {
     /* Inputs the fuzzer once broke jpeg_load or jpeg_save with. Each must
        fail to load, be refused by jpeg_check_writable, or save and reload
@@ -374,6 +381,7 @@ int main(void) {
     RUN(test_huge_dimensions_refused);
     RUN(test_scan_limit);
     RUN(test_extreme_dc_accepted);
+    RUN(test_many_scans_refused);
     RUN(test_fuzz_regressions);
 
     char cmd[300];

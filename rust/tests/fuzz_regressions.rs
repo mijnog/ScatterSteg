@@ -65,6 +65,15 @@ fn jpeg_regressions() {
     }
 }
 
+/// 500 empty scans of an 8192x8192 frame, 5 KB: each scan is a pass over the
+/// frame, so it took seconds to read (at 23000x23000, 16 s). Past the cap on
+/// blocks visited, it is refused.
+#[test]
+fn many_scans_refused() {
+    let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fuzz/regressions/jpeg_load/many-scans-large-frame.jpg");
+    assert!(JpegImage::load(&f).is_none());
+}
+
 /// Newer libpng refuses a chunk name with a lowercase third letter, so we load
 /// such a file but never write the chunk back.
 #[test]

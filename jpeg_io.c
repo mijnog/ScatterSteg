@@ -22,6 +22,12 @@
    coefficients; a crafted file with thousands of tiny scans takes minutes to
    read. Real files have a few dozen at most (djpeg suggests the same cap). */
 #define JPEG_MAX_SCANS 500
+/* Nor is the scan cap enough on its own, as each scan costs in proportion
+   to the frame: 500 empty scans of a 23000x23000 frame, 5 KB in all, took
+   16 s to read. So the blocks the scans visit are capped too. Real files
+   visit each block about ten times (the largest image allowed here, some
+   84 million visits); past this, one costs about a second. */
+#define JPEG_MAX_SCAN_BLOCKS ((uint64_t)1 << 28)
 /* What an 8-bit encoder can write: DC in [-1024, 1023] (an all-black block
    at quality 100 is -1024), so block-to-block differences fit its 11 bits;
    AC values that fit 10 bits */
@@ -61,10 +67,27 @@ static void silent(j_common_ptr cinfo) {
     (void)cinfo;  /* warnings about recoverable corruption: keep going */
 }
 
+/* The progress monitor, with what limit_scans has counted */
+typedef struct {
+    struct jpeg_progress_mgr pub;
+    int scan;         /* the scan last counted */
+    uint64_t blocks;  /* blocks the scans so far visit */
+} Progress;
+
+/* Called before each step of reading, so at least once per scan, after
+   its header is read */
 static void limit_scans(j_common_ptr cinfo) {
-    if (cinfo->is_decompressor &&
-        ((j_decompress_ptr)cinfo)->input_scan_number > JPEG_MAX_SCANS)
-        cinfo->err->error_exit(cinfo);
+    if (!cinfo->is_decompressor) return;
+    j_decompress_ptr d = (j_decompress_ptr)cinfo;
+    Progress *p = (Progress *)cinfo->progress;
+    if (d->input_scan_number > JPEG_MAX_SCANS) cinfo->err->error_exit(cinfo);
+    if (d->input_scan_number != p->scan) {
+        p->scan = d->input_scan_number;
+        for (int i = 0; i < d->comps_in_scan; i++)
+            p->blocks += (uint64_t)d->cur_comp_info[i]->width_in_blocks *
+                         d->cur_comp_info[i]->height_in_blocks;
+        if (p->blocks > JPEG_MAX_SCAN_BLOCKS) cinfo->err->error_exit(cinfo);
+    }
 }
 
 int is_jpeg_file(const char *path) {
@@ -137,7 +160,7 @@ static JpegImage *load_stream(FILE *fp) {
         return NULL;
     }
 
-    struct jpeg_progress_mgr progress = {.progress_monitor = limit_scans};
+    Progress progress = {.pub.progress_monitor = limit_scans};
     j->src.err = jpeg_std_error(&j->err.pub);
     j->err.pub.error_exit = error_exit;
     j->err.pub.output_message = silent;
@@ -150,7 +173,7 @@ static JpegImage *load_stream(FILE *fp) {
         return NULL;
     }
     jpeg_create_decompress(&j->src);
-    j->src.progress = &progress;
+    j->src.progress = &progress.pub;
     j->src.mem->max_memory_to_use = JPEG_MAX_COEF_BYTES + (16 << 20);
     jpeg_stdio_src(&j->src, fp);
     /* Keep comments and every APPn (EXIF, ICC profile, XMP...) to write back */

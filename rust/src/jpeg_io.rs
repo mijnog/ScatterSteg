@@ -31,6 +31,12 @@ const MAX_CARRIERS: usize = MAX_COEF_BYTES / CARRIER_BYTES;
 /// coefficients; a crafted file with thousands of tiny scans takes minutes to
 /// read. Real files have a few dozen at most (djpeg suggests the same cap).
 const MAX_SCANS: c_int = 500;
+/// Nor is the scan cap enough on its own, as each scan costs in proportion to
+/// the frame: 500 empty scans of a 23000x23000 frame, 5 KB in all, took 16 s
+/// to read. So the blocks the scans visit are capped too. Real files visit
+/// each block about ten times (the largest image allowed here, some 84
+/// million visits); past this, one costs about a second.
+const MAX_SCAN_BLOCKS: u64 = 1 << 28;
 /// What an 8-bit encoder can write: DC in [-1024, 1023], so block-to-block
 /// differences fit its 11 bits; AC values that fit 10 bits
 const MIN_DC: i16 = -1024;
@@ -62,10 +68,31 @@ unsafe extern "C-unwind" fn unexpected_error(_: j_common_ptr) {
 /// Warnings about recoverable corruption: keep going
 unsafe extern "C-unwind" fn silent(_: j_common_ptr) {}
 
+/// The progress monitor, with what limit_scans has counted
+#[repr(C)]
+struct Progress {
+    mgr: jpeg_progress_mgr, // first: libjpeg hands back a pointer to it
+    /// the scan last counted
+    scan: c_int,
+    /// blocks the scans so far visit
+    blocks: u64,
+}
+
+/// Called before each step of reading, so at least once per scan, after its
+/// header is read
 unsafe extern "C-unwind" fn limit_scans(cinfo: j_common_ptr) {
     unsafe {
-        if (*cinfo).is_decompressor != 0 && (*(cinfo as j_decompress_ptr)).input_scan_number > MAX_SCANS {
-            error_exit(cinfo);
+        if (*cinfo).is_decompressor == 0 { return; }
+        let d = cinfo as j_decompress_ptr;
+        let p = &mut *((*cinfo).progress as *mut Progress);
+        if (*d).input_scan_number > MAX_SCANS { error_exit(cinfo); }
+        if (*d).input_scan_number != p.scan {
+            p.scan = (*d).input_scan_number;
+            for i in 0..(*d).comps_in_scan as usize {
+                let comp = (*d).cur_comp_info[i];
+                p.blocks += (*comp).width_in_blocks as u64 * (*comp).height_in_blocks as u64;
+            }
+            if p.blocks > MAX_SCAN_BLOCKS { error_exit(cinfo); }
         }
     }
 }
@@ -133,7 +160,7 @@ struct Component {
 pub struct JpegImage {
     src: Box<jpeg_decompress_struct>,
     _err: Box<jpeg_error_mgr>,
-    _progress: Box<jpeg_progress_mgr>,
+    _progress: Box<Progress>,
     /// The file, which libjpeg reads from for as long as `src` lives
     _data: Vec<u8>,
     virt: *mut jvirt_barray_ptr,
@@ -161,8 +188,8 @@ impl JpegImage {
 
     fn from_bytes(data: Vec<u8>) -> Option<JpegImage> {
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
-        let mut progress: Box<jpeg_progress_mgr> = zeroed_box();
-        progress.progress_monitor = Some(limit_scans);
+        let mut progress: Box<Progress> = zeroed_box();
+        progress.mgr.progress_monitor = Some(limit_scans);
         let mut src: Box<jpeg_decompress_struct> = zeroed_box();
         // SAFETY: the boxes give libjpeg stable addresses for as long as the struct lives
         unsafe {
@@ -179,7 +206,7 @@ impl JpegImage {
         let destroy = |s: *mut jpeg_decompress_struct| unsafe { jpeg_destroy_decompress(s) };
 
         let loaded = guarded(|| unsafe {
-            (*s).progress = &mut *progress;
+            (*s).progress = &mut progress.mgr;
             (*(*s).mem).max_memory_to_use = (MAX_COEF_BYTES + (16 << 20)) as _;
             jpeg_mem_src(s, data.as_ptr(), data.len() as c_ulong);
             // Keep comments and every APPn (EXIF, ICC profile, XMP...) to write back

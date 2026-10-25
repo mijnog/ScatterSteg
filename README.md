@@ -15,7 +15,7 @@ echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
 
 - **Keyed embedding order.** Bits are placed along a secret permutation of the image derived from the passphrase, not sequentially from the first pixel.
 - **Syndrome-trellis codes (STC).** The message is encoded as the syndrome of a larger set of carrier bits, and a Viterbi search selects the least costly set of changes that produces it. At typical payloads this requires 2.4–3.3 times fewer changes than writing the bits directly.
-- **Histogram-preserving exchange.** Required changes are paired into value swaps where possible (the approach used by steghide), which leaves the image histogram unchanged for over 99% of changes on photographs.
+- **Histogram-preserving exchange.** Required changes are paired into value swaps where possible (the approach used by steghide), which leaves the image histogram unchanged for those changes: on photographs, 48% of changes at 0.05 bits per pixel and 87% at 0.4 (480 Wikimedia photographs, the encoder's own count).
 - **LSB matching.** No sample changes by more than 1, and the pairs-of-values artifact produced by LSB replacement is avoided.
 - **PNG and JPEG covers.** In JPEG images the message is carried by the quantized DCT coefficients, which are read and written losslessly; the image is never decompressed and recompressed.
 - **Format preservation.** The output keeps the cover's format and metadata: grayscale remains grayscale, progressive JPEGs remain progressive, and EXIF, ICC profiles and text chunks are retained. Covers that could not be reproduced in their original format are refused.

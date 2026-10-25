@@ -226,9 +226,9 @@ Image *png_load(const char *path) {
     /* Covers whose low bits are visibly structured: the changes would stand
        out. Checked once the pixels and every chunk are in. */
     if (!img->unsuitable && low_sbit(png, info))
-        img->unsuitable = "fewer than 8 significant bits (an sBIT chunk)";
+        img->unsuitable = PNG_LOW_SBIT;
     else if (!img->unsuitable && all_gray(img))
-        img->unsuitable = "only gray pixels, stored as RGB (save it as grayscale)";
+        img->unsuitable = PNG_GRAY_AS_RGB;
 
     /* Keep the chunks for png_save */
     PngMeta *meta = malloc(sizeof(PngMeta));

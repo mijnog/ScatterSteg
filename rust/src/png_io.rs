@@ -22,6 +22,11 @@ const MAX_CHUNKS: usize = 1000;
 /// Most ancillary chunk bytes kept in all
 const MAX_META_TOTAL: usize = 128 << 20;
 
+/// The reasons for `unsuitable` that are about the content (pixels, chunks)
+/// rather than the format: what `save` writes can still have them
+pub const LOW_SBIT: &str = "fewer than 8 significant bits (an sBIT chunk)";
+pub const GRAY_AS_RGB: &str = "only gray pixels, stored as RGB (save it as grayscale)";
+
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
 /// An ancillary chunk of the cover, kept for `save` to write back
@@ -274,9 +279,9 @@ pub fn load(path: &Path) -> Option<Image> {
     // output, tells a warden to look.
     let unsuitable = unsuitable.or_else(|| {
         if low_sbit {
-            Some("fewer than 8 significant bits (an sBIT chunk)")
+            Some(LOW_SBIT)
         } else if all_gray(&pixels, channels) {
-            Some("only gray pixels, stored as RGB (save it as grayscale)")
+            Some(GRAY_AS_RGB)
         } else {
             None
         }

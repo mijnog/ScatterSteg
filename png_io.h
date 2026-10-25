@@ -21,6 +21,11 @@ typedef struct {
     PngMeta *meta;       /* NULL if none */
 } Image;
 
+/* The reasons for unsuitable that are about the content (pixels, chunks)
+   rather than the format: what png_save writes can still have them */
+#define PNG_LOW_SBIT    "fewer than 8 significant bits (an sBIT chunk)"
+#define PNG_GRAY_AS_RGB "only gray pixels, stored as RGB (save it as grayscale)"
+
 Image *png_load(const char *path);
 void   image_free(Image *img);
 

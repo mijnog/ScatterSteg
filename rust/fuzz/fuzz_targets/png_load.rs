@@ -38,7 +38,9 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(img.pixels.len(), img.width as usize * img.height as usize * img.channels as usize);
     png_io::save(&img, out_path).unwrap();
     let back = png_io::load(out_path).expect("saved PNG must reload");
-    assert!(back.unsuitable.is_none());
+    // It may still be refused for its content (gray pixels, a kept sBIT),
+    // never for its format
+    assert!(back.unsuitable.is_none_or(|u| u == png_io::LOW_SBIT || u == png_io::GRAY_AS_RGB), "{:?}", back.unsuitable);
     assert_eq!((back.width, back.height, back.channels), (img.width, img.height, img.channels));
     assert!(back.pixels == img.pixels);
 });

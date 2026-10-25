@@ -47,7 +47,9 @@ fn png_regressions() {
         let Some(img) = png_io::load(&input) else { continue };
         png_io::save(&img, &out).unwrap_or_else(|e| panic!("{}: save: {e}", f.display()));
         let back = png_io::load(&out).unwrap_or_else(|| panic!("{}: saved PNG must reload", f.display()));
-        assert!(back.pixels == img.pixels && back.unsuitable.is_none(), "{}", f.display());
+        // It may still be refused for its content, never for its format
+        let format_ok = back.unsuitable.is_none_or(|u| u == png_io::LOW_SBIT || u == png_io::GRAY_AS_RGB);
+        assert!(back.pixels == img.pixels && format_ok, "{}", f.display());
     }
 }
 

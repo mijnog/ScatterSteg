@@ -3,7 +3,8 @@
 /* libFuzzer target: png_load on arbitrary bytes. Chunk CRCs are recomputed
    first, so mutations reach the decoder instead of failing the CRC check.
    Every image that loads is saved again (copying its metadata, as encode
-   does) and must reload with the same pixels. */
+   does) and must reload with the same pixels, as a cover of a format
+   encode takes. */
 #include "png_io.h"
 #include <png.h>
 #include <zlib.h>
@@ -55,9 +56,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         (void)sink;
 
         if (png_save(img, out_path) != 0) abort();
+        /* It may still be refused for its content (gray pixels, a kept
+           sBIT), never for its format */
         Image *back = png_load(out_path);
         if (!back || back->width != img->width || back->height != img->height ||
-            back->channels != img->channels || back->unsuitable)
+            back->channels != img->channels ||
+            (back->unsuitable && strcmp(back->unsuitable, PNG_LOW_SBIT) != 0 &&
+             strcmp(back->unsuitable, PNG_GRAY_AS_RGB) != 0))
             abort();
         for (uint32_t y = 0; y < img->height; y++)
             if (memcmp(back->rows[y], img->rows[y], (size_t)img->width * img->channels) != 0)

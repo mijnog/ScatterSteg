@@ -9,7 +9,9 @@ modest measurement. Read the limitations before quoting a number.
 Detection error **P_E** (0.5 = the detector cannot do better than guessing;
 lower = easier to detect). 476 covers, 5 random 50/50 splits, standard error
 about ±0.02. Payload is message bits per pixel (PNG/BMP) or per non-zero AC
-coefficient (JPEG).
+coefficient (JPEG). ScatterSteg PNG figures in this section and the next two
+are for uniform costs, used before HILL; see [HILL](#content-adaptive-costs-hill)
+for the current ones.
 
 **Pixel images** (SPAM features, 512×512 RGB):
 
@@ -69,6 +71,35 @@ Again the same ranking. steghide's error falls from 0.34/0.24/0.13 with the
 compact features to 0.21/0.10/0.03 here; ScatterSteg's changes little, because
 the compact features were already well matched to its changes (0.42/0.40/0.23).
 Raw output is in `results-dctr-jpeg.txt`.
+
+### Content-adaptive costs (HILL)
+
+PNG embedding now uses HILL costs instead of uniform ones (`embed.c`,
+`embed_hill_costs`). Measured on 480 Wikimedia photographs fetched on
+2026-10-25 (Wikimedia's featured pictures change, so not the same set as
+above), with the same payloads and splits; `results-hill-wikimedia.txt` has
+the raw output. The uniform column re-measured here matches the published one
+above to within 0.013, so the harness is unchanged:
+
+| payload | SRM-style, uniform costs | **SRM-style, HILL** | SPAM, uniform | **SPAM, HILL** |
+|---|---|---|---|---|
+| 0.05 | 0.347 | **0.442** | 0.455 | **0.499** |
+| 0.10 | 0.257 | **0.417** | 0.393 | **0.496** |
+| 0.20 | 0.141 | **0.388** | 0.301 | **0.484** |
+| 0.40 | 0.062 | **0.355** | 0.191 | **0.453** |
+
+The Rust build's HILL gives 0.448, 0.418, 0.387 and 0.359 with the SRM-style
+detector. HILL makes 28–41% more changes than uniform costs but puts them
+where the image is busy, and more of them pair as value swaps (93–98.5%
+against 48–87%). Ker's adjacency HCF-COM, the detector an earlier HILL-like
+attempt lost on, moves 9 to 12 times less than with uniform costs (`hcf.py`).
+BOSSbase and JPEG have not been re-run (JPEG costs are unchanged).
+
+Reproduce (after `fetch_images.py 480`; needs numpy, scipy, scikit-learn,
+pillow and ImageMagick, about 20 minutes on 12 cores):
+
+    python3 embed_png.py 480 hill          # SCATTERSTEG=path/to/binary
+    python3 score.py spam hill && python3 score.py srm hill
 
 `srm.py` is not the published SRM: the construction is the same, but the
 kernels and quantization steps were chosen here, and it has roughly a fifth of

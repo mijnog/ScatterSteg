@@ -11,7 +11,7 @@ PW = "benchmark passphrase 1234"
 PIX = 512 * 512
 PNG_BPP = [0.05, 0.1, 0.2, 0.4]
 JPG_BPNZ = [0.05, 0.1, 0.2]
-N = int(sys.argv[1])
+N = int(sys.argv[1]) if __name__ == "__main__" else 0
 for d in ("cover", "stego"): os.makedirs(d, exist_ok=True)
 raws = sorted(glob.glob("raw/*.jpg"))[:N]
 

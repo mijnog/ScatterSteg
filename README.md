@@ -15,7 +15,8 @@ echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
 
 - **Keyed embedding order.** Bits are placed along a secret permutation of the image derived from the passphrase, not sequentially from the first pixel.
 - **Syndrome-trellis codes (STC).** The message is encoded as the syndrome of a larger set of carrier bits, and a Viterbi search selects the least costly set of changes that produces it. At typical payloads this requires 2.4–3.3 times fewer changes than writing the bits directly.
-- **Histogram-preserving exchange.** Required changes are paired into value swaps where possible (the approach used by steghide), which leaves the image histogram unchanged for those changes: on photographs, 48% of changes at 0.05 bits per pixel and 87% at 0.4 (480 Wikimedia photographs, the encoder's own count).
+- **Content-adaptive costs (PNG).** HILL costs (Li, Wang, Huang and Li, 2014) make a change cheap where the image is busy and dear where it is flat, so STC puts the changes where they are hardest to model. Against the rich-model detector below, this cut detection from 65–94% to 56–65% of images, at 0.05 to 0.4 bits per pixel. JPEG costs follow the quantization step.
+- **Histogram-preserving exchange.** Required changes are paired into value swaps where possible (the approach used by steghide), which leaves the image histogram unchanged for those changes: on photographs, 93% of changes at 0.05 bits per pixel and 98.5% at 0.4 (480 Wikimedia photographs, the encoder's own count; 48% and 87% with the uniform costs used before HILL).
 - **LSB matching.** No sample changes by more than 1, and the pairs-of-values artifact produced by LSB replacement is avoided.
 - **PNG and JPEG covers.** In JPEG images the message is carried by the quantized DCT coefficients, which are read and written losslessly; the image is never decompressed and recompressed.
 - **Format preservation.** The output keeps the cover's format and metadata: grayscale remains grayscale, progressive JPEGs remain progressive, and EXIF, ICC profiles and text chunks are retained. Covers that could not be reproduced in their original format are refused.
@@ -93,9 +94,9 @@ What differs:
 
 ## Steganalysis results
 
-All detectability figures below were measured on real images (two photographs; the overwriting baseline for sample pair analysis on a painting), against the classic detectors for LSB steganography:
+All detectability figures below were measured on real images (two photographs; the overwriting baseline for sample pair analysis on a painting), against the classic detectors for LSB steganography. They predate HILL costs: the ScatterSteg column is STC with uniform costs. Re-measured on the 480 benchmark photographs, HILL moves Ker's adjacency HCF-COM 9 to 12 times less than uniform costs at every payload (`benchmark/hcf.py`).
 
-| Detector | Writing bits directly | ScatterSteg (STC) |
+| Detector | Writing bits directly | ScatterSteg (STC, uniform costs) |
 |---|---|---|
 | Changes needed, PNG at 5–10% of capacity | 340–682 K | **102–221 K** |
 | Ker's adjacency HCF-COM shift (cover 93.81), 5–25% | 2.4–10.7 | **0.5–0.7** |
@@ -107,12 +108,12 @@ All detectability figures below were measured on real images (two photographs; t
 
 The classic detectors above test one statistic each. A harder test is a machine-learning detector trained on cover/stego pairs. [`benchmark/`](benchmark/) embeds the same random messages with ScatterSteg, steghide 0.5.1 and plain LSB embedding into 476 photographs (512×512, from Wikimedia Commons) and trains an RBF SVM on half the pairs. The table gives its detection error on the other half: 0.5 means it cannot beat guessing, and lower means easier to detect. Payload is bits per pixel for PNG and BMP, and per non-zero AC coefficient for JPEG. Standard error is about ±0.02.
 
-| Pixel payload | LSB matching | steghide (BMP) | **ScatterSteg (PNG)** |
-|---|---|---|---|
-| 0.05 | 0.34 | 0.14 | **0.46** |
-| 0.10 | 0.25 | 0.12 | **0.41** |
-| 0.20 | 0.16 | 0.10 | **0.31** |
-| 0.40 | 0.10 | 0.07 | **0.20** |
+| Pixel payload | LSB matching | steghide (BMP) | ScatterSteg (PNG), uniform costs | **ScatterSteg (PNG), HILL** |
+|---|---|---|---|---|
+| 0.05 | 0.34 | 0.14 | 0.46 | **0.50** |
+| 0.10 | 0.25 | 0.12 | 0.41 | **0.50** |
+| 0.20 | 0.16 | 0.10 | 0.31 | **0.48** |
+| 0.40 | 0.10 | 0.07 | 0.20 | **0.45** |
 
 | JPEG payload | steghide | **ScatterSteg** |
 |---|---|---|
@@ -122,14 +123,14 @@ The classic detectors above test one statistic each. A harder test is a machine-
 
 A stronger, SRM-style rich-model detector (about 7,000 features per channel and an ensemble classifier) on the same files gives:
 
-| Pixel payload | LSB matching | steghide (BMP) | **ScatterSteg (PNG)** |
-|---|---|---|---|
-| 0.05 | 0.17 | 0.04 | **0.35** |
-| 0.10 | 0.09 | 0.03 | **0.25** |
-| 0.20 | 0.05 | 0.02 | **0.14** |
-| 0.40 | 0.02 | 0.02 | **0.07** |
+| Pixel payload | LSB matching | steghide (BMP) | ScatterSteg (PNG), uniform costs | **ScatterSteg (PNG), HILL** |
+|---|---|---|---|---|
+| 0.05 | 0.17 | 0.04 | 0.35 | **0.44** |
+| 0.10 | 0.09 | 0.03 | 0.25 | **0.42** |
+| 0.20 | 0.05 | 0.02 | 0.14 | **0.39** |
+| 0.40 | 0.02 | 0.02 | 0.07 | **0.36** |
 
-At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg about 65% of the time at 0.05 bits per pixel and about 93% at 0.4. Even at the smallest payload tested, then, the stronger detector catches it about two times in three; nothing below 0.05 bits per pixel has been measured. This is a relative result, not a claim of undetectability: the covers come from two sources, neither representative of everything users will hide data in, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). On a second cover set, 1000 grayscale images from BOSSbase 1.01 (steghide could not be run on it: it has no grayscale PNG or PGM support), the same detector gives, with one sample per pixel so each payload is three times heavier per sample than in the colour tables above:
+At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg with HILL costs about 56% of the time at 0.05 bits per pixel and about 65% at 0.4 (with the uniform costs used before, 65% and 93%). That is better than guessing at every payload, and nothing below 0.05 bits per pixel has been measured. The HILL figures are the same for the C and Rust builds to within 0.006. This is a relative result, not a claim of undetectability: the covers come from two sources, neither representative of everything users will hide data in, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). On a second cover set (measured with uniform costs, before HILL; not yet re-run), 1000 grayscale images from BOSSbase 1.01 (steghide could not be run on it: it has no grayscale PNG or PGM support), the same detector gives, with one sample per pixel so each payload is three times heavier per sample than in the colour tables above:
 
 | Payload (bits per pixel) | LSB matching | ScatterSteg |
 |---|---|---|
@@ -142,7 +143,7 @@ Same ranking and the same trend, with ScatterSteg caught 68% of the time at 0.05
 
 For JPEG (payload in bits per non-zero AC coefficient), a DCTR-style rich-model detector (5,120 features, ensemble classifier) gives ScatterSteg 0.47, 0.40 and 0.26 at 0.05, 0.1 and 0.2, against steghide 0.21, 0.10 and 0.03: the same ranking, with steghide caught 97% of the time at 0.2 and ScatterSteg 74%. The [benchmark README](benchmark/README.md) has the method and the full list of limitations.
 
-Techniques that did not improve these results were not adopted; for example, content-adaptive PNG costs performed worse than uniform costs against the classic detectors in the first table (they were not tested against the classifiers). See [Limitations](#limitations) for where the method stops working.
+Techniques that did not improve these results were not adopted. Content-adaptive PNG costs were at first rejected: an earlier, uncommitted HILL-like cost did worse than uniform costs against the classic detectors in the first table, and it was never tested against the classifiers. Against the classifiers, HILL wins clearly at every payload, and its adjacency HCF-COM shift is smaller too, so it is now used. See [Limitations](#limitations) for where the method stops working.
 
 ## Robustness
 
@@ -206,7 +207,7 @@ The image contains no header or version marker, as either would reveal the prese
 ## Limitations
 
 - **The original cover gives it away.** Anyone who has the cover can compare it with the output and see which samples changed, so that a message is there (not what it says). This holds for PNG and JPEG alike, as for any steganography tool. Never use a cover that someone else has or could find (a photo you have posted or sent, a stock or downloaded image), never encode twice from the same cover, and delete the cover after use.
-- **Detectable by trained classifiers.** On the benchmark above, a rich-model classifier catches ScatterSteg output about 65% of the time at 0.05 bits per pixel and 93% at 0.4; deep-learning detectors, not yet run, would do better still. Keep messages far below the cover's capacity; "statistically close to the cover" means harder to detect, not undetectable.
+- **Detectable by trained classifiers.** On the benchmark above, a rich-model classifier catches ScatterSteg PNG output about 56% of the time at 0.05 bits per pixel and 65% at 0.4, and JPEG output 53–74%; deep-learning detectors, not yet run, would do better still. Keep messages far below the cover's capacity; "statistically close to the cover" means harder to detect, not undetectable.
 - **No independent review.** The implementation is extensively tested, but neither the cryptography nor the steganography has been externally audited. It should not be relied on where personal safety is at stake. See [THREAT_MODEL.md](THREAT_MODEL.md) for the security claims and their scope.
 - **Machine-learning steganalysis.** Modern learned detectors are considerably stronger than the classic detectors measured above. Messages should be small relative to the cover; a few kilobytes in a photograph-sized image uses well under 1% of its capacity, a payload lighter than any the benchmark measured.
 - **High payloads.** As the message approaches the number of carrier bits, STC and value exchange have less freedom, and the JPEG coefficient-ratio shift reappears beyond about half of capacity.

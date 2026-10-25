@@ -1,0 +1,47 @@
+# HILL vs uniform PNG costs, 480 Wikimedia photographs (2026-10-26)
+# embed_png.py 480 ss (uniform, C), hill (HILL, C), rhill (HILL, Rust); score.py spam|srm; hcf.py
+cover features 81s
+srm ss       0.05  P_E=0.347 sd=0.010  (features 133s, classify 139s)
+srm ss       0.1   P_E=0.257 sd=0.009  (features 88s, classify 4s)
+srm ss       0.2   P_E=0.141 sd=0.016  (features 83s, classify 26s)
+srm ss       0.4   P_E=0.062 sd=0.005  (features 84s, classify 3s)
+spam rhill    0.05  P_E=0.500 sd=0.001  (features 3s, classify 2s)
+spam rhill    0.1   P_E=0.496 sd=0.005  (features 3s, classify 2s)
+spam rhill    0.2   P_E=0.482 sd=0.006  (features 3s, classify 2s)
+spam rhill    0.4   P_E=0.448 sd=0.010  (features 3s, classify 2s)
+srm hill     0.05  P_E=0.442 sd=0.004  (features 0s, classify 7s)
+srm hill     0.1   P_E=0.417 sd=0.006  (features 0s, classify 8s)
+srm hill     0.2   P_E=0.388 sd=0.009  (features 0s, classify 22s)
+srm hill     0.4   P_E=0.355 sd=0.014  (features 0s, classify 26s)
+srm rhill    0.05  P_E=0.448 sd=0.005  (features 85s, classify 12s)
+srm rhill    0.1   P_E=0.418 sd=0.010  (features 85s, classify 18s)
+srm rhill    0.2   P_E=0.387 sd=0.010  (features 85s, classify 4s)
+srm rhill    0.4   P_E=0.359 sd=0.010  (features 83s, classify 3s)
+spam ss       0.05  P_E=0.455 sd=0.005
+spam ss       0.1   P_E=0.393 sd=0.008
+spam ss       0.2   P_E=0.301 sd=0.012
+spam ss       0.4   P_E=0.191 sd=0.008
+spam hill     0.05  P_E=0.499 sd=0.001
+spam hill     0.1   P_E=0.496 sd=0.005
+spam hill     0.2   P_E=0.484 sd=0.005
+spam hill     0.4   P_E=0.453 sd=0.008
+# hcf.py (adjacency HCF-COM, stego minus cover)
+cover COM mean 107.635 sd 10.571
+ss    0.05  shift -0.150 (sd 0.141; 0.014 cover sds)
+hill  0.05  shift -0.013 (sd 0.045; 0.001 cover sds)
+ss    0.1   shift -0.307 (sd 0.240; 0.029 cover sds)
+hill  0.1   shift -0.022 (sd 0.077; 0.002 cover sds)
+ss    0.2   shift -0.618 (sd 0.504; 0.058 cover sds)
+hill  0.2   shift -0.060 (sd 0.151; 0.006 cover sds)
+ss    0.4   shift -1.146 (sd 1.011; 0.108 cover sds)
+hill  0.4   shift -0.132 (sd 0.299; 0.013 cover sds)
+# Changes paired into value swaps (embed_apply's EmbedStats, printed by a temporary
+# debug line not in the repository), every cover, C build
+uniform  0.05  changes/image    1848  paired  47.9%  (per image: 10th pct 45%, median 48%)
+uniform  0.1   changes/image    3837  paired  64.2%  (per image: 10th pct 62%, median 64%)
+uniform  0.2   changes/image    8150  paired  78.0%  (per image: 10th pct 76%, median 78%)
+uniform  0.4   changes/image   18216  paired  86.7%  (per image: 10th pct 86%, median 87%)
+hill     0.05  changes/image    2367  paired  93.1%  (per image: 10th pct 91%, median 93%)
+hill     0.1   changes/image    5092  paired  96.0%  (per image: 10th pct 94%, median 96%)
+hill     0.2   changes/image   11140  paired  97.6%  (per image: 10th pct 96%, median 98%)
+hill     0.4   changes/image   25644  paired  98.5%  (per image: 10th pct 97%, median 99%)

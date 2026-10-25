@@ -15,8 +15,8 @@ What ScatterSteg tries to protect, against whom, and what it explicitly doesn't.
 
 Someone who sees many images (a censor, a platform, a border check) and runs detectors over them, looking for any that carry hidden data.
 
-- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one about 65% of the time at 0.05 bits per pixel, the lightest payload measured, and 93% at 0.4. That is harder to detect than steghide or plain LSB embedding, not undetectable. Deep-learning detectors have not been run; assume they do better.
-- **How:** STC syndrome coding (few changes), ±1 changes paired as value swaps (the histogram kept), JPEG coefficients edited losslessly with costs that hold the coefficient statistics, the output in the cover's own format and metadata, and no header or marker in the image.
+- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one catches PNG output about 56% of the time at 0.05 bits per pixel, the lightest payload measured, and 65% at 0.4 (HILL costs; 65% and 93% with the uniform costs used before). That is harder to detect than steghide or plain LSB embedding, not undetectable. Deep-learning detectors have not been run; assume they do better.
+- **How:** STC syndrome coding (few changes) with HILL costs for PNG (changes where the image is busy), ±1 changes paired as value swaps (the histogram kept), JPEG coefficients edited losslessly with costs that hold the coefficient statistics, the output in the cover's own format and metadata, and no header or marker in the image.
 - **Evidence:** measured against chi-square, sample pair analysis, HCF-COM and adjacency HCF-COM (see the README), and against trained classifiers (see [Machine-learning detectors](#machine-learning-detectors) below). The planned evaluation with Aletheia's EfficientNet-B0 detectors on ALASKA2 has not been done.
 - **Known-position test:** the salt must sit at public positions, so a warden can look exactly there. In format v3 it was written straight in (about 64 changes in 128 known samples), and a targeted test of prediction error at those positions detected it slightly above chance: AUC 0.56 over 500 ALASKA2 images, 9% detected at 5% false alarms. Format v4 carries the salt as an STC syndrome over a public region of ~8192 samples (about 18 sparse changes); the same test, and the same test over the whole region, are at chance (AUC 0.49–0.50).
 - **Limits:** detectability rises with payload, falls with cover noise, and every detector here is public. A warden with a detector trained specifically on ScatterSteg output would do better than these: that hasn't been tested.
@@ -25,7 +25,7 @@ Someone who sees many images (a censor, a platform, a border check) and runs det
 
 - **Claim:** every guess costs one Argon2id run (256 MiB of memory, 3 passes, about 0.2 s on a laptop core), and nothing about the image lets a guess be rejected more cheaply.
 - **How:** the salt is in the image at public positions; both the pixel order and the encryption key come from one Argon2id output, so even the length header can't be read without it. Authentication (Poly1305) is the only test of a guess.
-- **Evidence:** design (`main.c`, file format in the README); format v1 lacked this and is only read for compatibility, with a warning.
+- **Evidence:** design (`codec.c`, file format in the README); format v1 lacked this and is only read for compatibility, with a warning.
 - **Limits:** Argon2id slows guessing, it can't make a weak passphrase strong. `scattersteg passphrase` generates ~124 bits, which is out of reach; a short human-chosen one may not be. A v1 image is about 100× cheaper to attack.
 
 ### A3 — The comparer: has the image and the original cover
@@ -83,25 +83,25 @@ The secrecy of the pixel order isn't needed for confidentiality (the payload is 
 
 What has been measured is in [`benchmark/`](benchmark/README.md): 476 Wikimedia photographs, an RBF SVM on SPAM pixel features (PNG) or DCT co-occurrence features (JPEG), trained at the payload it is tested on. Detection error P_E (0.5 is guessing; lower means easier to detect), ±0.02:
 
-| Payload (bits per pixel) | LSB matching | steghide | ScatterSteg PNG |
-|---|---|---|---|
-| 0.05 | 0.34 | 0.14 | 0.46 |
-| 0.10 | 0.25 | 0.12 | 0.41 |
-| 0.20 | 0.16 | 0.10 | 0.31 |
-| 0.40 | 0.10 | 0.07 | 0.20 |
+| Payload (bits per pixel) | LSB matching | steghide | ScatterSteg PNG, uniform costs | ScatterSteg PNG, HILL |
+|---|---|---|---|---|
+| 0.05 | 0.34 | 0.14 | 0.46 | 0.50 |
+| 0.10 | 0.25 | 0.12 | 0.41 | 0.50 |
+| 0.20 | 0.16 | 0.10 | 0.31 | 0.48 |
+| 0.40 | 0.10 | 0.07 | 0.20 | 0.45 |
 
 JPEG at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient: ScatterSteg 0.42, 0.40, 0.23; steghide 0.34, 0.24, 0.13.
 
 The same files scored by a stronger, SRM-style rich-model detector (about 7,000 features per channel, an ensemble of FLD classifiers; pixel images only):
 
-| Payload (bits per pixel) | LSB matching | steghide | ScatterSteg PNG |
-|---|---|---|---|
-| 0.05 | 0.17 | 0.04 | 0.35 |
-| 0.10 | 0.09 | 0.03 | 0.25 |
-| 0.20 | 0.05 | 0.02 | 0.14 |
-| 0.40 | 0.02 | 0.02 | 0.07 |
+| Payload (bits per pixel) | LSB matching | steghide | ScatterSteg PNG, uniform costs | ScatterSteg PNG, HILL |
+|---|---|---|---|---|
+| 0.05 | 0.17 | 0.04 | 0.35 | 0.44 |
+| 0.10 | 0.09 | 0.03 | 0.25 | 0.42 |
+| 0.20 | 0.05 | 0.02 | 0.14 | 0.39 |
+| 0.40 | 0.02 | 0.02 | 0.07 | 0.36 |
 
-What this means for A1: the SPAM figures above are optimistic, and the rich-model ones are the better estimate. Against that detector a warden catches about 65% of ScatterSteg PNGs at 0.05 bits per pixel and about 93% at 0.4, with a training set of a few hundred images. Only very small messages are hard to detect. ScatterSteg is harder to detect than steghide (caught 96–98% of the time at every payload) and naive LSB embedding at every payload tested, with both detectors. On 1000 grayscale BOSSbase images (one sample per pixel, so each payload is three times heavier per sample; steghide could not be run) the same detector gives ScatterSteg 0.32, 0.23, 0.15 and 0.08 at 0.05, 0.1, 0.2 and 0.4 bits per pixel, against 0.18, 0.13, 0.08 and 0.04 for LSB matching: caught 68% of the time at 0.05 and 92% at 0.4, so the Wikimedia result is not specific to that cover set.
+What this means for A1: the SPAM figures above are optimistic, and the rich-model ones are the better estimate. Against that detector a warden catches about 56% of ScatterSteg PNGs at 0.05 bits per pixel and about 65% at 0.4, with a training set of a few hundred images (HILL costs; with the uniform costs used before, 65% and 93%). That is better than chance at every payload, and a stronger detector would do better still. ScatterSteg is harder to detect than steghide (caught 96–98% of the time at every payload) and naive LSB embedding at every payload tested, with both detectors. On 1000 grayscale BOSSbase images (uniform costs, before HILL; not yet re-run; one sample per pixel, so each payload is three times heavier per sample; steghide could not be run) the same detector gives ScatterSteg 0.32, 0.23, 0.15 and 0.08 at 0.05, 0.1, 0.2 and 0.4 bits per pixel, against 0.18, 0.13, 0.08 and 0.04 for LSB matching: caught 68% of the time at 0.05 and 92% at 0.4, so the Wikimedia result is not specific to that cover set.
 
 For JPEG, a DCTR-style rich-model detector (5,120 features, ensemble classifier) gives ScatterSteg 0.47, 0.40 and 0.26 at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient, against steghide 0.21, 0.10 and 0.03: the same ranking, with steghide caught 97% of the time at 0.2 and ScatterSteg 74%. The detectors are reimplementations, not the published SRM or DCTR. A second cover set and deep-learning detectors are the next tests; results go here when they exist.
 

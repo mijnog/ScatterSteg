@@ -45,3 +45,11 @@ hill     0.05  changes/image    2367  paired  93.1%  (per image: 10th pct 91%, m
 hill     0.1   changes/image    5092  paired  96.0%  (per image: 10th pct 94%, median 96%)
 hill     0.2   changes/image   11140  paired  97.6%  (per image: 10th pct 96%, median 98%)
 hill     0.4   changes/image   25644  paired  98.5%  (per image: 10th pct 97%, median 99%)
+# controls.py (ss at 1.0 from a uniform-cost build of main, ca1a139)
+spam null (cover halves, shuffle 1)  P_E=0.518 sd=0.035
+spam null (cover halves, shuffle 2)  P_E=0.511 sd=0.024
+spam null (cover halves, shuffle 3)  P_E=0.485 sd=0.024
+spam ss    1.0  P_E=0.091 sd=0.009  (n=476)
+srm  ss    1.0  P_E=0.018 sd=0.003  (n=476)
+spam hill  1.0  P_E=0.363 sd=0.010  (n=476)
+srm  hill  1.0  P_E=0.235 sd=0.009  (n=476)

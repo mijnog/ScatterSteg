@@ -121,6 +121,8 @@ The classic detectors above test one statistic each. A harder test is a machine-
 | 0.10 | 0.24 | **0.40** |
 | 0.20 | 0.13 | **0.23** |
 
+This SVM is the weak detector. Its 0.45–0.50 for HILL means it cannot see HILL at these payloads, not that nothing can: it still works (two disjoint halves of the covers score 0.49–0.52, chance; uniform costs at 1.0 bits per pixel score 0.09, and HILL 0.36), and the stronger detector below catches HILL 56–65% of the time.
+
 A stronger, SRM-style rich-model detector (about 7,000 features per channel and an ensemble classifier) on the same files gives:
 
 | Pixel payload | LSB matching | steghide (BMP) | ScatterSteg (PNG), uniform costs | **ScatterSteg (PNG), HILL** |

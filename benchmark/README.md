@@ -89,7 +89,14 @@ above to within 0.013, so the harness is unchanged:
 | 0.40 | 0.062 | **0.355** | 0.191 | **0.453** |
 
 The Rust build's HILL gives 0.448, 0.418, 0.387 and 0.359 with the SRM-style
-detector. HILL makes 28–41% more changes than uniform costs but puts them
+detector.
+
+SPAM near 0.5 for HILL is the weak detector failing, not a result to quote.
+`controls.py` checks it still discriminates: two disjoint halves of the covers,
+one labelled stego, score 0.485-0.518 (chance), and at 1.0 bits per pixel
+(476 covers; the 4 grayscale ones can't hold it) uniform costs score 0.091
+with SPAM and 0.018 with SRM, HILL 0.363 and 0.235. So both detectors see
+HILL at a heavy payload, and the SRM-style figures are the ones to use. HILL makes 28–41% more changes than uniform costs but puts them
 where the image is busy, and more of them pair as value swaps (93–98.5%
 against 48–87%). Ker's adjacency HCF-COM, the detector an earlier HILL-like
 attempt lost on, moves 9 to 12 times less than with uniform costs (`hcf.py`).
@@ -100,6 +107,8 @@ pillow and ImageMagick, about 20 minutes on 12 cores):
 
     python3 embed_png.py 480 hill          # SCATTERSTEG=path/to/binary
     python3 score.py spam hill && python3 score.py srm hill
+    BPP=1.0 python3 embed_png.py 480 hill  # and ss, with a uniform-cost binary
+    python3 controls.py
 
 `srm.py` is not the published SRM: the construction is the same, but the
 kernels and quantization steps were chosen here, and it has roughly a fifth of

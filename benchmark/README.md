@@ -170,6 +170,12 @@ Reproduce:
   payload, which favours the attacker. A real one would not.
 - **Gray detectors on colour images.** SPAM is computed per channel and
   averaged. A detector that models the colour channels jointly could do better.
+- **Not every "RGB" cover is RGB.** `embed_all.py` makes PNG covers with
+  ImageMagick, which writes a photograph that has only gray pixels as a
+  grayscale PNG: 4 of the 480 fetched on 2026-10-25 were. They are scored
+  with the rest, so at a given bits per pixel their payload is three times
+  heavier per sample; at 1.0 bits per pixel they can't hold the message and
+  `controls.py` leaves them out (476 covers).
 - The JPEG test uses one quality factor and no recompression.
 - Fuzzy claims such as "undetectable" are not supported by this. What it
   supports is a relative statement: against these detectors, ScatterSteg is

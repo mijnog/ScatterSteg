@@ -209,7 +209,12 @@ fn all_gray(pixels: &[u8], channels: u32) -> bool {
 }
 
 pub fn load(path: &Path) -> Option<Image> {
-    let mut file = crate::fault::read_file(path, &SIGNATURE).ok()?;
+    from_bytes(crate::fault::read_file(path, &SIGNATURE).ok()?)
+}
+
+/// The same from a PNG file's bytes
+pub fn from_bytes(mut file: Vec<u8>) -> Option<Image> {
+    if !is_png_signature(&file) { return None; }
     let chunks = parse_chunks(&file)?;
     if !decoder_view(&mut file) { return None; }
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
@@ -395,6 +400,14 @@ fn write_png(img: &Image, zlib: &[u8], w: &mut impl Write) -> io::Result<()> {
         for c in m.chunks.iter().filter(|c| c.after_idat) { write_chunk(w, &c.name, &c.data)?; }
     }
     write_chunk(w, b"IEND", &[])
+}
+
+/// The image as a PNG file's bytes
+pub fn encode(img: &Image) -> io::Result<Vec<u8>> {
+    let zlib = compress(img)?;
+    let mut out = Vec::new();
+    write_png(img, &zlib, &mut out)?;
+    Ok(out)
 }
 
 pub fn save(img: &Image, path: &Path) -> io::Result<()> {

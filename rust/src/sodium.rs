@@ -33,6 +33,33 @@ pub fn memzero(buf: &mut [u8]) {
     unsafe { sys::sodium_memzero(buf.as_mut_ptr().cast(), buf.len()) }
 }
 
+/// Unkeyed BLAKE2b over data given in parts, 32 bytes of output
+pub struct Hasher(sys::crypto_generichash_state);
+
+impl Hasher {
+    pub fn new() -> Hasher {
+        // SAFETY: an all-zero state is valid storage for init to fill in
+        let mut st: sys::crypto_generichash_state = unsafe { std::mem::zeroed() };
+        let r = unsafe { sys::crypto_generichash_init(&mut st, std::ptr::null(), 0, 32) };
+        assert_eq!(r, 0, "crypto_generichash_init rejected its parameters");
+        Hasher(st)
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        unsafe { sys::crypto_generichash_update(&mut self.0, data.as_ptr(), data.len() as c_ulonglong) };
+    }
+
+    pub fn finish(mut self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        unsafe { sys::crypto_generichash_final(&mut self.0, out.as_mut_ptr(), out.len()) };
+        out
+    }
+}
+
+impl Default for Hasher {
+    fn default() -> Hasher { Hasher::new() }
+}
+
 /// Unkeyed BLAKE2b with `out.len()` bytes of output
 pub fn generichash(out: &mut [u8], input: &[u8], key: &[u8]) {
     let key_ptr = if key.is_empty() { std::ptr::null() } else { key.as_ptr() };

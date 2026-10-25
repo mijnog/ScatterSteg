@@ -107,7 +107,10 @@ static void read_end(png_structp png, png_infop info) {
 
 Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
-    if (!fp) return NULL;
+    return fp ? png_read(fp) : NULL;
+}
+
+Image *png_read(FILE *fp) {
     AllocBudget *budget = calloc(1, sizeof(AllocBudget));
     if (!budget) { fclose(fp); return NULL; }
 
@@ -280,10 +283,7 @@ static void copy_metadata(png_structp w, png_infop wi, const PngMeta *m) {
         }
 }
 
-/* Writes the image as a PNG stream. Called by atomic_write, which leaves
-   errno at 0 so a libpng error reports as such. */
-static int write_png(FILE *fp, const void *ctx) {
-    const Image *img = ctx;
+int png_write(const Image *img, FILE *fp) {
     AllocBudget budget = {0};
     png_structp png = png_create_write_struct_2(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL,
                                                 &budget, capped_malloc, capped_free);
@@ -316,6 +316,12 @@ static int write_png(FILE *fp, const void *ctx) {
     png_write_end(png, info);  /* with info: the chunks after the image data */
     png_destroy_write_struct(&png, &info);
     return 0;
+}
+
+/* Called by atomic_write, which leaves errno at 0 so a libpng error
+   reports as such */
+static int write_png(FILE *fp, const void *ctx) {
+    return png_write(ctx, fp);
 }
 
 int png_save(const Image *img, const char *path) {

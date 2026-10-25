@@ -20,6 +20,7 @@
 #include "prng.h"
 #include "embed.h"
 #include "stc.h"
+#include "atomic_write.h"
 
 #define PASSPHRASE_CHUNK 256  /* passphrase buffer grows by this much */
 /* The terminal's line editor holds 4095 bytes per line and silently drops
@@ -543,13 +544,92 @@ static int cover_load(const char *path, Cover *c) {
     return 0;
 }
 
-static int cover_save(const Cover *c, const char *path) {
-    return c->png ? png_save(c->png, path) : jpeg_save(c->jpeg, path);
-}
-
 static void cover_free(Cover *c) {
     image_free(c->png);
     jpeg_free(c->jpeg);
+}
+
+/* A digest of all a decoder reads: the carrier's size and every sample, in
+   order */
+static void carrier_digest(const Carrier *c, uint8_t out[crypto_generichash_BYTES]) {
+    crypto_generichash_state st;
+    crypto_generichash_init(&st, NULL, 0, crypto_generichash_BYTES);
+    uint32_t shape[2] = {carrier_positions(c), carrier_channels(c)};
+    crypto_generichash_update(&st, (const uint8_t *)shape, sizeof(shape));
+    if (c->img) {
+        for (uint32_t y = 0; y < c->img->height; y++)
+            crypto_generichash_update(&st, c->img->rows[y], (size_t)c->img->width * c->img->channels);
+    } else {
+        int16_t buf[4096];
+        for (uint32_t i = 0; i < c->n_coefs;) {
+            size_t n = 0;
+            while (n < 4096 && i < c->n_coefs) buf[n++] = *c->coefs[i++];
+            crypto_generichash_update(&st, (const uint8_t *)buf, n * sizeof(int16_t));
+        }
+    }
+    crypto_generichash_final(&st, out, crypto_generichash_BYTES);
+}
+
+typedef struct {
+    const char *buf;
+    size_t len;
+} Bytes;
+
+static int write_bytes(FILE *fp, const void *ctx) {
+    const Bytes *b = ctx;
+    return fwrite(b->buf, 1, b->len, fp) == b->len ? 0 : -1;
+}
+
+/* Outcome of cover_save, besides 0 */
+enum { SAVE_FAILED = -1, SAVE_UNREADABLE = -2, SAVE_CHANGED = -3 };
+
+/* Encodes the cover in memory and reads that back: only if a decoder sees
+   the same carrier does it go to path (atomically), so an encoder that
+   changes a sample on the way out can't lose the message unnoticed. Frees
+   the cover first, so only one image is in memory at a time. SAVE_FAILED
+   leaves errno set (0 if the encoder failed); SAVE_UNREADABLE is also what
+   running out of memory reading back gives. */
+static int cover_save(Cover *c, const char *path) {
+    uint8_t want[crypto_generichash_BYTES], got[crypto_generichash_BYTES];
+    carrier_digest(&c->carrier, want);
+    int is_jpeg = c->jpeg != NULL;
+
+    char *buf = NULL;
+    size_t len = 0;
+    errno = 0;
+    FILE *out = open_memstream(&buf, &len);
+    int r = !out ? -1 : is_jpeg ? jpeg_write(c->jpeg, out) : png_write(c->png, out);
+    if (out && fclose(out) != 0) r = -1;  /* also sets buf and len */
+    cover_free(c);
+    if (r != 0) {
+        int err = errno;
+        free(buf);
+        errno = err;
+        return SAVE_FAILED;
+    }
+
+    FILE *in = fmemopen(buf, len, "rb");
+    Cover back = {0};
+    if (in && is_jpeg) back.jpeg = jpeg_read(in);
+    else if (in) back.png = png_read(in);
+    if (!back.png && !back.jpeg) {
+        free(buf);
+        return SAVE_UNREADABLE;
+    }
+    back.carrier = is_jpeg ? jpeg_carrier(back.jpeg) : carrier_of_image(back.png);
+    carrier_digest(&back.carrier, got);
+    cover_free(&back);
+    if (sodium_memcmp(want, got, sizeof(want)) != 0) {
+        free(buf);
+        return SAVE_CHANGED;
+    }
+
+    Bytes bytes = {buf, len};
+    r = atomic_write(path, write_bytes, &bytes);
+    int err = errno;
+    free(buf);
+    errno = err;
+    return r == 0 ? 0 : SAVE_FAILED;
 }
 
 /* The output has the cover's format; refuse a name that says otherwise */
@@ -903,13 +983,21 @@ int main(int argc, char *argv[]) {
         }
         embed_plan_free(plan);
 
-        if (cover_save(&cover, output) != 0) {
+        int is_png = cover.png != NULL;
+        int saved = cover_save(&cover, output);  /* frees the cover */
+        if (saved == SAVE_FAILED) {
             fprintf(stderr, "Error: could not write '%s': %s\n", output,
-                    errno ? strerror(errno) : cover.png ? "PNG encoding failed" : "JPEG encoding failed");
-            cover_free(&cover);
+                    errno ? strerror(errno) : is_png ? "PNG encoding failed" : "JPEG encoding failed");
             return 1;
         }
-        cover_free(&cover);
+        if (saved != 0) {
+            fprintf(stderr, saved == SAVE_UNREADABLE
+                        ? "Error: could not read the output back to check it (out of memory?); "
+                          "nothing written\n"
+                        : "Error: the output didn't read back as written, so the message would be "
+                          "lost; nothing written. Please report this, with the cover if you can\n");
+            return 1;
+        }
 
     } else if (strcmp(argv[1], "decode") == 0) {
         if (!input) {

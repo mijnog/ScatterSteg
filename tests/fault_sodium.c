@@ -19,3 +19,8 @@ void *fault_sodium_malloc(size_t size) {
     if (fault_should_fail("sodium_malloc")) { errno = ENOMEM; return NULL; }
     return sodium_malloc(size);
 }
+
+int fault_sodium_memcmp(const void *a, const void *b, size_t len) {
+    if (fault_should_fail("sodium_memcmp")) return -1;
+    return sodium_memcmp(a, b, len);
+}

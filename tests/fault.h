@@ -31,6 +31,8 @@ int   fault_crypto_pwhash(unsigned char *out, unsigned long long outlen,
                           const unsigned char *salt, unsigned long long opslimit,
                           size_t memlimit, int alg);
 void *fault_sodium_malloc(size_t size);
+/* Fails as a mismatch: stands in for an encoder that changes a sample */
+int   fault_sodium_memcmp(const void *a, const void *b, size_t len);
 
 /* For wrappers: count a call, true if it is the one to fail */
 int fault_should_fail(const char *name);
@@ -58,6 +60,7 @@ unsigned    fault_bad_closes(void);
 #define fchown  fault_fchown
 #define crypto_pwhash fault_crypto_pwhash
 #define sodium_malloc fault_sodium_malloc
+#define sodium_memcmp fault_sodium_memcmp
 #endif
 
 #endif /* FAULT_H */

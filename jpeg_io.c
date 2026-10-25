@@ -152,8 +152,7 @@ static int collect_carriers(JpegImage *j) {
     return 0;
 }
 
-/* Loads from fp, which it closes */
-static JpegImage *load_stream(FILE *fp) {
+JpegImage *jpeg_read(FILE *fp) {
     JpegImage *volatile j = calloc(1, sizeof(JpegImage));  /* survives the longjmp */
     if (!j) {
         fclose(fp);
@@ -201,7 +200,7 @@ static JpegImage *load_stream(FILE *fp) {
 
 JpegImage *jpeg_load(const char *path) {
     FILE *fp = fopen(path, "rb");
-    return fp ? load_stream(fp) : NULL;
+    return fp ? jpeg_read(fp) : NULL;
 }
 
 void jpeg_free(JpegImage *j) {
@@ -307,6 +306,10 @@ static int write_coefficients(JpegImage *j, FILE *fp) {
     return 0;
 }
 
+int jpeg_write(JpegImage *j, FILE *fp) {
+    return write_coefficients(j, fp);
+}
+
 static int write_jpeg(FILE *fp, const void *ctx) {
     return write_coefficients((JpegImage *)ctx, fp);  /* libjpeg isn't const-correct */
 }
@@ -347,7 +350,7 @@ int jpeg_check_writable(JpegImage *j) {
         return -1;
     }
     FILE *in = fmemopen(buf, len, "rb");
-    JpegImage *back = in ? load_stream(in) : NULL;
+    JpegImage *back = in ? jpeg_read(in) : NULL;
     free(buf);
     if (!back) return -1;
     int same = same_coefficients(j, back);

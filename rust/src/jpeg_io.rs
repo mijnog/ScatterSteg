@@ -186,7 +186,8 @@ impl JpegImage {
         Self::from_bytes(crate::fault::read_file(path, &[0xFF, 0xD8, 0xFF]).ok()?)
     }
 
-    fn from_bytes(data: Vec<u8>) -> Option<JpegImage> {
+    /// The same from a JPEG file's bytes
+    pub fn from_bytes(data: Vec<u8>) -> Option<JpegImage> {
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut progress: Box<Progress> = zeroed_box();
         progress.mgr.progress_monitor = Some(limit_scans);
@@ -343,7 +344,7 @@ impl JpegImage {
     }
 
     /// The coefficients and markers as a JPEG file's bytes
-    fn encode(&mut self) -> Option<Vec<u8>> {
+    pub fn encode(&mut self) -> Option<Vec<u8>> {
         self.sync_to_libjpeg();
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut dst: Box<jpeg_compress_struct> = zeroed_box();

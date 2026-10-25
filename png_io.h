@@ -4,6 +4,7 @@
 #define PNG_IO_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 /* The cover's ancillary chunks, kept by png_load for png_save to write back */
 typedef struct PngMeta PngMeta;
@@ -30,5 +31,8 @@ Image *png_load(const char *path);
 void   image_free(Image *img);
 
 int  png_save(const Image *img, const char *path);  /* returns 0 on success, -1 on failure with errno set (0 if libpng failed internally) */
+/* The same on a stream, not atomically. png_read closes fp. */
+Image *png_read(FILE *fp);
+int    png_write(const Image *img, FILE *fp);
 
 #endif /* PNG_IO_H */

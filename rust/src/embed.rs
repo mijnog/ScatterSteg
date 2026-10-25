@@ -45,6 +45,24 @@ impl<'a> Carrier<'a> {
     /// Samples per position
     pub fn channels(&self) -> u32 { self.channels }
 
+    /// A digest of all a decoder reads: the carrier's size and every
+    /// sample, in order
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = sodium::Hasher::new();
+        h.update(&self.positions.to_ne_bytes());
+        h.update(&self.channels.to_ne_bytes());
+        match &self.samples {
+            Samples::U8(s) => h.update(&s[..self.positions as usize * self.channels as usize]),
+            Samples::Coef(s) => {
+                for part in self.map.chunks(4096) {
+                    let bytes: Vec<u8> = part.iter().flat_map(|&i| s[i as usize].to_ne_bytes()).collect();
+                    h.update(&bytes);
+                }
+            }
+        }
+        h.finish()
+    }
+
     /// The sample holding bit `pos` of the data written in `indices` order
     fn flat(&self, indices: &[u32], pos: u32) -> usize {
         match self.samples {

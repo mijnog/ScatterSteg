@@ -1756,10 +1756,19 @@ class FaultSweepTest(CliBase):
                 self.assertEqual(code, 0, log)
                 return n - 1
 
+    def check_verified(self, log, seen):
+        # The faulted comparison stands in for an encoder that changed a
+        # sample on the way out: refused, and nothing written
+        if "FAULT_FIRED sodium_memcmp" in log:
+            self.assertIn("didn't read back as written", log)
+            seen.append(log)
+
     def encode_sweep(self, message):
         out = self.path("steg.png")
+        verified = []
 
         def check(code, log):
+            self.check_verified(log, verified)
             if code == 0:
                 self.assertDecodes(out, message.decode())
             else:
@@ -1771,8 +1780,10 @@ class FaultSweepTest(CliBase):
 
         with open(out, "wb") as f:
             f.write(b"precious")
-        return self.sweep(["encode", "-i", self.cover, "-o", out], message,
-                          ["correct horse"] * 2, check)
+        faults = self.sweep(["encode", "-i", self.cover, "-o", out], message,
+                            ["correct horse"] * 2, check)
+        self.assertEqual(len(verified), 1)
+        return faults
 
     def test_encode_sweep(self):
         self.assertGreater(self.encode_sweep(b"fault sweep"), 10)
@@ -1835,8 +1846,10 @@ class FaultSweepTest(CliBase):
         out = self.path("steg.jpg")
         with open(out, "wb") as f:
             f.write(b"precious")
+        verified = []
 
         def check_encode(code, log):
+            self.check_verified(log, verified)
             if code == 0:
                 self.assertDecodes(out, "jpeg sweep")
             else:
@@ -1849,6 +1862,7 @@ class FaultSweepTest(CliBase):
         faults = self.sweep(["encode", "-i", src, "-o", out], b"jpeg sweep",
                             ["correct horse"] * 2, check_encode)
         self.assertGreater(faults, 10)
+        self.assertEqual(len(verified), 1)
 
         self.assertEqual(self.encode(b"jpeg sweep", out, src=src)[0], 0)
 

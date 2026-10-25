@@ -23,7 +23,8 @@ On purpose:
 - **Files are read whole.** The input is buffered, after its first bytes match
   a PNG or JPEG signature and up to 1 GiB + 64 MiB, where C streamed it. A
   JPEG's coefficients are held twice (libjpeg's and a copy), so its working
-  memory is up to about double the 1 GiB cap.
+  memory is up to about double the 1 GiB cap. Checking the output, encode
+  holds its bytes twice while it reads them back (C holds them once).
 - **SIGPIPE is ignored** (the Rust runtime does it): a closed stdout is an
   error message and exit 1, not death by signal.
 - **A bad zlib checksum (Adler-32) in the image data is not an error.** The

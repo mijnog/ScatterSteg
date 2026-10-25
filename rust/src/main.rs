@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maxime de Montbron
 
 use scattersteg::codec::{self, EmbedError};
-use scattersteg::cover::Cover;
+use scattersteg::cover::{Cover, SaveError};
 use scattersteg::sodium::{self, Secret};
 use scattersteg::jpeg_io;
 use std::ffi::{CStr, OsString};
@@ -402,13 +402,26 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
     }
     drop(message);
 
-    if let Err(e) = cover.save(output) {
-        let why = match e.raw_os_error() {
-            Some(0) | None => if cover.is_jpeg() { "JPEG encoding failed" } else { "PNG encoding failed" }.to_string(),
-            Some(_) => errno_message(&e),
-        };
-        scattersteg::errln!("Error: could not write '{}': {why}", output.display());
-        return ExitCode::FAILURE;
+    let is_jpeg = cover.is_jpeg();
+    match cover.save(output) {
+        Ok(()) => {}
+        Err(SaveError::Io(e)) => {
+            let why = match e.raw_os_error() {
+                Some(0) | None => if is_jpeg { "JPEG encoding failed" } else { "PNG encoding failed" }.to_string(),
+                Some(_) => errno_message(&e),
+            };
+            scattersteg::errln!("Error: could not write '{}': {why}", output.display());
+            return ExitCode::FAILURE;
+        }
+        Err(SaveError::Unreadable) => {
+            scattersteg::errln!("Error: could not read the output back to check it (out of memory?); nothing written");
+            return ExitCode::FAILURE;
+        }
+        Err(SaveError::Changed) => {
+            scattersteg::errln!("Error: the output didn't read back as written, so the message would be lost; \
+                       nothing written. Please report this, with the cover if you can");
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }

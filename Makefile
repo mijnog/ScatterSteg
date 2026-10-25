@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c17 -g
 LIBS    = -lsodium -lpng -ljpeg -lm
 
-SRCS    = main.c prng.c embed.c stc.c png_io.c jpeg_io.c atomic_write.c
+SRCS    = main.c codec.c prng.c embed.c stc.c png_io.c jpeg_io.c atomic_write.c
 OBJS    = $(SRCS:.c=.o)
 TARGET  = scattersteg
 
@@ -28,7 +28,7 @@ TEST_DIR    = tests/build
 TEST_CFLAGS = $(CFLAGS) -I. -Itests -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_ENV    = ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_stc $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_jpeg_io $(TEST_DIR)/test_faults
-HDRS        = png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h
+HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h
 
 # Fault-injection build: the sources force-include tests/fault.h, so a test
 # can make the Nth malloc/fopen/fclose/rename/... fail (see tests/fault.c)
@@ -93,8 +93,8 @@ FUZZ_TIME  ?= 60
 # A single allocation over the 1 GiB pixel cap still counts as a failure.
 FUZZ_ENV    = ASAN_OPTIONS=quarantine_size_mb=16:allocator_release_to_os_interval_ms=100
 FUZZ_ARGS   = -max_total_time=$(FUZZ_TIME) -rss_limit_mb=4096 -malloc_limit_mb=1100 -close_fd_mask=2
-FUZZERS     = $(FUZZ_DIR)/fuzz_png_load $(FUZZ_DIR)/fuzz_jpeg_load $(FUZZ_DIR)/fuzz_embed $(FUZZ_DIR)/fuzz_stc $(FUZZ_DIR)/fuzz_png_roundtrip
-FUZZ_TARGETS = png_load jpeg_load embed stc png_roundtrip
+FUZZERS     = $(FUZZ_DIR)/fuzz_png_load $(FUZZ_DIR)/fuzz_jpeg_load $(FUZZ_DIR)/fuzz_embed $(FUZZ_DIR)/fuzz_stc $(FUZZ_DIR)/fuzz_png_roundtrip $(FUZZ_DIR)/fuzz_codec
+FUZZ_TARGETS = png_load jpeg_load embed stc png_roundtrip codec
 
 fuzz: $(FUZZERS) $(TEST_DIR)/jpeg_fixture
 	@test -d $(FUZZ_DIR)/corpus/png_load || python3 tests/fuzz/make_seeds.py $(FUZZ_DIR)/corpus/png_load
@@ -127,6 +127,10 @@ $(FUZZ_DIR)/fuzz_stc: tests/fuzz/fuzz_stc.c stc.c stc.h | $(FUZZ_DIR)
 
 $(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_embed.c embed.c prng.c -o $@ -lsodium
+
+# Built with Argon2id swapped for BLAKE2b (see codec.c), never for real use
+$(FUZZ_DIR)/fuzz_codec: tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c $(HDRS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c -o $@ -lsodium -lm
 
 $(FUZZ_DIR)/fuzz_png_roundtrip: tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c -o $@ -lpng

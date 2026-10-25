@@ -39,6 +39,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "diff_codec"
+path = "fuzz_targets/diff_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "diff_jpeg"
 path = "fuzz_targets/diff_jpeg.rs"
 test = false

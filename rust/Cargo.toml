@@ -15,6 +15,10 @@ zeroize = "1.9.1"
 bindgen = "0.73.2"
 pkg-config = "0.3.34"
 
+[lints.rust]
+# Set by cargo fuzz: swaps Argon2id for BLAKE2b (see sodium::pwhash)
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [features]
 # Lets tests make the Nth faultable call fail (see src/fault.rs)
 fault-injection = []

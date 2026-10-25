@@ -85,7 +85,7 @@ jobs:
       - name: Seed the fuzz corpora
         working-directory: rust
         run: |
-          mkdir -p fuzz/corpus/png_load fuzz/corpus/jpeg_load fuzz/corpus/diff_png fuzz/corpus/diff_jpeg
+          mkdir -p fuzz/corpus/png_load fuzz/corpus/jpeg_load fuzz/corpus/diff_png fuzz/corpus/diff_jpeg fuzz/corpus/diff_codec
           python3 ../tests/fuzz/make_seeds.py fuzz/corpus/png_load
           i=0
           for opts in "" progressive optimize arith restart markers nojfif 444; do
@@ -103,6 +103,7 @@ jobs:
             case $t in *png*) dict=fuzz/dicts/png.dict;; *) dict=fuzz/dicts/jpeg.dict;; esac
             cargo +nightly fuzz run $t -- -dict=$dict -max_total_time=60 -rss_limit_mb=7000 -max_len=20000 -timeout=60
           done
+          cargo +nightly fuzz run diff_codec -- -max_total_time=60 -rss_limit_mb=7000 -timeout=60
 
       - name: Keep fuzzer crashes
         if: failure()

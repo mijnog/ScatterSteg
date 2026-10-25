@@ -67,6 +67,7 @@ Fuzzing (needs `cargo install cargo-fuzz` and a nightly toolchain):
     cargo +nightly fuzz run jpeg_load -- -max_len=20000 -rss_limit_mb=5000
     cargo +nightly fuzz run diff_png  -- -dict=dicts/png.dict  -max_len=20000 -rss_limit_mb=5000
     cargo +nightly fuzz run diff_jpeg -- -dict=dicts/jpeg.dict -max_len=20000 -rss_limit_mb=7000
+    cargo +nightly fuzz run diff_codec -- -rss_limit_mb=4096
 
 The targets mirror `tests/fuzz/fuzz_png_load.c` and `fuzz_jpeg_load.c`: whatever
 loads must save and reload identically. Inputs that once broke them are kept in
@@ -76,4 +77,8 @@ minute of each fuzzer on every push.
 `diff_png` and `diff_jpeg` link the C loaders in as well and check what C loads,
 Rust loads with the same pixels or carriers, and that what one writes the other
 reads back identically. Differences that are deliberate are listed above; the
-PNG target skips them.
+PNG target skips them. `diff_codec` links C's file format (`codec.c`) and
+checks, on carriers the fuzzer makes, that both decode alike and that what one
+encodes the other decodes. Fuzzing builds (`--cfg fuzzing` here,
+`FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` in C) swap Argon2id for BLAKE2b so
+the fuzzer gets past key derivation: they must never be used for real secrets.

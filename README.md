@@ -165,14 +165,14 @@ Additional safeguards:
 
 ```bash
 make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~2 min)
-make fuzz       # libFuzzer: PNG loader, JPEG loader, embedder, STC, PNG round trip (needs clang)
+make fuzz       # libFuzzer: PNG loader, JPEG loader, embedder, STC, PNG round trip, file format (needs clang)
 make coverage   # line coverage over the whole suite (~98%); annotated sources in tests/build/cov
 ```
 
 - **Unit tests** cover every module, including known-answer tests that fix the file format.
 - **CLI tests** drive the binary through a pseudo-terminal and cross-check it in both directions against an independent Python implementation of the format.
 - **Fault injection** causes each `malloc`, `fopen`, `fclose`, `rename`, `crypto_pwhash` and similar call to fail in turn, and verifies that every error path fails cleanly, without leaks, double closes or damaged output.
-- **The Rust port** (`rust/`) runs the same CLI tests, and `tests/differential.py` gives both binaries the same ~165 odd covers (malformed chunks, truncated and mutated files, fuzzer regressions) and checks they agree on which load. See [rust/README.md](rust/README.md).
+- **The Rust port** (`rust/`) runs the same CLI tests, and `tests/differential.py` gives both binaries the same ~190 odd covers (malformed chunks, truncated and mutated files, fuzzer regressions) and checks they agree on which load and what they write; a fuzzer checks that what one encodes, the other decodes. See [rust/README.md](rust/README.md).
 - **Continuous integration** builds, tests and fuzzes both implementations on every push. `make test` requires only the Python 3 standard library.
 
 ## Supported covers

@@ -96,9 +96,18 @@ pub enum PwhashStrength {
 }
 
 /// Argon2id13. Err on out of memory.
+///
+/// A fuzzing build (`--cfg fuzzing`, which cargo fuzz sets) swaps in keyed
+/// BLAKE2b, as the C fuzz builds do, so the fuzzer gets past key derivation
+/// in microseconds; such a build must never handle a real secret.
 pub fn pwhash(out: &mut [u8], passphrase: &[u8], salt: &[u8; SALT_BYTES], strength: PwhashStrength)
     -> Result<(), ()> {
     if crate::fault::should_fail("crypto_pwhash") { return Err(()); }
+    if cfg!(fuzzing) {
+        let _ = strength;
+        generichash(out, passphrase, salt);
+        return Ok(());
+    }
     let (ops, mem) = match strength {
         PwhashStrength::Interactive => (sys::crypto_pwhash_OPSLIMIT_INTERACTIVE, sys::crypto_pwhash_MEMLIMIT_INTERACTIVE),
         PwhashStrength::Moderate => (sys::crypto_pwhash_OPSLIMIT_MODERATE, sys::crypto_pwhash_MEMLIMIT_MODERATE),

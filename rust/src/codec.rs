@@ -323,10 +323,17 @@ pub struct Prepared {
 
 /// Err(None) if the image is too small to hide a message; Err(Some(msg)) on
 /// other failures
+/// Whether the carrier can't hold the salt and length, whatever the message:
+/// cheap, so encode checks it before slower work on the cover
+pub fn too_small(c: &Carrier) -> bool {
+    let (count, ch) = (c.positions(), c.channels());
+    count < salt_region_pixels(count, ch) + header_pixels(ch)
+}
+
 pub fn prepare_encode(c: &Carrier, passphrase: &[u8]) -> Result<Prepared, Option<String>> {
     let (count, ch) = (c.positions(), c.channels());
     let k = salt_region_pixels(count, ch);
-    if count < k + header_pixels(ch) { return Err(None); }
+    if too_small(c) { return Err(None); }
 
     let mut salt = [0u8; SALT_BYTES];
     sodium::random_bytes(&mut salt);

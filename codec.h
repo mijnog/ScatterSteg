@@ -29,6 +29,9 @@ int codec_decode(const Carrier *c, const char *passphrase,
    makes the changes. It frees p, and returns 0, -1 if the message doesn't
    fit, or -2 if out of memory (the carrier then unchanged). */
 typedef struct CodecPrepared CodecPrepared;
+/* Whether the carrier can't hold the salt and length, whatever the message:
+   cheap, so encode checks it before slower work on the cover */
+int codec_too_small(const Carrier *c);
 CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase);
 size_t codec_max_message(const CodecPrepared *p);
 int  codec_embed(CodecPrepared *p, const Carrier *c, const uint8_t *message, uint32_t msg_len);

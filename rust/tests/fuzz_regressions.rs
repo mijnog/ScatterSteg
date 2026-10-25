@@ -70,6 +70,18 @@ fn jpeg_regressions() {
 /// 500 empty scans of an 8192x8192 frame, 5 KB: each scan is a pass over the
 /// frame, so it took seconds to read (at 23000x23000, 16 s). Past the cap on
 /// blocks visited, it is refused.
+/// Each decodes, but libjpeg writes it back wrong or not at all (found by
+/// fuzzing): the rewrite check refuses it. Encode now refuses these as too
+/// small first, so the CLI tests can't see this.
+#[test]
+fn unrewritable_refused() {
+    for name in ["oversampled-progressive.jpg", "redefined-quant-table.jpg", "truncated-progressive-al1.jpg"] {
+        let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fuzz/regressions/jpeg_load").join(name);
+        let mut j = JpegImage::load(&f).unwrap_or_else(|| panic!("{name} must load"));
+        assert!(!j.check_writable(), "{name}");
+    }
+}
+
 #[test]
 fn many_scans_refused() {
     let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fuzz/regressions/jpeg_load/many-scans-large-frame.jpg");

@@ -1703,13 +1703,15 @@ class JpegTest(CliBase):
 
     def test_unrewritable_jpeg_refused(self):
         # A JPEG libjpeg decodes but won't re-encode (found by fuzzing):
-        # refused up front, before any key derivation
+        # refused up front, before any key derivation. It has almost no
+        # carriers, so it's refused as too small before the rewrite check
+        # runs (which the unit tests cover).
         src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "fuzz", "regressions", "jpeg_load", "oversampled-progressive.jpg")
         out = self.path("steg.jpg")
         code, log = self.encode(b"x", out, src=src)
         self.assertEqual(code, 1, log)
-        self.assertIn("can't be rewritten losslessly", log)
+        self.assertIn("image too small to hide a message", log)
         self.assertNotIn("Deriving keys", log)
         self.assertFalse(os.path.exists(out))
 

@@ -330,6 +330,23 @@ static void test_many_scans_refused(void) {
     CHECK(jpeg_load("tests/fuzz/regressions/jpeg_load/many-scans-large-frame.jpg") == NULL);
 }
 
+static void test_unrewritable_refused(void) {
+    /* Each decodes, but libjpeg writes it back wrong or not at all (found
+       by fuzzing): the rewrite check refuses it. Encode now refuses these
+       as too small first, so the CLI tests can't see this. */
+    static const char *const files[] = {
+        "oversampled-progressive.jpg", "redefined-quant-table.jpg", "truncated-progressive-al1.jpg",
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char in[200];
+        snprintf(in, sizeof(in), "tests/fuzz/regressions/jpeg_load/%s", files[i]);
+        JpegImage *j = jpeg_load(in);
+        CHECK(j != NULL);
+        if (j) CHECK(jpeg_check_writable(j) != 0);
+        jpeg_free(j);
+    }
+}
+
 static void test_fuzz_regressions(void) {
     /* Inputs the fuzzer once broke jpeg_load or jpeg_save with. Each must
        fail to load, be refused by jpeg_check_writable, or save and reload
@@ -382,6 +399,7 @@ int main(void) {
     RUN(test_scan_limit);
     RUN(test_extreme_dc_accepted);
     RUN(test_many_scans_refused);
+    RUN(test_unrewritable_refused);
     RUN(test_fuzz_regressions);
 
     char cmd[300];

@@ -353,6 +353,12 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
                           input.display());
                 return ExitCode::FAILURE;
             }
+            // Before check_writable, which decodes the cover again: a few
+            // bytes can declare a huge frame with next to no carriers
+            if codec::too_small(&j.carrier()) {
+                scattersteg::errln!("Error: image too small to hide a message");
+                return ExitCode::FAILURE;
+            }
             if !j.check_writable() {
                 scattersteg::errln!("Error: '{}' is a JPEG that can't be rewritten losslessly; use another cover",
                           input.display());

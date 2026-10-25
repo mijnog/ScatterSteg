@@ -422,10 +422,15 @@ struct CodecPrepared {
     size_t max_msg;
 };
 
+int codec_too_small(const Carrier *c) {
+    uint32_t count = carrier_positions(c), ch = carrier_channels(c);
+    return count < salt_region_pixels(count, ch) + header_pixels(ch);
+}
+
 CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase) {
     uint32_t count = carrier_positions(c), ch = carrier_channels(c);
     uint32_t k = salt_region_pixels(count, ch);
-    if (count < k + header_pixels(ch)) {
+    if (codec_too_small(c)) {
         fprintf(stderr, "Error: image too small to hide a message\n");
         return NULL;
     }

@@ -494,6 +494,15 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        /* Before jpeg_check_writable, which decodes the cover again: a few
+           bytes can declare a huge frame with next to no carriers */
+        if (codec_too_small(&cover.carrier)) {
+            free_passphrase(passphrase);
+            cover_free(&cover);
+            fprintf(stderr, "Error: image too small to hide a message\n");
+            return 1;
+        }
+
         if (cover.jpeg && jpeg_check_writable(cover.jpeg) != 0) {
             free_passphrase(passphrase);
             fprintf(stderr, "Error: '%s' is a JPEG that can't be rewritten losslessly; "

@@ -142,7 +142,7 @@ Same ranking and the same trend, with ScatterSteg caught 68% of the time at 0.05
 
 For JPEG (payload in bits per non-zero AC coefficient), a DCTR-style rich-model detector (5,120 features, ensemble classifier) gives ScatterSteg 0.47, 0.40 and 0.26 at 0.05, 0.1 and 0.2, against steghide 0.21, 0.10 and 0.03: the same ranking, with steghide caught 97% of the time at 0.2 and ScatterSteg 74%. The [benchmark README](benchmark/README.md) has the method and the full list of limitations.
 
-Techniques that did not improve these results were not adopted; for example, content-adaptive PNG costs performed worse than uniform costs against these detectors. See [Limitations](#limitations) for where the method stops working.
+Techniques that did not improve these results were not adopted; for example, content-adaptive PNG costs performed worse than uniform costs against the classic detectors in the first table (they were not tested against the classifiers). See [Limitations](#limitations) for where the method stops working.
 
 ## Robustness
 

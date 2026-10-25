@@ -42,7 +42,7 @@ impl Samples {
 
     fn carrier(&mut self) -> Carrier<'_> {
         match self {
-            Samples::Pixels { pixels, w, h, channels } => Carrier::png(pixels, *w * *h, *channels),
+            Samples::Pixels { pixels, w, h, channels } => Carrier::png(pixels, *w, *h, *channels),
             Samples::Coefs { values, map, costs } => Carrier::jpeg(values, map, costs),
         }
     }

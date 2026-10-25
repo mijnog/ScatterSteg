@@ -262,11 +262,11 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
         write_bit(c, indices, (uint32_t)(start + i), bits[i], plan);
 }
 
-/* PNG: uniform. Content-adaptive costs (cheap in texture, dear in flat
-   areas, like HILL) were tried: on the detectors available here (HCF-COM,
-   and Ker's adjacency HCF-COM, which looks at neighbouring pixels) they did
-   worse than uniform, since they buy cheaper locations with more changes.
-   They aim at machine-learning detectors, which weren't available to test.
+/* PNG: HILL (see embed_hill_costs), or uniform if the carrier has no cost
+   map. HILL makes about 30-40% more changes than uniform but puts them
+   where the image is busy; against the rich-model detector in benchmark/
+   that cut detection from 65-94% to 56-65% (0.05-0.4 bits per pixel), and
+   more of its changes pair up as value swaps (93-98% against 48-87%).
 
    JPEG: a change of 1 to a coefficient changes its block's pixels in
    proportion to the quantization step, so that is the cost (precomputed
@@ -274,6 +274,64 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
    2 can only go to 3, which shifts the 2:3 ratio JPEG detectors watch). */
 void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
                  size_t n, float *costs) {
-    for (size_t i = 0; i < n; i++)
-        costs[i] = c->img ? 1.0f : c->coef_costs[indices[start + i]];
+    uint32_t ch = carrier_channels(c);
+    for (size_t i = 0, pos = start; i < n; i++, pos++) {
+        if (!c->img) costs[i] = c->coef_costs[indices[pos]];
+        else if (!c->coef_costs) costs[i] = 1.0f;
+        else costs[i] = c->coef_costs[(size_t)indices[pos / ch] * ch + pos % ch];
+    }
+}
+
+/* Mean over 2r+1 samples along one line (n samples, `step` apart),
+   mirrored at the ends as MATLAB's 'symmetric' padding */
+static void box_line(const float *in, float *out, size_t n, size_t step, int r) {
+    for (size_t i = 0; i < n; i++) {
+        double sum = 0;
+        for (int k = -r; k <= r; k++) {
+            long j = (long)i + k;
+            while (j < 0 || j >= (long)n) j = j < 0 ? -j - 1 : 2 * (long)n - j - 1;
+            sum += in[(size_t)j * step];
+        }
+        out[i * step] = (float)(sum / (2 * r + 1));
+    }
+}
+
+/* In place: the (2r+1) x (2r+1) mean of a w x h plane, using tmp */
+static void box(float *a, float *tmp, uint32_t w, uint32_t h, int r) {
+    for (uint32_t y = 0; y < h; y++) box_line(a + (size_t)y * w, tmp + (size_t)y * w, w, 1, r);
+    for (uint32_t x = 0; x < w; x++) box_line(tmp + x, a + x, h, w, r);
+}
+
+float *embed_hill_costs(const Image *img) {
+    uint32_t w = img->width, h = img->height, ch = img->channels;
+    size_t plane = (size_t)w * h;
+    float *costs = malloc(plane * ch * sizeof(float));
+    float *a = malloc(plane * sizeof(float)), *tmp = malloc(plane * sizeof(float));
+    if (!costs || !a || !tmp) {
+        free(costs); free(a); free(tmp);
+        return NULL;
+    }
+    static const int kb[3][3] = {{-1, 2, -1}, {2, -4, 2}, {-1, 2, -1}};
+    for (uint32_t c = 0; c < ch; c++) {
+        /* |KB high-pass residual|, mirrored at the edges */
+        for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++) {
+                int r = 0;
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        long yy = (long)y + dy, xx = (long)x + dx;
+                        if (yy < 0) yy = 0; else if (yy >= (long)h) yy = h - 1;
+                        if (xx < 0) xx = 0; else if (xx >= (long)w) xx = w - 1;
+                        r += kb[dy + 1][dx + 1] * img->rows[yy][(size_t)xx * ch + c];
+                    }
+                a[(size_t)y * w + x] = (float)abs(r);
+            }
+        box(a, tmp, w, h, 1);
+        for (size_t i = 0; i < plane; i++) a[i] = 1.0f / (a[i] + 1e-10f);
+        box(a, tmp, w, h, 7);
+        for (size_t i = 0; i < plane; i++) costs[i * ch + c] = a[i];
+    }
+    free(a);
+    free(tmp);
+    return costs;
 }

@@ -486,6 +486,21 @@ int codec_embed(CodecPrepared *p, const Carrier *c, const uint8_t *message, uint
     sodium_free(p->keys);  /* not needed past here */
     p->keys = NULL;
 
+    /* PNG: HILL costs (see embed_costs) */
+    Carrier costed = *c;
+    float *hill = NULL;
+    if (c->img) {
+        hill = embed_hill_costs(c->img);
+        if (!hill) {
+            sodium_memzero(payload, payload_len);
+            free(payload);
+            codec_prepared_free(p);
+            return -2;
+        }
+        costed.coef_costs = hill;
+    }
+    c = &costed;
+
     /* Record every change (payload and salt), then make them together so
        they can be paired up to keep the histogram (see embed_apply) */
     EmbedPlan *plan = embed_plan_new();
@@ -496,6 +511,7 @@ int codec_embed(CodecPrepared *p, const Carrier *c, const uint8_t *message, uint
                    embed_apply(plan, NULL) != 0))
         r = -2;
     embed_plan_free(plan);
+    free(hill);
     codec_prepared_free(p);
     return r;
 }

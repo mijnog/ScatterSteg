@@ -24,18 +24,65 @@ pub struct Carrier<'a> {
     positions: u32,
     /// JPEG: carrier k's index into the coefficients
     map: &'a [u32],
-    /// JPEG: cost of changing each carrier
+    /// JPEG: cost of changing each carrier; PNG: of each sample, or empty
+    /// for uniform
     costs: &'a [f32],
+    /// PNG: pixels per row (HILL needs the layout)
+    width: u32,
 }
 
 impl<'a> Carrier<'a> {
-    /// `pixels` is `channels` interleaved samples per pixel; `count` pixels
-    pub fn png(pixels: &'a mut [u8], count: u32, channels: u32) -> Self {
-        Carrier { samples: Samples::U8(pixels), channels, positions: count, map: &[], costs: &[] }
+    /// `pixels` is `channels` interleaved samples per pixel, row by row
+    pub fn png(pixels: &'a mut [u8], width: u32, height: u32, channels: u32) -> Self {
+        Carrier { samples: Samples::U8(pixels), channels, positions: width * height, map: &[], costs: &[], width }
     }
 
     pub fn jpeg(coefs: &'a mut [i16], map: &'a [u32], costs: &'a [f32]) -> Self {
-        Carrier { samples: Samples::Coef(coefs), channels: 1, positions: map.len() as u32, map, costs }
+        Carrier { samples: Samples::Coef(coefs), channels: 1, positions: map.len() as u32, map, costs, width: 0 }
+    }
+
+    /// The same samples, with these costs if a PNG (see `costs`); a JPEG
+    /// keeps its own
+    pub fn with_png_costs<'b>(&'b mut self, png_costs: &'b [f32]) -> Carrier<'b> {
+        let (samples, costs) = match &mut self.samples {
+            Samples::U8(s) => (Samples::U8(s), png_costs),
+            Samples::Coef(s) => (Samples::Coef(s), self.costs),
+        };
+        Carrier { samples, channels: self.channels, positions: self.positions, map: self.map, costs, width: self.width }
+    }
+
+    /// PNG: HILL costs (Li et al., 2014) for every sample, in pixel order:
+    /// the reciprocal of the local high-pass energy, smoothed, so changes go
+    /// where the image is busy. Empty for JPEG.
+    pub fn hill_costs(&self) -> Vec<f32> {
+        let Samples::U8(px) = &self.samples else { return Vec::new() };
+        let (w, h, ch) = (self.width as usize, (self.positions / self.width.max(1)) as usize, self.channels as usize);
+        let plane = w * h;
+        let mut costs = vec![0f32; plane * ch];
+        let mut a = vec![0f32; plane];
+        let mut tmp = vec![0f32; plane];
+        const KB: [[i32; 3]; 3] = [[-1, 2, -1], [2, -4, 2], [-1, 2, -1]];
+        for c in 0..ch {
+            // |KB high-pass residual|, edges repeated
+            for y in 0..h {
+                for x in 0..w {
+                    let mut r = 0;
+                    for (dy, row) in KB.iter().enumerate() {
+                        for (dx, k) in row.iter().enumerate() {
+                            let yy = (y + dy).saturating_sub(1).min(h - 1);
+                            let xx = (x + dx).saturating_sub(1).min(w - 1);
+                            r += k * px[(yy * w + xx) * ch + c] as i32;
+                        }
+                    }
+                    a[y * w + x] = r.abs() as f32;
+                }
+            }
+            box_mean(&mut a, &mut tmp, w, h, 1);
+            for v in a.iter_mut() { *v = 1.0 / (*v + 1e-10); }
+            box_mean(&mut a, &mut tmp, w, h, 7);
+            for (i, v) in a.iter().enumerate() { costs[i * ch + c] = *v; }
+        }
+        costs
     }
 
     /// Pixels, or coefficients
@@ -308,18 +355,91 @@ pub fn set_bits(c: &Carrier, indices: &[u32], start: usize, bits: &[u8], plan: &
 
 /// How costly a change to each of those samples would be to hide.
 ///
-/// PNG: uniform. Content-adaptive costs (cheap in texture, dear in flat
-/// areas, like HILL) did worse than uniform on the detectors available, since
-/// they buy cheaper locations with more changes.
+/// PNG: HILL (see `Carrier::hill_costs`), or uniform if the carrier has no
+/// costs. HILL makes about 30-40% more changes than uniform but puts them
+/// where the image is busy; against the rich-model detector in benchmark/
+/// that cut detection from 65-94% to 56-65% (0.05-0.4 bits per pixel), and
+/// more of its changes pair up as value swaps (93-98% against 48-87%).
 ///
 /// JPEG: a change of 1 to a coefficient changes its block's pixels in
 /// proportion to the quantization step, so that is the cost (precomputed per
 /// carrier by the loader, which also makes changes to |value| == 2 dearer).
 pub fn costs(c: &Carrier, indices: &[u32], start: usize, out: &mut [f32]) {
+    let ch = c.channels as usize;
     for (i, o) in out.iter_mut().enumerate() {
+        let pos = start + i;
         *o = match c.samples {
-            Samples::U8(_) => 1.0,
-            Samples::Coef(_) => c.costs[indices[start + i] as usize],
+            Samples::U8(_) if c.costs.is_empty() => 1.0,
+            Samples::U8(_) => c.costs[indices[pos / ch] as usize * ch + pos % ch],
+            Samples::Coef(_) => c.costs[indices[pos] as usize],
         };
+    }
+}
+
+/// Mean over 2r+1 samples along one line (n samples, `step` apart),
+/// mirrored at the ends as MATLAB's 'symmetric' padding
+fn box_line(src: &[f32], dst: &mut [f32], n: usize, step: usize, r: isize) {
+    for i in 0..n {
+        let mut sum = 0f64;
+        for k in -r..=r {
+            let mut j = i as isize + k;
+            while j < 0 || j >= n as isize { j = if j < 0 { -j - 1 } else { 2 * n as isize - j - 1 }; }
+            sum += src[j as usize * step] as f64;
+        }
+        dst[i * step] = (sum / (2 * r + 1) as f64) as f32;
+    }
+}
+
+/// In place: the (2r+1) x (2r+1) mean of a w x h plane, using tmp
+fn box_mean(a: &mut [f32], tmp: &mut [f32], w: usize, h: usize, r: isize) {
+    for y in 0..h { box_line(&a[y * w..], &mut tmp[y * w..], w, 1, r); }
+    for x in 0..w { box_line(&tmp[x..], &mut a[x..], h, w, r); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Carrier;
+
+    /// A cover half flat, half noise
+    fn half_flat(w: usize, h: usize) -> Vec<u8> {
+        (0..w * h).map(|i| if i % w < w / 2 { 128 } else { (i * 2654435761usize >> 13) as u8 }).collect()
+    }
+
+    #[test]
+    fn hill_costs_flat_areas_dear() {
+        let (w, h) = (32, 32);
+        let mut px = half_flat(w, h);
+        let costs = Carrier::png(&mut px, w as u32, h as u32, 1).hill_costs();
+        let (flat, busy) = (costs[16 * w + 2], costs[16 * w + 29]);
+        assert!(flat > 1000.0 * busy, "flat {flat}, busy {busy}");
+    }
+
+    #[test]
+    fn hill_costs_match_c() {
+        // From embed_hill_costs (embed.c) on the same 6 x 5 RGB image
+        const C: [f32; 90] = [
+        0.00683680223, 0.00641664118, 0.00677840924, 0.00658305874, 0.00642893789, 0.00646255771,
+        0.00637436006, 0.00645358069, 0.00618662871, 0.00664012833, 0.00644997461, 0.00641232543,
+        0.00689299125, 0.00646903226, 0.00721625192, 0.0071008089, 0.00647574337, 0.00798025634,
+        0.00669349683, 0.00689680781, 0.0069045308, 0.00643629488, 0.00689336937, 0.00657953694,
+        0.00622127904, 0.00689548859, 0.00629495969, 0.00646991283, 0.00688447943, 0.00652665691,
+        0.0067053223, 0.00689723529, 0.00731762405, 0.00689854566, 0.00690443302, 0.00806817506,
+        0.00642301748, 0.00750904903, 0.00734927412, 0.00615266617, 0.00750428857, 0.00699928263,
+        0.00591401989, 0.00750279147, 0.00668596383, 0.00610962324, 0.00747773331, 0.00691316975,
+        0.00631841179, 0.00749003887, 0.00768700102, 0.00649549486, 0.00749908015, 0.00842416007,
+        0.00615253812, 0.00812129118, 0.0077940179, 0.00586903794, 0.00811520778, 0.00741902832,
+        0.0056067612, 0.00811009482, 0.00707696844, 0.00574933365, 0.00807098765, 0.00729968213,
+        0.00593150081, 0.00808284245, 0.00805637799, 0.00609244406, 0.00809372775, 0.00878014416,
+        0.00600923225, 0.00860145781, 0.00792013947, 0.00572227361, 0.00857963972, 0.00753600756,
+        0.00545368018, 0.00855200272, 0.00718529942, 0.00557911815, 0.00850549247, 0.00741401361,
+        0.00574383186, 0.00851104502, 0.00815775059, 0.00589018036, 0.00852241646, 0.0088680638
+        ];
+        let mut px: Vec<u8> = (0..5u32)
+            .flat_map(|y| (0..18u32).map(move |i| ((y * 37 + i * 11 + (i * y) % 7) * 13) as u8))
+            .collect();
+        let costs = Carrier::png(&mut px, 6, 5, 3).hill_costs();
+        for (i, (r, c)) in costs.iter().zip(C).enumerate() {
+            assert!((r - c).abs() <= 1e-5 * c, "sample {{i}}: Rust {{r}}, C {{c}}");
+        }
     }
 }

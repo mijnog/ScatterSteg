@@ -15,7 +15,8 @@ typedef struct {
     Image *img;        /* PNG, or NULL */
     int16_t **coefs;   /* JPEG: n_coefs pointers to carrier coefficients */
     uint32_t n_coefs;
-    const float *coef_costs;  /* JPEG: cost of changing each (see embed_costs) */
+    const float *coef_costs;  /* JPEG: cost of changing each; PNG: of each
+                                 sample, or NULL for uniform (see embed_costs) */
 } Carrier;
 
 static inline Carrier carrier_of_image(Image *img) {
@@ -73,5 +74,11 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
    the cover is busy, high where a change would stand out */
 void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
                  size_t n, float *costs);
+
+/* HILL costs (Li et al., 2014) for every sample of img, in rows[y][x *
+   channels + c] order: the reciprocal of the local high-pass energy,
+   smoothed, so changes go where the image is busy. For a PNG carrier's
+   coef_costs; NULL if out of memory. */
+float *embed_hill_costs(const Image *img);
 
 #endif /* EMBED_H */

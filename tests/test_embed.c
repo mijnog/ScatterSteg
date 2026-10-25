@@ -332,6 +332,39 @@ static void test_recording_changes_nothing(void) {
     image_free(orig);
 }
 
+/* HILL: a change in a flat area costs far more than one in noise */
+static void test_hill_costs_flat_areas_dear(void) {
+    Image *img = make_image(32, 32, 0);
+    for (uint32_t y = 0; y < 32; y++)
+        for (uint32_t x = 0; x < 32; x++)
+            for (uint32_t c = 0; c < 3; c++)
+                img->rows[y][x * 3 + c] = x < 16 ? 128 : (uint8_t)(((y * 32 + x) * 3 + c) * 2654435761u >> 13);
+    float *costs = embed_hill_costs(img);
+    CHECK(costs != NULL);
+    float flat = costs[(16 * 32 + 2) * 3], busy = costs[(16 * 32 + 29) * 3];
+    CHECK(flat > 1000 * busy);
+    free(costs);
+    image_free(img);
+}
+
+/* A PNG carrier with a cost map reads each sample's cost from it */
+static void test_costs_follow_the_map(void) {
+    Image *img = make_image(4, 2, 0);
+    float map[4 * 2 * 3];
+    for (int i = 0; i < 24; i++) map[i] = (float)i;
+    Carrier c = carrier_of_image(img);
+    c.coef_costs = map;
+    uint32_t order[8] = {5, 0, 7, 2, 1, 3, 6, 4};
+    float got[6];
+    embed_costs(&c, order, 2, 6, got);   /* samples 2..7: pixel 5 ch 2, pixel 0, pixel 7 ch 0-1 */
+    float want[6] = {17, 0, 1, 2, 21, 22};
+    for (int i = 0; i < 6; i++) CHECK(got[i] == want[i]);
+    c.coef_costs = NULL;
+    embed_costs(&c, order, 0, 6, got);
+    for (int i = 0; i < 6; i++) CHECK(got[i] == 1.0f);
+    image_free(img);
+}
+
 int main(void) {
     if (sodium_init() < 0) return 1;
     RUN(test_roundtrip);
@@ -349,5 +382,7 @@ int main(void) {
     RUN(test_exchange_swaps_neighbours);
     RUN(test_exchange_preserves_histogram);
     RUN(test_recording_changes_nothing);
+    RUN(test_hill_costs_flat_areas_dear);
+    RUN(test_costs_follow_the_map);
     return TEST_SUMMARY();
 }

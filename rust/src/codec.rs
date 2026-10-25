@@ -355,6 +355,10 @@ impl Prepared {
         payload[..NONCE_BYTES].copy_from_slice(&nonce);
         sodium::secretbox_easy(&mut payload[NONCE_BYTES..], message, &nonce, self.keys.enc());
 
+        // PNG: HILL costs (see embed::costs); JPEG keeps its own
+        let hill = c.hill_costs();
+        let c = &mut c.with_png_costs(&hill);
+
         // Record every change (payload and salt), then make them together so
         // they can be paired up to keep the histogram (see embed::apply)
         let mut plan = EmbedPlan::new();

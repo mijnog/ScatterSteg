@@ -39,10 +39,7 @@ impl Cover {
 
     pub fn carrier(&mut self) -> Carrier<'_> {
         match self {
-            Cover::Png(img) => {
-                let count = img.width * img.height;
-                Carrier::png(&mut img.pixels, count, img.channels)
-            }
+            Cover::Png(img) => Carrier::png(&mut img.pixels, img.width, img.height, img.channels),
             Cover::Jpeg(j) => j.carrier(),
         }
     }

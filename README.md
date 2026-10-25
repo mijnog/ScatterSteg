@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mijnog/ScatterSteg/actions/workflows/ci.yml/badge.svg)](https://github.com/mijnog/ScatterSteg/actions/workflows/ci.yml)
 
-ScatterSteg is a command-line tool for hiding encrypted messages in PNG and JPEG images. It combines authenticated encryption and memory-hard key derivation with steganographic techniques from the research literature (syndrome-trellis coding, LSB matching and histogram-preserving value exchange), so that the output image is statistically close to the cover it was made from.
+ScatterSteg is a command-line tool for hiding encrypted messages in PNG and JPEG images. It combines authenticated encryption and memory-hard key derivation with steganographic techniques from the research literature (syndrome-trellis coding, LSB matching and histogram-preserving value exchange), so that the output image is statistically close to the cover it was made from, for small messages: see [Steganalysis results](#steganalysis-results) for how close, and [Limitations](#limitations).
 
 ```bash
 echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
@@ -129,7 +129,7 @@ A stronger, SRM-style rich-model detector (about 7,000 features per channel and 
 | 0.20 | 0.05 | 0.02 | **0.14** |
 | 0.40 | 0.02 | 0.02 | **0.07** |
 
-At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg about 65% of the time at 0.05 bits per pixel and about 93% at 0.4. So small messages are hard to detect, and large ones are not. This is a relative result, not a claim of undetectability: the covers come from two sources, neither representative of everything users will hide data in, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). On a second cover set, 1000 grayscale images from BOSSbase 1.01 (steghide could not be run on it: it has no grayscale PNG or PGM support), the same detector gives, with one sample per pixel so each payload is three times heavier per sample than in the colour tables above:
+At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg about 65% of the time at 0.05 bits per pixel and about 93% at 0.4. Even at the smallest payload tested, then, the stronger detector catches it about two times in three; nothing below 0.05 bits per pixel has been measured. This is a relative result, not a claim of undetectability: the covers come from two sources, neither representative of everything users will hide data in, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). On a second cover set, 1000 grayscale images from BOSSbase 1.01 (steghide could not be run on it: it has no grayscale PNG or PGM support), the same detector gives, with one sample per pixel so each payload is three times heavier per sample than in the colour tables above:
 
 | Payload (bits per pixel) | LSB matching | ScatterSteg |
 |---|---|---|
@@ -205,12 +205,14 @@ The image contains no header or version marker, as either would reveal the prese
 
 ## Limitations
 
+- **The original cover gives it away.** Anyone who has the cover can compare it with the output and see which samples changed, so that a message is there (not what it says). This holds for PNG and JPEG alike, as for any steganography tool. Never use a cover that someone else has or could find (a photo you have posted or sent, a stock or downloaded image), never encode twice from the same cover, and delete the cover after use.
+- **Detectable by trained classifiers.** On the benchmark above, a rich-model classifier catches ScatterSteg output about 65% of the time at 0.05 bits per pixel and 93% at 0.4; deep-learning detectors, not yet run, would do better still. Keep messages far below the cover's capacity; "statistically close to the cover" means harder to detect, not undetectable.
 - **No independent review.** The implementation is extensively tested, but neither the cryptography nor the steganography has been externally audited. It should not be relied on where personal safety is at stake. See [THREAT_MODEL.md](THREAT_MODEL.md) for the security claims and their scope.
-- **Machine-learning steganalysis.** Modern learned detectors are considerably stronger than the classic detectors measured above. Messages should be small relative to the cover; a few kilobytes in a photograph-sized image uses well under 1% of its capacity.
+- **Machine-learning steganalysis.** Modern learned detectors are considerably stronger than the classic detectors measured above. Messages should be small relative to the cover; a few kilobytes in a photograph-sized image uses well under 1% of its capacity, a payload lighter than any the benchmark measured.
 - **High payloads.** As the message approaches the number of carrier bits, STC and value exchange have less freedom, and the JPEG coefficient-ratio shift reappears beyond about half of capacity.
 - **Cover selection.** Noisy photographs are the most suitable covers. Flat regions, gradients and posterized images (few distinct values or gaps in the histogram) conceal changes poorly, since a ±1 change is conspicuous among identical neighbours and no adjacent value is available for exchange.
 - **JPEG capacity.** JPEG covers carry less data than PNG covers and are more detectable per bit. Only embedded coefficients change, but the file is not byte-identical to the cover: optimized Huffman tables are regenerated, and progressive files are written with libjpeg's standard scan sequence.
-- **Metadata.** PNG image data is recompressed, and unknown chunks not marked safe to copy are dropped, as the PNG specification requires. Anyone holding the original cover can locate the changes by comparison.
+- **Metadata.** PNG image data is recompressed, and unknown chunks not marked safe to copy are dropped, as the PNG specification requires, so the file differs from the cover beyond the changed samples.
 - **Earlier formats.** Format v1 images remain readable but produce a warning recommending re-encoding, because v1 allowed most wrong passphrases to be rejected without an Argon2id computation. Format v2 and v3 images are read without a warning; they are equally well protected but more detectable.
 - **Job control.** Suspending the program (Ctrl+Z) at the passphrase prompt can leave terminal echo disabled. Ctrl+C, SIGTERM and SIGHUP are handled.
 

@@ -15,7 +15,7 @@ What ScatterSteg tries to protect, against whom, and what it explicitly doesn't.
 
 Someone who sees many images (a censor, a platform, a border check) and runs detectors over them, looking for any that carry hidden data.
 
-- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, and only partly distinguishable at 0.05 bits per pixel by the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors). Deep-learning detectors have not been run; assume they do better.
+- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one about 65% of the time at 0.05 bits per pixel, the lightest payload measured, and 93% at 0.4. That is harder to detect than steghide or plain LSB embedding, not undetectable. Deep-learning detectors have not been run; assume they do better.
 - **How:** STC syndrome coding (few changes), ±1 changes paired as value swaps (the histogram kept), JPEG coefficients edited losslessly with costs that hold the coefficient statistics, the output in the cover's own format and metadata, and no header or marker in the image.
 - **Evidence:** measured against chi-square, sample pair analysis, HCF-COM and adjacency HCF-COM (see the README), and against trained classifiers (see [Machine-learning detectors](#machine-learning-detectors) below). The planned evaluation with Aletheia's EfficientNet-B0 detectors on ALASKA2 has not been done.
 - **Known-position test:** the salt must sit at public positions, so a warden can look exactly there. In format v3 it was written straight in (about 64 changes in 128 known samples), and a targeted test of prediction error at those positions detected it slightly above chance: AUC 0.56 over 500 ALASKA2 images, 9% detected at 5% false alarms. Format v4 carries the salt as an STC syndrome over a public region of ~8192 samples (about 18 sparse changes); the same test, and the same test over the whole region, are at chance (AUC 0.49–0.50).
@@ -30,7 +30,7 @@ Someone who sees many images (a censor, a platform, a border check) and runs det
 
 ### A3 — The comparer: has the image and the original cover
 
-- **Not protected against.** Comparing the two shows which pixels changed, so that a message is present (not what it says). Never publish a cover you have used.
+- **Not protected against.** Comparing the two shows which samples changed, so that a message is present (not what it says), whatever the format. Never use a cover someone else has or could find (one you have posted or sent, a stock or downloaded image), never encode twice from the same cover (two outputs compared show the same), and delete the cover after use.
 
 ### A4 — The meddler: changes images in transit
 
@@ -51,6 +51,7 @@ Images may come from anyone, so the decoder parses hostile input.
 
 - **Partly protected.** Secrets live in libsodium guarded memory (locked against swap, guard pages, wiped on release), core dumps are disabled, and on Linux other processes of the same user can't attach a debugger.
 - **Limit:** memory is locked only up to the process's locked memory limit (`ulimit -l`, often 8 MiB; ScatterSteg raises its soft limit to the hard one). A message past it may be written to swap, and `encode` and `decode` warn when that happens. Raise the limit, or use encrypted swap, for large messages.
+- **Side channels: not protected against, and not tested.** An attacker running code on the same CPU while ScatterSteg runs could in principle learn something from cache timing: Argon2id's second half reads memory at passphrase-dependent addresses (by design, as in all Argon2id), the shuffle that gives the secret order swaps at key-dependent positions, and the trellis search's work depends on the message. No constant-time or cache-timing analysis has been done. Run it on a machine you trust, not a shared host.
 - **Not protected against:** root, a keylogger, a compromised terminal or a malicious build of ScatterSteg or its libraries. The message is also read from stdin and printed to stdout, so wherever those go (shell history, files, pipes) is outside its control.
 
 ## Explicit non-goals

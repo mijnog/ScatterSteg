@@ -26,8 +26,6 @@ On purpose:
   memory is up to about double the 1 GiB cap.
 - **SIGPIPE is ignored** (the Rust runtime does it): a closed stdout is an
   error message and exit 1, not death by signal.
-- **Chunks with a bad CRC are dropped.** libpng kept such an ancillary chunk
-  and wrote it back with a valid CRC.
 - **A bad zlib checksum (Adler-32) in the image data is not an error.** The
   `png` crate doesn't check it; libpng refuses the file. The output is valid.
 - **Damaged compressed data after the last row fails the load.** libpng stops
@@ -44,6 +42,8 @@ Needed for compatibility:
   letters, or a bad CRC in a critical chunk, fails the load as in libpng. A
   lowercase third letter (newer libpng refuses it, older accepts it) loads
   but the chunk isn't written back, so we never write one libpng would refuse.
+- An ancillary chunk with a bad CRC is kept and written back with a valid
+  CRC, as libpng keeps it, so both versions write the same chunks.
 - A JPEG's carrier cap uses C's per-carrier size (8-byte pointer included), so
   every JPEG Rust writes can be read by C.
 - `check_writable` reads the encoded JPEG back and requires identical

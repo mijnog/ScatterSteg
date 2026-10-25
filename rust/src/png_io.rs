@@ -70,12 +70,10 @@ fn keep_chunk(name: &[u8; 4]) -> bool {
 }
 
 /// The cover's ancillary chunks, in order, with whether each follows the
-/// image data, and whether an sBIT says a channel has fewer than 8
-/// significant bits (see `load`). Stops at the first damaged chunk; chunks
-/// failing their CRC are dropped.
-fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
+/// image data. Stops at the first damaged chunk. One failing its CRC is kept,
+/// as libpng keeps it (and so the C version writes it back, CRC fixed).
+fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
     let mut out = Vec::new();
-    let mut low_sbit = false;
     let mut total = 0usize;
     let mut pos = 8;
     let mut after_idat = false;
@@ -84,7 +82,6 @@ fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
         if len > i32::MAX as usize || pos + 12 + len > file.len() { break; }
         let name: [u8; 4] = file[pos + 4..pos + 8].try_into().unwrap();
         let data = &file[pos + 8..pos + 8 + len];
-        let crc = u32::from_be_bytes(file[pos + 8 + len..pos + 12 + len].try_into().unwrap());
         pos += 12 + len;
         // libpng refuses the whole file over a name that isn't four letters;
         // so must we, or we'd write such a chunk back out and C couldn't read
@@ -102,19 +99,13 @@ fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
             _ => {}
         }
         if name[0] & 0x20 == 0 { continue; } // an unknown critical chunk
-        // libpng keeps an ancillary chunk with a bad CRC, so C sees this one
-        // whatever its CRC (and writes it back, CRC fixed)
-        low_sbit |= &name == b"sBIT" && data.iter().any(|&b| b < 8);
-        let mut h = crc32fast::Hasher::new();
-        h.update(&name);
-        h.update(data);
-        if h.finalize() != crc || len > MAX_CHUNK_BYTES || total + len > MAX_META_TOTAL { continue; }
+        if len > MAX_CHUNK_BYTES || total + len > MAX_META_TOTAL { continue; }
         total += len;
         if keep_chunk(&name) {
             out.push(Chunk { name, data: data.to_vec(), after_idat });
         }
     }
-    Some((out, low_sbit))
+    Some(out)
 }
 
 /// Rewrites `file` in place to the chunks the decoder needs: IHDR, PLTE, tRNS,
@@ -203,6 +194,14 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
     true
 }
 
+/// An sBIT chunk saying a channel has fewer than 8 significant bits: such
+/// images have structured low bits (zeros, or the high bits repeated), which
+/// +-1 changes break, and the chunk itself, kept in the output, tells a
+/// warden to look
+fn low_sbit(chunks: &[Chunk]) -> bool {
+    chunks.iter().any(|c| &c.name == b"sBIT" && c.data.iter().any(|&b| b < 8))
+}
+
 /// Gray stored as RGB: R = G = B in every pixel. Changing the channels
 /// independently breaks that, which a one-line check finds.
 fn all_gray(pixels: &[u8], channels: u32) -> bool {
@@ -211,7 +210,7 @@ fn all_gray(pixels: &[u8], channels: u32) -> bool {
 
 pub fn load(path: &Path) -> Option<Image> {
     let mut file = crate::fault::read_file(path, &SIGNATURE).ok()?;
-    let (chunks, low_sbit) = parse_chunks(&file)?;
+    let chunks = parse_chunks(&file)?;
     if !decoder_view(&mut file) { return None; }
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
     // Text and profile chunks are copied as raw bytes (see parse_chunks), so
@@ -273,12 +272,9 @@ pub fn load(path: &Path) -> Option<Image> {
         src.chunks_exact(src_channels).flat_map(|px| px[..channels as usize].iter().copied()).collect()
     };
 
-    // Covers whose low bits are visibly structured: the changes would stand
-    // out. An sBIT under 8 means structured low bits (zeros, or the high bits
-    // repeated), which +-1 changes break, and the chunk itself, kept in the
-    // output, tells a warden to look.
+    // Covers whose low bits are visibly structured: the changes would stand out
     let unsuitable = unsuitable.or_else(|| {
-        if low_sbit {
+        if low_sbit(&chunks) {
             Some(LOW_SBIT)
         } else if all_gray(&pixels, channels) {
             Some(GRAY_AS_RGB)

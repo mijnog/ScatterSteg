@@ -121,6 +121,12 @@ def png_cases():
         "gray_as_rgb_but_one": SIG + ihdr() + ch(b"IDAT", zlib.compress(b"".join(
             b"\0" + bytes(v for x in range(W) for v in [(x * 7 + y * 3) & 255] * 3) for y in range(H - 1))
             + b"\0" + bytes([1, 2, 3]) + bytes(3 * (W - 1)))) + ch(b"IEND", b""),
+        # An ancillary chunk with a bad CRC: libpng keeps it, and it is written
+        # back with the CRC fixed
+        "text_badcrc": png(pre=ch(b"tEXt", b"k\0damaged")[:-1] + b"\0"),
+        "text_badcrc_after_idat": png(post=ch(b"tEXt", b"k\0damaged")[:-1] + b"\0"),
+        "private_badcrc": png(pre=ch(b"prVt", b"private, safe to copy")[:-1] + b"\0"),
+        "big_badcrc": png(pre=ch(b"zTXt", b"k\0\0" + bytes(17 << 20))[:-1] + b"\0"),
         "rgba": SIG + ihdr(ctype=6) + idat(c=4) + ch(b"IEND", b""),
         "gray16": SIG + ihdr(depth=16, ctype=0) + ch(b"IDAT", zlib.compress(raw(c=2))) + ch(b"IEND", b""),
         "chunk_after_iend": png() + ch(b"tEXt", b"a\0b"),
@@ -216,13 +222,21 @@ def loads(binary, path):
     return "could not load" not in log, code
 
 
-def refusal(binary, path):
-    """Why `encode` refuses the cover (transparency, gray pixels stored as RGB,
-    ...), or None"""
-    code, log = T.run(["encode", "-i", path, "-o", path + ".out"], message=b"x",
+def encoded(binary, path):
+    """What `encode` makes of the cover: why it refuses it (transparency, gray
+    pixels stored as RGB, ...), or the chunks it writes other than the image
+    data, which is compressed differently by each"""
+    out = path + ".out"
+    if os.path.exists(out):
+        os.remove(out)
+    code, log = T.run(["encode", "-i", path, "-o", out], message=b"x",
                       passphrases=["correct horse"] * 2, binary=binary)
     m = re.search(r"has (.*?), which the output can't keep", log)
-    return m and m.group(1)
+    if m:
+        return m.group(1)
+    if code != 0:
+        return "failed"
+    return tuple(c for c in T.png_chunks(out) if c[0] != b"IDAT")
 
 
 def main():
@@ -237,8 +251,8 @@ def main():
 
         def one(name):
             c, r = loads(C, files[name]), loads(RUST, files[name])
-            if c == r and c[0] and files[name].endswith(".png"):  # both load: same verdict on the cover
-                c, r = c + (refusal(C, files[name]),), r + (refusal(RUST, files[name]),)
+            if c == r and c[0] and files[name].endswith(".png"):  # both load: encode makes the same of it
+                c, r = c + (encoded(C, files[name]),), r + (encoded(RUST, files[name]),)
             return name, c, r
 
         bad = []

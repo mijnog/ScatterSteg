@@ -256,6 +256,10 @@ static const char *const kept_chunks[] = {
 };
 
 static int keep_chunk(const png_byte *name) {
+    /* Lowercase 3rd letter: reserved. Older libpng reads such a chunk,
+       newer refuses the file, so writing one back would make an image
+       built here unreadable elsewhere. */
+    if (name[2] & 0x20) return 0;
     if (name[3] & 0x20) return 1;  /* lowercase 4th letter: safe to copy */
     for (size_t i = 0; i < sizeof(kept_chunks) / sizeof(kept_chunks[0]); i++)
         if (memcmp(name, kept_chunks[i], 4) == 0) return 1;

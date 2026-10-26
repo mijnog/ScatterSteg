@@ -118,12 +118,12 @@ DCTR-style detector and splits; `results-uerd-jpeg.txt` has the raw output.
 The quantization-step column re-measured here matches the published one
 above to within 0.010:
 
-| payload (bits per non-zero AC) | quantization step | **UERD** |
-|---|---|---|
-| 0.05 | 0.460 | **0.487** |
-| 0.10 | 0.408 | **0.469** |
-| 0.20 | 0.271 | **0.396** |
-| 0.30 | 0.132 | **0.260** |
+| payload (bits per non-zero AC) | quantization step | UERD, \|2\| at 1.5x | **UERD, \|2\| at 1.75x (current)** |
+|---|---|---|---|
+| 0.05 | 0.460 | 0.487 | **0.499** |
+| 0.10 | 0.408 | 0.469 | **0.478** |
+| 0.20 | 0.271 | 0.396 | **0.390** |
+| 0.30 | 0.132 | 0.260 | **0.262** |
 
 0.3 is a control at a heavy payload: the median cover holds 0.47 bits per
 non-zero AC coefficient (10th to 90th percentile 0.42 to 0.54), so 0.3 is
@@ -131,11 +131,31 @@ about 63% of capacity. (0.5 was tried first; only 45 of 480 covers could hold
 it.) Two disjoint halves of the covers, one labelled stego, score 0.497 to
 0.523: chance. The 2:3 ratio of |2| to |3| AC coefficients moves +0.3% at 0.05
 and 0.1 (quantization step: +0.6 to +0.8%), -3.0% at 0.2 (-2.5%) and -14.3%
-at 0.3 (-13.2%).
+at 0.3 (-13.2%) with the first UERD version, which kept the old 1.5x for
+|value| 2.
+
+That factor was then re-tuned under UERD (`tune_two.py`,
+`results-two-cost.txt`; builds of `0f214b0` with `JPEG_TWO_COST` set). DCTR
+P_E / ratio shift in units of the covers' spread (1.93, sd 0.13):
+
+| factor | 0.05 | 0.10 | 0.20 | 0.30 |
+|---|---|---|---|---|
+| 1.0 | | 0.463 / 0.51 | 0.375 / 1.65 | |
+| 1.25 | | 0.478 / 0.12 | 0.395 / 0.87 | |
+| 1.5 | 0.489 / 0.06 | 0.464 / 0.04 | 0.400 / 0.43 | 0.263 / 2.01 |
+| **1.75** | **0.499 / 0.11** | **0.478 / 0.13** | **0.390 / 0.17** | **0.262 / 1.59** |
+| 2.0 | 0.488 / 0.13 | 0.465 / 0.22 | 0.412 / 0.04 | 0.274 / 1.28 |
+| 3.0 | | 0.467 / 0.41 | 0.399 / 0.59 | |
+
+DCTR doesn't separate the factors (differences within its noise, sd about
+0.01); the ratio does. Over the recommended 0.05 to 0.2, 1.75 keeps the
+worst-case shift smallest (0.17 of the covers' spread), so it is the
+default. 2.0 is better only at 0.3, near capacity.
 
     python3 embed_jpg.py 480 uerd          # SCATTERSTEG=path/to/binary
     BPNZ=0.3 python3 embed_jpg.py 480 uerd
     python3 score_jpg.py uerd && python3 controls_jpg.py
+    python3 tune_two.py two1.5 two1.75 two2.0  # stego/two<f>_jpg_<bp>, one build per factor
 
 `srm.py` is not the published SRM: the construction is the same, but the
 kernels and quantization steps were chosen here, and it has roughly a fifth of

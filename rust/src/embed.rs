@@ -364,7 +364,7 @@ pub fn set_bits(c: &Carrier, indices: &[u32], start: usize, bits: &[u8], plan: &
 /// JPEG: UERD, precomputed per carrier by the loader (collect_carriers): the
 /// quantization step over the energy of the block and its neighbours, and
 /// dearer for |value| == 2. Against the DCTR-style detector in benchmark/ that
-/// cut detection from 54-73% to 51-60% (0.05-0.2 bits per non-zero AC
+/// cut detection from 54-73% to 50-61% (0.05-0.2 bits per non-zero AC
 /// coefficient) over the quantization step alone.
 pub fn costs(c: &Carrier, indices: &[u32], start: usize, out: &mut [f32]) {
     let ch = c.channels as usize;

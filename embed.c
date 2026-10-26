@@ -272,7 +272,7 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
    quantization step over the energy of the block and its neighbours, and
    dearer for |value| == 2, which can only go to 3 and shifts the 2:3
    ratio JPEG detectors watch. Against the DCTR-style detector in
-   benchmark/ that cut detection from 54-73% to 51-60% (0.05-0.2 bits per
+   benchmark/ that cut detection from 54-73% to 50-61% (0.05-0.2 bits per
    non-zero AC coefficient) over the quantization step alone. */
 void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
                  size_t n, float *costs) {

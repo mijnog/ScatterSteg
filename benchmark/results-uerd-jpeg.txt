@@ -1,0 +1,24 @@
+# Quantization-step (ss, built from c515e5d) vs UERD JPEG costs, 480 Wikimedia covers, quality 75 4:2:0 (2026-10-26)
+# embed_jpg.py; score_jpg.py ss uerd; controls_jpg.py
+cover features 30s
+dctr ss     0.05  P_E=0.460 sd=0.005 n=480 (44s)
+dctr ss     0.1   P_E=0.408 sd=0.007 n=480 (59s)
+dctr ss     0.2   P_E=0.271 sd=0.007 n=480 (57s)
+dctr uerd   0.05  P_E=0.487 sd=0.012 n=480 (55s)
+dctr uerd   0.1   P_E=0.469 sd=0.016 n=480 (59s)
+dctr uerd   0.2   P_E=0.396 sd=0.006 n=480 (60s)
+dctr null (cover halves, shuffle 1)  P_E=0.523 sd=0.021
+dctr null (cover halves, shuffle 2)  P_E=0.499 sd=0.018
+dctr null (cover halves, shuffle 3)  P_E=0.497 sd=0.039
+dctr ss    0.3  P_E=0.132 sd=0.015 n=476
+dctr uerd  0.3  P_E=0.260 sd=0.016 n=476
+2:3 ratio cover 1.9309 (first 120 covers)
+2:3 ratio ss    0.05  1.9463 (+0.80%)
+2:3 ratio ss    0.1   1.9426 (+0.60%)
+2:3 ratio ss    0.2   1.8822 (-2.52%)
+2:3 ratio ss    0.3   1.6763 (-13.19%)
+2:3 ratio uerd  0.05  1.9368 (+0.30%)
+2:3 ratio uerd  0.1   1.9364 (+0.28%)
+2:3 ratio uerd  0.2   1.8721 (-3.04%)
+2:3 ratio uerd  0.3   1.6542 (-14.33%)
+capacity (carriers per non-zero AC): mean 0.473, 10th pct 0.418, median 0.471, 90th pct 0.539, min 0.260

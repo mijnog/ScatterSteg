@@ -110,6 +110,33 @@ pillow and ImageMagick, about 20 minutes on 12 cores):
     BPP=1.0 python3 embed_png.py 480 hill  # and ss, with a uniform-cost binary
     python3 controls.py
 
+### Content-adaptive JPEG costs (UERD)
+
+JPEG embedding now uses UERD costs instead of the quantization step alone
+(`jpeg_io.c`, `collect_carriers`). Same 480 covers (quality 75, 4:2:0), same
+DCTR-style detector and splits; `results-uerd-jpeg.txt` has the raw output.
+The quantization-step column re-measured here matches the published one
+above to within 0.010:
+
+| payload (bits per non-zero AC) | quantization step | **UERD** |
+|---|---|---|
+| 0.05 | 0.460 | **0.487** |
+| 0.10 | 0.408 | **0.469** |
+| 0.20 | 0.271 | **0.396** |
+| 0.30 | 0.132 | **0.260** |
+
+0.3 is a control at a heavy payload: the median cover holds 0.47 bits per
+non-zero AC coefficient (10th to 90th percentile 0.42 to 0.54), so 0.3 is
+about 63% of capacity. (0.5 was tried first; only 45 of 480 covers could hold
+it.) Two disjoint halves of the covers, one labelled stego, score 0.497 to
+0.523: chance. The 2:3 ratio of |2| to |3| AC coefficients moves +0.3% at 0.05
+and 0.1 (quantization step: +0.6 to +0.8%), -3.0% at 0.2 (-2.5%) and -14.3%
+at 0.3 (-13.2%).
+
+    python3 embed_jpg.py 480 uerd          # SCATTERSTEG=path/to/binary
+    BPNZ=0.3 python3 embed_jpg.py 480 uerd
+    python3 score_jpg.py uerd && python3 controls_jpg.py
+
 `srm.py` is not the published SRM: the construction is the same, but the
 kernels and quantization steps were chosen here, and it has roughly a fifth of
 the published feature count. The published model and deep networks would score

@@ -14,7 +14,7 @@ echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
 ### Steganography
 
 - **Keyed embedding order.** Bits are placed along a secret permutation of the image derived from the passphrase, not sequentially from the first pixel.
-- **Syndrome-trellis codes (STC).** The message is encoded as the syndrome of a larger set of carrier bits, and a Viterbi search selects the least costly set of changes that produces it. At typical payloads this requires 2.4–3.3 times fewer changes than writing the bits directly.
+- **Syndrome-trellis codes (STC).** The message is encoded as the syndrome of a larger set of carrier bits, and a Viterbi search selects the least costly set of changes that produces it. With HILL costs it makes 2.0–2.8 times fewer changes than writing the bits directly at 0.05 to 0.4 bits per pixel (uniform costs: 2.9–3.5 times), spending some of the saving on putting them in better places.
 - **Content-adaptive costs.** PNG uses HILL costs (Li, Wang, Huang and Li, 2014), which make a change cheap where the image is busy and dear where it is flat, so STC puts the changes where they are hardest to model. Against the rich-model detector below, this cut detection from 65–94% to 56–65% of images, at 0.05 to 0.4 bits per pixel. JPEG uses UERD costs (Guo, Ni, Su, Chen and Shi, 2015): a coefficient's quantization step over the energy of its block and neighbours. Against the DCTR-style detector it cut detection from 54–73% to 51–60%, at 0.05 to 0.2 bits per non-zero AC coefficient.
 - **Histogram-preserving exchange.** Required changes are paired into value swaps where possible (the approach used by steghide), which leaves the image histogram unchanged for those changes: on photographs, 93% of changes at 0.05 bits per pixel and 98.5% at 0.4 (480 Wikimedia photographs, the encoder's own count; 48% and 87% with the uniform costs used before HILL).
 - **LSB matching.** No sample changes by more than 1, and the pairs-of-values artifact produced by LSB replacement is avoided.
@@ -94,15 +94,16 @@ What differs:
 
 ## Steganalysis results
 
-All detectability figures below were measured on real images (two photographs; the overwriting baseline for sample pair analysis on a painting), against the classic detectors for LSB steganography. They predate content-adaptive costs: the ScatterSteg column is STC with uniform PNG costs and JPEG costs of the quantization step alone. Re-measured on the 480 benchmark photographs, HILL moves Ker's adjacency HCF-COM 9 to 12 times less than uniform costs at every payload (`benchmark/hcf.py`).
+Measured on the 480 benchmark photographs (512×512 RGB; `benchmark/classic.py` and `benchmark/hcf.py`) at 0.05 to 0.4 bits per pixel, against the classic detectors for LSB steganography, with builds of `ca1a139` (uniform costs) and `83603fa` (HILL, current). The baselines write the message bits directly: LSB replacement from the first pixel on (sequential) or at scattered positions, and LSB matching at scattered positions.
 
-| Detector | Writing bits directly | ScatterSteg (STC, uniform costs) |
-|---|---|---|
-| Changes needed, PNG at 5–10% of capacity | 340–682 K | **102–221 K** |
-| Ker's adjacency HCF-COM shift (cover 93.81), 5–25% | 2.4–10.7 | **0.5–0.7** |
-| JPEG 2:3 coefficient ratio at 25% (cover 2.087) | 1.671 (−20%) | **2.079 (−0.4%)** |
-| Chi-square attack, any payload | triggered by sequential LSB | **not triggered** |
-| Sample pair analysis | tracks payload with LSB overwriting (≈0.5 at half capacity) | **stays within 0.1 of the cover's value** |
+| Detector | LSB replacement | LSB matching | ScatterSteg, uniform costs | **ScatterSteg, HILL** |
+|---|---|---|---|---|
+| Changes per image (0.05 / 0.4 bits per pixel) | 6,550 / 52,400 | 6,550 / 52,400 | 1,850 / 18,200 | **2,370 / 25,600** |
+| Chi-square attack, p over the first 2% of samples (cover 0.09) | 0.60–0.96 sequential, 0.10–0.12 scattered | 0.10–0.11 | 0.09 | **0.09–0.10** |
+| Sample pair analysis, shift from the cover | +0.008 to +0.064, tracking the payload | 0.000 | −0.001 to −0.019 (3 cover-to-stego sd at 0.4) | **−0.0002 to −0.0012** |
+| Ker's adjacency HCF-COM shift (cover 107.6, sd 10.6) | −0.45 to −1.51 | −0.56 to −4.54 | −0.15 to −1.14 | **−0.01 to −0.14** |
+
+Chi-square only catches sequential embedding, and none of the scattered methods trigger it. Sample pair analysis did see uniform costs, in the opposite direction from LSB replacement; HILL's shift is 7 to 16 times smaller. For JPEG, the 2:3 ratio of coefficients of magnitude 2 and 3 (cover 1.93, sd 0.13 across covers) moves +0.4%, +0.3% and −2.9% with UERD at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient (`benchmark/controls_jpg.py`). An earlier version of this table, measured on two photographs, is in the git history.
 
 ### Against a trained classifier, and against steghide
 

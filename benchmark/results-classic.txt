@@ -1,0 +1,40 @@
+# classic.py and hcf.py on the 480 benchmark covers, 2026-10-26; uniform-ca1a139 and hill-83603fa are builds of those commits; lsbs/lsbr/lsbm from classic.py --make-sequential and baselines.py
+cover                chi-square p start 0.093 whole 0.018  SPA +0.0184
+lsbs           0.05  chi-square p start 0.603 whole 0.022  SPA minus cover +0.0156 (sd 0.0097; LSB replacement: 0.0083) n=480
+lsbs           0.1   chi-square p start 0.958 whole 0.027  SPA minus cover +0.0318 (sd 0.0190; LSB replacement: 0.0167) n=480
+lsbs           0.2   chi-square p start 0.962 whole 0.034  SPA minus cover +0.0628 (sd 0.0334; LSB replacement: 0.0333) n=480
+lsbs           0.4   chi-square p start 0.960 whole 0.061  SPA minus cover +0.1221 (sd 0.0587; LSB replacement: 0.0667) n=480
+lsbr           0.05  chi-square p start 0.097 whole 0.019  SPA minus cover +0.0081 (sd 0.0011; LSB replacement: 0.0083) n=480
+lsbr           0.1   chi-square p start 0.099 whole 0.022  SPA minus cover +0.0160 (sd 0.0017; LSB replacement: 0.0167) n=480
+lsbr           0.2   chi-square p start 0.107 whole 0.025  SPA minus cover +0.0321 (sd 0.0031; LSB replacement: 0.0333) n=480
+lsbr           0.4   chi-square p start 0.124 whole 0.039  SPA minus cover +0.0644 (sd 0.0056; LSB replacement: 0.0667) n=480
+lsbm           0.05  chi-square p start 0.095 whole 0.018  SPA minus cover +0.0000 (sd 0.0010; LSB replacement: 0.0083) n=480
+lsbm           0.1   chi-square p start 0.095 whole 0.019  SPA minus cover -0.0002 (sd 0.0014; LSB replacement: 0.0167) n=480
+lsbm           0.2   chi-square p start 0.099 whole 0.020  SPA minus cover -0.0003 (sd 0.0025; LSB replacement: 0.0333) n=480
+lsbm           0.4   chi-square p start 0.105 whole 0.024  SPA minus cover -0.0003 (sd 0.0043; LSB replacement: 0.0667) n=480
+uniform-ca1a139 0.05  chi-square p start 0.092 whole 0.017  SPA minus cover -0.0010 (sd 0.0006; LSB replacement: 0.0083) n=480
+uniform-ca1a139 0.1   chi-square p start 0.092 whole 0.017  SPA minus cover -0.0030 (sd 0.0011; LSB replacement: 0.0167) n=480
+uniform-ca1a139 0.2   chi-square p start 0.092 whole 0.016  SPA minus cover -0.0078 (sd 0.0025; LSB replacement: 0.0333) n=480
+uniform-ca1a139 0.4   chi-square p start 0.093 whole 0.014  SPA minus cover -0.0194 (sd 0.0065; LSB replacement: 0.0667) n=480
+hill-83603fa   0.05  chi-square p start 0.094 whole 0.019  SPA minus cover -0.0002 (sd 0.0005; LSB replacement: 0.0083) n=480
+hill-83603fa   0.1   chi-square p start 0.094 whole 0.019  SPA minus cover -0.0003 (sd 0.0009; LSB replacement: 0.0167) n=480
+hill-83603fa   0.2   chi-square p start 0.097 whole 0.020  SPA minus cover -0.0007 (sd 0.0017; LSB replacement: 0.0333) n=480
+hill-83603fa   0.4   chi-square p start 0.100 whole 0.022  SPA minus cover -0.0012 (sd 0.0033; LSB replacement: 0.0667) n=480
+# hcf.py lsbr lsbm uniform-ca1a139 hill-83603fa
+cover COM mean 107.635 sd 10.571
+lsbr  0.05  shift -0.452 (sd 0.318; 0.043 cover sds)
+lsbm  0.05  shift -0.562 (sd 0.313; 0.053 cover sds)
+uniform-ca1a139 0.05  shift -0.151 (sd 0.133; 0.014 cover sds)
+hill-83603fa 0.05  shift -0.012 (sd 0.041; 0.001 cover sds)
+lsbr  0.1   shift -0.756 (sd 0.615; 0.072 cover sds)
+lsbm  0.1   shift -1.116 (sd 0.575; 0.106 cover sds)
+uniform-ca1a139 0.1   shift -0.302 (sd 0.237; 0.029 cover sds)
+hill-83603fa 0.1   shift -0.027 (sd 0.076; 0.003 cover sds)
+lsbr  0.2   shift -1.164 (sd 1.252; 0.110 cover sds)
+lsbm  0.2   shift -2.267 (sd 1.160; 0.215 cover sds)
+uniform-ca1a139 0.2   shift -0.619 (sd 0.477; 0.059 cover sds)
+hill-83603fa 0.2   shift -0.058 (sd 0.146; 0.005 cover sds)
+lsbr  0.4   shift -1.511 (sd 2.546; 0.143 cover sds)
+lsbm  0.4   shift -4.539 (sd 2.357; 0.429 cover sds)
+uniform-ca1a139 0.4   shift -1.139 (sd 1.009; 0.108 cover sds)
+hill-83603fa 0.4   shift -0.137 (sd 0.302; 0.013 cover sds)

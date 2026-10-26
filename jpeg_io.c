@@ -129,12 +129,6 @@ int is_jpeg_file(const char *path) {
    entropy data can decode to values beyond its 11-bit DC / 10-bit AC
    range, and then saving would fail (found by fuzzing). Returns -1 if one
    is out of range, there are too many carriers, or out of memory. */
-/* How much dearer a change to a coefficient of |value| 2 is: 2 can only go
-   to 3, which shifts the 2:3 ratio detectors watch (see collect_carriers) */
-#ifndef JPEG_TWO_COST
-#define JPEG_TWO_COST 1.5f
-#endif
-
 static int collect_carriers(JpegImage *j) {
     struct jpeg_decompress_struct *s = &j->src;
     /* UERD (Guo, Ni, Su, Chen and Shi, 2015): a block's energy is the sum
@@ -181,9 +175,7 @@ static int collect_carriers(JpegImage *j) {
                         if (*c >= 2 || *c <= -2) {
                             if (pass) {
                                 /* And 2 can only go to 3, shifting the 2:3
-                                   ratio detectors watch: 1.5x keeps the
-                                   ratio within ~0.5% of the cover's in
-                                   testing (1x lets it fall, 2-3x pushes it up) */
+                                   ratio detectors watch (see JPEG_TWO_COST) */
                                 j->carriers[n] = c;
                                 j->costs[n] = q / around * (*c == 2 || *c == -2 ? JPEG_TWO_COST : 1.0f);
                             }

@@ -19,6 +19,10 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
 
+/// How much dearer a change to a coefficient of |value| 2 is than its UERD
+/// cost: 2 can only go to 3, which shifts the 2:3 ratio JPEG detectors watch.
+/// As C's JPEG_TWO_COST (jpeg_io.h), which has the tuning.
+const TWO_COST: f32 = 1.75;
 /// Largest coefficient storage load will allocate (1 GiB)
 const MAX_COEF_BYTES: usize = 1 << 30;
 /// Most carriers load will take. Each costs memory of its own beyond its
@@ -324,10 +328,9 @@ impl JpegImage {
                     }
                 }
                 // And 2 can only go to 3, shifting the 2:3 ratio detectors
-                // watch: 1.5x keeps the ratio within ~0.5% of the cover's in
-                // testing (1x lets it fall, 2-3x pushes it up)
+                // watch (see TWO_COST)
                 self.carriers.push((start + i) as u32);
-                self.costs.push(q(k) / around * if c == 2 || c == -2 { 1.5 } else { 1.0 });
+                self.costs.push(q(k) / around * if c == 2 || c == -2 { TWO_COST } else { 1.0 });
             }
         }
         true

@@ -358,7 +358,7 @@ static void test_unrewritable_refused(void) {
 /* UERD costs, recomputed here from the coefficients through libjpeg: a
    carrier costs its quantization step over its block's energy plus a
    quarter of each neighbour's (energy: the sum of |coefficient| x step
-   over the AC terms), 1.5x for |value| 2 */
+   over the AC terms), JPEG_TWO_COST times that for |value| 2 */
 static void check_uerd(const char *path) {
     JpegImage *j = jpeg_load(path);
     CHECK(j != NULL);
@@ -395,7 +395,7 @@ static void check_uerd(const char *path) {
                 for (int k = 1; k < DCTSIZE2; k++) {
                     int v = row[0][bx][k];
                     if (v > -2 && v < 2) continue;
-                    double want = q[k] / around * (v == 2 || v == -2 ? 1.5 : 1);
+                    double want = q[k] / around * (v == 2 || v == -2 ? JPEG_TWO_COST : 1);
                     if (n >= c.n_coefs || *c.coefs[n] != v || fabs(c.coef_costs[n] - want) > 1e-5 * want) bad++;
                     n++;
                 }

@@ -27,6 +27,15 @@ void jpeg_free(JpegImage *j);
    finds the same carriers. Valid until jpeg_free. */
 Carrier jpeg_carrier(JpegImage *j);
 
+/* How much dearer a change to a coefficient of |value| 2 is than its UERD
+   cost: 2 can only go to 3, which shifts the 2:3 ratio JPEG detectors
+   watch. Tuned on the benchmark covers: 1.75 keeps the ratio within 0.17
+   of the covers' spread at 0.05-0.2 bits per non-zero AC coefficient
+   (1.5: 0.43, 2.0: 0.22), with the same DCTR detection to within noise. */
+#ifndef JPEG_TWO_COST
+#define JPEG_TWO_COST 1.75f
+#endif
+
 /* Why a cover this way would come out visibly changed, or NULL. Data
    after the EOI marker (MPF secondary images, Ultra HDR gain maps, depth
    maps) isn't kept, while the markers indexing it would be. */

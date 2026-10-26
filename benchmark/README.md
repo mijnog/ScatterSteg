@@ -100,7 +100,7 @@ HILL at a heavy payload, and the SRM-style figures are the ones to use. HILL mak
 where the image is busy, and more of them pair as value swaps (93–98.5%
 against 48–87%). Ker's adjacency HCF-COM, the detector an earlier HILL-like
 attempt lost on, moves 9 to 12 times less than with uniform costs (`hcf.py`).
-BOSSbase and JPEG have not been re-run (JPEG costs are unchanged).
+BOSSbase is re-run below; JPEG costs are covered in the UERD section.
 
 Reproduce (after `fetch_images.py 480`; needs numpy, scipy, scikit-learn,
 pillow and ImageMagick, about 20 minutes on 12 cores):
@@ -145,21 +145,26 @@ lower again.
 ### Second cover set: BOSSbase
 
 1000 grayscale 512×512 images drawn at random from BOSSbase 1.01
-(`fetch_boss.py`; `embed_boss.py`, `results-srm-bossbase.txt`). Same detector.
+(`fetch_boss.py`; `embed_boss.py`, `results-srm-bossbase.txt`, and with HILL
+`results-srm-bossbase-hill.txt`). Same detector.
 steghide is absent: it has no grayscale PNG or PGM support, and its 8-bit BMP
 mode embeds differently. One sample per pixel, so a payload of 0.05 bits per
 pixel is three times heavier per sample than in the colour tables above.
 
-| Payload (bits per pixel) | LSB matching | ScatterSteg |
-|---|---|---|
-| 0.05 | 0.18 | **0.32** |
-| 0.10 | 0.13 | **0.23** |
-| 0.20 | 0.08 | **0.15** |
-| 0.40 | 0.04 | **0.08** |
+| Payload (bits per pixel) | LSB matching | ScatterSteg, uniform costs | **ScatterSteg, HILL** |
+|---|---|---|---|
+| 0.05 | 0.18 | 0.31 | **0.46** |
+| 0.10 | 0.13 | 0.22 | **0.43** |
+| 0.20 | 0.08 | 0.15 | **0.35** |
+| 0.40 | 0.04 | 0.08 | **0.22** |
 
-The ranking and the trend match the Wikimedia result (ScatterSteg caught 68%
-of the time at 0.05 and 92% at 0.4, LSB matching 82% and 96%), with a larger
-training set (500 pairs) and a different source.
+The ranking and the trend match the Wikimedia result, with a larger training
+set (500 pairs) and a different source. With HILL, ScatterSteg is caught 54%
+of the time at 0.05 and 78% at 0.4 (uniform costs: 69% and 92%; LSB matching
+82% and 96%). Re-measured on 2026-10-26 on the same 1000 images, from builds of
+`ca1a139` (uniform) and `83603fa` (HILL): uniform gives 0.313, 0.222, 0.152
+and 0.078 against the published 0.315, 0.225, 0.149 and 0.079, and LSB
+matching is unchanged, so the harness is the same.
 
 ## Method
 

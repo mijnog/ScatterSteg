@@ -132,16 +132,16 @@ A stronger, SRM-style rich-model detector (about 7,000 features per channel and 
 | 0.20 | 0.05 | 0.02 | 0.14 | **0.39** |
 | 0.40 | 0.02 | 0.02 | 0.07 | **0.36** |
 
-At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg with HILL costs about 56% of the time at 0.05 bits per pixel and about 65% at 0.4 (with the uniform costs used before, 65% and 93%). That is better than guessing at every payload, and nothing below 0.05 bits per pixel has been measured. The HILL figures are the same for the C and Rust builds to within 0.006. This is a relative result, not a claim of undetectability: the covers come from two sources, neither representative of everything users will hide data in, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). On a second cover set (measured with uniform costs, before HILL; not yet re-run), 1000 grayscale images from BOSSbase 1.01 (steghide could not be run on it: it has no grayscale PNG or PGM support), the same detector gives, with one sample per pixel so each payload is three times heavier per sample than in the colour tables above:
+At the same payload, ScatterSteg is harder for these detectors to catch than steghide and than naive LSB embedding, with both detectors. The rich-model detector is the better estimate: it catches steghide 96–98% of the time at every payload tested, and ScatterSteg with HILL costs about 56% of the time at 0.05 bits per pixel and about 65% at 0.4 (with the uniform costs used before, 65% and 93%). That is better than guessing at every payload, and nothing below 0.05 bits per pixel has been measured. The HILL figures are the same for the C and Rust builds to within 0.006. This is a relative result, not a claim of undetectability: the covers come from two sources, neither representative of everything users will hide data in, the detector is trained at a known payload, the SRM-style detector is a reimplementation and not the published model, and deep-learning detectors have not been run (they would score every column lower). On a second cover set, 1000 grayscale images from BOSSbase 1.01 (steghide could not be run on it: it has no grayscale PNG or PGM support), the same detector gives, with one sample per pixel so each payload is three times heavier per sample than in the colour tables above:
 
-| Payload (bits per pixel) | LSB matching | ScatterSteg |
-|---|---|---|
-| 0.05 | 0.18 | **0.32** |
-| 0.10 | 0.13 | **0.23** |
-| 0.20 | 0.08 | **0.15** |
-| 0.40 | 0.04 | **0.08** |
+| Payload (bits per pixel) | LSB matching | ScatterSteg, uniform costs | **ScatterSteg, HILL** |
+|---|---|---|---|
+| 0.05 | 0.18 | 0.31 | **0.46** |
+| 0.10 | 0.13 | 0.22 | **0.43** |
+| 0.20 | 0.08 | 0.15 | **0.35** |
+| 0.40 | 0.04 | 0.08 | **0.22** |
 
-Same ranking and the same trend, with ScatterSteg caught 68% of the time at 0.05 and 92% at 0.4.
+Same ranking and the same trend: with HILL, ScatterSteg is caught 54% of the time at 0.05 and 78% at 0.4 (with uniform costs, 69% and 92%). Detection rises faster with payload than in the colour tables, as each payload is three times heavier per sample.
 
 For JPEG (payload in bits per non-zero AC coefficient), a DCTR-style rich-model detector (5,120 features, ensemble classifier) gives ScatterSteg with UERD costs **0.49, 0.47 and 0.40** at 0.05, 0.1 and 0.2 (with the quantization-step costs used before, 0.47, 0.40 and 0.26), against steghide 0.21, 0.10 and 0.03: the same ranking, with steghide caught 97% of the time at 0.2 and ScatterSteg 60% (before UERD, 74%). The detector still sees UERD at a heavier payload (0.26 at 0.3, about 63% of capacity) and scores two halves of the covers at chance. The [benchmark README](benchmark/README.md) has the method and the full list of limitations.
 

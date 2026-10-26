@@ -1,0 +1,13 @@
+# BOSSbase 1.01, 1000 grayscale covers (fetch_boss.py 1000), 2026-10-26: uniform from a build of ca1a139, hill from 83603fa (TOOL=... embed_boss.py 1000; detect_srm.py)
+RESULT boss uniform payload=0.05 PE=0.313 sd=0.006 n=1000
+RESULT boss uniform payload=0.1 PE=0.222 sd=0.008 n=1000
+RESULT boss uniform payload=0.2 PE=0.152 sd=0.008 n=1000
+RESULT boss uniform payload=0.4 PE=0.078 sd=0.007 n=1000
+RESULT boss hill payload=0.05 PE=0.464 sd=0.005 n=1000
+RESULT boss hill payload=0.1 PE=0.427 sd=0.004 n=1000
+RESULT boss hill payload=0.2 PE=0.353 sd=0.013 n=1000
+RESULT boss hill payload=0.4 PE=0.216 sd=0.013 n=1000
+RESULT boss lsbm payload=0.05 PE=0.178 sd=0.006 n=1000
+RESULT boss lsbm payload=0.1 PE=0.125 sd=0.004 n=1000
+RESULT boss lsbm payload=0.2 PE=0.076 sd=0.006 n=1000
+RESULT boss lsbm payload=0.4 PE=0.039 sd=0.003 n=1000

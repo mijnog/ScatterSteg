@@ -31,6 +31,11 @@ fuzz_target!(|data: &[u8]| {
     let (Some(mut c), Some(mut r)) = (c, r) else { return };
 
     assert!(c.carrier_values() == values(&r), "different carriers");
+    // The same costs, so both versions embed alike (UERD; float sums in the
+    // same order, so equal up to rounding)
+    for (a, b) in c.carrier_costs().iter().zip(&r.costs) {
+        assert!((a - b).abs() <= 1e-5 * a.abs().max(*b), "different costs: C {a}, Rust {b}");
+    }
     assert_eq!(c.unsuitable(), r.unsuitable().is_some());
     let (cw, rw) = (c.writable(), r.check_writable());
     assert_eq!(cw, rw, "C writable: {cw}, Rust writable: {rw}");

@@ -109,47 +109,76 @@ int is_jpeg_file(const char *path) {
    is out of range, there are too many carriers, or out of memory. */
 static int collect_carriers(JpegImage *j) {
     struct jpeg_decompress_struct *s = &j->src;
+    /* UERD (Guo, Ni, Su, Chen and Shi, 2015): a block's energy is the sum
+       of its dequantized AC magnitudes, and a change costs the
+       coefficient's quantization step over the energy of the block and,
+       at a quarter weight, its 8 neighbours: cheap in busy blocks and
+       low frequencies, dear in smooth ones. Pass 0 checks the values and
+       sums the energies, pass 1 sets the costs. */
+    size_t blocks = 0;
+    for (int ci = 0; ci < s->num_components; ci++)
+        blocks += (size_t)s->comp_info[ci].width_in_blocks * s->comp_info[ci].height_in_blocks;
+    float *energy = malloc((blocks ? blocks : 1) * sizeof(float));
+    if (!energy) return -1;
+    int r = -1;
     for (int pass = 0; pass < 2; pass++) {
         uint32_t n = 0;
+        size_t base = 0;  /* this component's first block in energy[] */
         for (int ci = 0; ci < s->num_components; ci++) {
             jpeg_component_info *comp = &s->comp_info[ci];
-            for (JDIMENSION by = 0; by < comp->height_in_blocks; by++) {
+            JDIMENSION w = comp->width_in_blocks, h = comp->height_in_blocks;
+            for (JDIMENSION by = 0; by < h; by++) {
                 JBLOCKARRAY row = s->mem->access_virt_barray((j_common_ptr)s, j->coefs[ci], by, 1, TRUE);
-                for (JDIMENSION bx = 0; bx < comp->width_in_blocks; bx++) {
+                for (JDIMENSION bx = 0; bx < w; bx++) {
                     JCOEF dc = row[0][bx][0];
-                    if (!pass && (dc < JPEG_MIN_DC || dc > JPEG_MAX_DC)) return -1;
+                    if (!pass && (dc < JPEG_MIN_DC || dc > JPEG_MAX_DC)) goto out;
+                    float around = 0;  /* the block's energy plus a quarter of its neighbours' */
+                    if (pass) {
+                        for (int dy = -1; dy <= 1; dy++)
+                            for (int dx = -1; dx <= 1; dx++) {
+                                long y = (long)by + dy, x = (long)bx + dx;
+                                if (y < 0 || x < 0 || y >= (long)h || x >= (long)w) continue;
+                                float e = energy[base + (size_t)y * w + (size_t)x];
+                                around += dy || dx ? 0.25f * e : e;
+                            }
+                    }
+                    float e = 0;
                     for (int k = 1; k < DCTSIZE2; k++) {
                         JCOEF *c = &row[0][bx][k];
-                        if (!pass && (*c < -JPEG_MAX_AC || *c > JPEG_MAX_AC)) return -1;
+                        if (!pass && (*c < -JPEG_MAX_AC || *c > JPEG_MAX_AC)) goto out;
+                        /* (a corrupt file's component may lack a table) */
+                        float q = comp->quant_table ? comp->quant_table->quantval[k] : 1;
+                        if (q <= 0) q = 1;
+                        if (!pass) e += (float)abs(*c) * q;
                         if (*c >= 2 || *c <= -2) {
                             if (pass) {
-                                /* A change of 1 moves the block's pixels in
-                                   proportion to the quantization step. And
-                                   2 can only go to 3, shifting the 2:3 ratio
-                                   detectors watch: 1.5x keeps the ratio
-                                   within ~0.5% of the cover's in testing
-                                   (1x lets it fall, 2-3x pushes it up) */
+                                /* And 2 can only go to 3, shifting the 2:3
+                                   ratio detectors watch: 1.5x keeps the
+                                   ratio within ~0.5% of the cover's in
+                                   testing (1x lets it fall, 2-3x pushes it up) */
                                 j->carriers[n] = c;
-                                /* (a corrupt file's component may lack a table) */
-                                float q = comp->quant_table ? comp->quant_table->quantval[k] : 1;
-                                j->costs[n] = (q > 0 ? q : 1) *
-                                              (*c == 2 || *c == -2 ? 1.5f : 1.0f);
+                                j->costs[n] = q / around * (*c == 2 || *c == -2 ? 1.5f : 1.0f);
                             }
                             n++;
                         }
                     }
+                    if (!pass) energy[base + (size_t)by * w + bx] = e;
                 }
             }
+            base += (size_t)w * h;
         }
         if (!pass) {
-            if (n > JPEG_MAX_CARRIERS) return -1;
+            if (n > JPEG_MAX_CARRIERS) goto out;
             j->n_carriers = n;
             j->carriers = malloc((n ? n : 1) * sizeof(int16_t *));
             j->costs = malloc((n ? n : 1) * sizeof(float));
-            if (!j->carriers || !j->costs) return -1;
+            if (!j->carriers || !j->costs) goto out;
         }
     }
-    return 0;
+    r = 0;
+out:
+    free(energy);
+    return r;
 }
 
 JpegImage *jpeg_read(FILE *fp) {

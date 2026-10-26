@@ -279,17 +279,34 @@ impl JpegImage {
             }
             // (a corrupt file's component may lack a table)
             let quant = unsafe { comp.quant_table.as_ref() };
+            let q = |k: usize| { let q = quant.map_or(1.0, |t| t.quantval[k] as f32); if q > 0.0 { q } else { 1.0 } };
+            // UERD (Guo, Ni, Su, Chen and Shi, 2015): a block's energy is the
+            // sum of its dequantized AC magnitudes, and a change costs the
+            // coefficient's quantization step over the energy of the block
+            // and, at a quarter weight, its 8 neighbours: cheap in busy
+            // blocks and low frequencies, dear in smooth ones
+            let energy: Vec<f32> = self.coefs[start..].as_chunks::<DCTSIZE2>().0.iter()
+                .map(|b| (1..DCTSIZE2).fold(0f32, |e, k| e + (b[k] as i32).abs() as f32 * q(k)))
+                .collect();
             for (i, &c) in self.coefs[start..].iter().enumerate() {
                 let k = i % DCTSIZE2;
                 if k == 0 || (c > -2 && c < 2) { continue; }
                 if self.carriers.len() >= MAX_CARRIERS { return false; }
-                // A change of 1 moves the block's pixels in proportion to the
-                // quantization step. And 2 can only go to 3, shifting the 2:3
-                // ratio detectors watch: 1.5x keeps the ratio within ~0.5% of
-                // the cover's in testing (1x lets it fall, 2-3x pushes it up)
-                let q = quant.map_or(1.0, |t| t.quantval[k] as f32);
+                let (bx, by) = ((i / DCTSIZE2) % wb, (i / DCTSIZE2) / wb);
+                let mut around = 0f32;
+                for dy in -1..=1isize {
+                    for dx in -1..=1isize {
+                        let (y, x) = (by as isize + dy, bx as isize + dx);
+                        if y < 0 || x < 0 || y >= hb as isize || x >= wb as isize { continue; }
+                        let e = energy[y as usize * wb + x as usize];
+                        around += if dy != 0 || dx != 0 { 0.25 * e } else { e };
+                    }
+                }
+                // And 2 can only go to 3, shifting the 2:3 ratio detectors
+                // watch: 1.5x keeps the ratio within ~0.5% of the cover's in
+                // testing (1x lets it fall, 2-3x pushes it up)
                 self.carriers.push((start + i) as u32);
-                self.costs.push(if q > 0.0 { q } else { 1.0 } * if c == 2 || c == -2 { 1.5 } else { 1.0 });
+                self.costs.push(q(k) / around * if c == 2 || c == -2 { 1.5 } else { 1.0 });
             }
         }
         true

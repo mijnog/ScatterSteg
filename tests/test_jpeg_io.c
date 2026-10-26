@@ -4,6 +4,7 @@
 #include "test.h"
 #include "jpeg_io.h"
 #include <jpeglib.h>
+#include <math.h>
 #include <setjmp.h>
 #include <sodium.h>
 #include <stdlib.h>
@@ -347,6 +348,69 @@ static void test_unrewritable_refused(void) {
     }
 }
 
+/* UERD costs, recomputed here from the coefficients through libjpeg: a
+   carrier costs its quantization step over its block's energy plus a
+   quarter of each neighbour's (energy: the sum of |coefficient| x step
+   over the AC terms), 1.5x for |value| 2 */
+static void check_uerd(const char *path) {
+    JpegImage *j = jpeg_load(path);
+    CHECK(j != NULL);
+    if (!j) return;
+    Carrier c = jpeg_carrier(j);
+
+    FILE *fp = fopen(path, "rb");
+    struct jpeg_decompress_struct d;
+    struct jpeg_error_mgr err;
+    d.err = jpeg_std_error(&err);
+    jpeg_create_decompress(&d);
+    jpeg_stdio_src(&d, fp);
+    jpeg_read_header(&d, TRUE);
+    jvirt_barray_ptr *coefs = jpeg_read_coefficients(&d);
+    uint32_t n = 0, bad = 0;
+    for (int ci = 0; ci < d.num_components; ci++) {
+        jpeg_component_info *comp = &d.comp_info[ci];
+        int w = (int)comp->width_in_blocks, h = (int)comp->height_in_blocks;
+        const UINT16 *q = comp->quant_table->quantval;
+        double *energy = calloc((size_t)w * h, sizeof(double));
+        for (int by = 0; by < h; by++) {
+            JBLOCKARRAY row = d.mem->access_virt_barray((j_common_ptr)&d, coefs[ci], by, 1, FALSE);
+            for (int bx = 0; bx < w; bx++)
+                for (int k = 1; k < DCTSIZE2; k++) energy[by * w + bx] += abs(row[0][bx][k]) * q[k];
+        }
+        for (int by = 0; by < h; by++) {
+            JBLOCKARRAY row = d.mem->access_virt_barray((j_common_ptr)&d, coefs[ci], by, 1, FALSE);
+            for (int bx = 0; bx < w; bx++) {
+                double around = 0;
+                for (int y = by - 1; y <= by + 1; y++)
+                    for (int x = bx - 1; x <= bx + 1; x++)
+                        if (y >= 0 && x >= 0 && y < h && x < w)
+                            around += (y == by && x == bx ? 1 : 0.25) * energy[y * w + x];
+                for (int k = 1; k < DCTSIZE2; k++) {
+                    int v = row[0][bx][k];
+                    if (v > -2 && v < 2) continue;
+                    double want = q[k] / around * (v == 2 || v == -2 ? 1.5 : 1);
+                    if (n >= c.n_coefs || *c.coefs[n] != v || fabs(c.coef_costs[n] - want) > 1e-5 * want) bad++;
+                    n++;
+                }
+            }
+        }
+        free(energy);
+    }
+    CHECK(n == c.n_coefs);
+    CHECK(bad == 0);
+    jpeg_destroy_decompress(&d);
+    fclose(fp);
+    jpeg_free(j);
+}
+
+static void test_uerd_costs(void) {
+    const char *gray = path_in_dir("uerd-gray.jpg"), *color = path_in_dir("uerd-color.jpg");
+    CHECK(make_fixture(gray, "64 48 1 85") == 0);
+    check_uerd(gray);
+    CHECK(make_fixture(color, "40 32 3 75") == 0);
+    check_uerd(color);
+}
+
 static void test_fuzz_regressions(void) {
     /* Inputs the fuzzer once broke jpeg_load or jpeg_save with. Each must
        fail to load, be refused by jpeg_check_writable, or save and reload
@@ -400,6 +464,7 @@ int main(void) {
     RUN(test_extreme_dc_accepted);
     RUN(test_many_scans_refused);
     RUN(test_unrewritable_refused);
+    RUN(test_uerd_costs);
     RUN(test_fuzz_regressions);
 
     char cmd[300];

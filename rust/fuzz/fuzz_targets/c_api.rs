@@ -65,6 +65,11 @@ impl CJpeg {
         let r = unsafe { jpeg_load(cpath(p).as_ptr()) };
         (!r.is_null()).then_some(CJpeg(r))
     }
+    /// The cost of changing every carrier
+    pub fn carrier_costs(&self) -> Vec<f32> {
+        let c = unsafe { jpeg_carrier(self.0) };
+        (0..c.n_coefs as usize).map(|i| unsafe { *c.costs.add(i) }).collect()
+    }
     /// The value of every carrier
     pub fn carrier_values(&self) -> Vec<i16> {
         let c = unsafe { jpeg_carrier(self.0) };

@@ -268,10 +268,12 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
    that cut detection from 65-94% to 56-65% (0.05-0.4 bits per pixel), and
    more of its changes pair up as value swaps (93-98% against 48-87%).
 
-   JPEG: a change of 1 to a coefficient changes its block's pixels in
-   proportion to the quantization step, so that is the cost (precomputed
-   per carrier by jpeg_io, which also makes changes to |value| == 2 dearer:
-   2 can only go to 3, which shifts the 2:3 ratio JPEG detectors watch). */
+   JPEG: UERD, precomputed per carrier by jpeg_io (collect_carriers): the
+   quantization step over the energy of the block and its neighbours, and
+   dearer for |value| == 2, which can only go to 3 and shifts the 2:3
+   ratio JPEG detectors watch. Against the DCTR-style detector in
+   benchmark/ that cut detection from 54-73% to 51-60% (0.05-0.2 bits per
+   non-zero AC coefficient) over the quantization step alone. */
 void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
                  size_t n, float *costs) {
     uint32_t ch = carrier_channels(c);

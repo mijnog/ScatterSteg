@@ -228,6 +228,7 @@ if sodium:
 
 SALT, NONCE, MAC = 16, 24, 16
 BOX_OVERHEAD = NONCE + MAC
+MESSAGE_MAX = 64 << 20  # CODEC_MESSAGE_MAX
 
 
 def argon2id(pw, salt):
@@ -264,6 +265,27 @@ def open_box(box, key):
     if sodium.crypto_secretbox_open_easy(pt, ct, len(ct), nonce, key) != 0:
         return None
     return pt.raw[:len(ct) - MAC]
+
+
+def pack(message):
+    """The secretbox's plaintext: [encoding | body], the body raw DEFLATE
+    (encoding 1) if that is shorter, else the message as is (0)"""
+    c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    body = c.compress(message) + c.flush()
+    return b"\1" + body if len(body) < len(message) else b"\0" + message
+
+
+def unpack(pt):
+    """The message in the secretbox's plaintext, or None if it's malformed"""
+    if not pt or pt[0] not in (0, 1):
+        return None
+    if pt[0] == 0:
+        return pt[1:]
+    d = zlib.decompressobj(-15)
+    msg = d.decompress(pt[1:], MESSAGE_MAX + 1)
+    if not d.eof or d.unused_data or d.unconsumed_tail or len(msg) > MESSAGE_MAX:
+        return None
+    return msg
 
 
 def seal(message, key):
@@ -419,10 +441,11 @@ def layout(rows, w, h, pw):
     return salt_px, payload_order(scatter_key, w * h, salt_px), enc_key
 
 
-def forge(src, dst, message, passphrase):
+def forge(src, dst, message, passphrase, plaintext=None):
     """Embed `message` the way scattersteg encode does, without its checks
-    (so an empty message is allowed). Overwrites LSBs; decoding can't tell
-    the difference from LSB matching."""
+    (so an empty message is allowed), or the secretbox's `plaintext` as
+    given. Overwrites LSBs; decoding can't tell the difference from LSB
+    matching."""
     w, h, rows = read_png(src)
     rows = [bytearray(r) for r in rows]
     ch = len(rows[0]) // w
@@ -433,7 +456,7 @@ def forge(src, dst, message, passphrase):
     set_bits(rows, w, salt_px, 0, stc_solve(x, to_bits(salt), used), ch)
     scatter_key, enc_key = keys(pw, salt)
     order = payload_order(scatter_key, w * h, salt_px)
-    box = seal(message, enc_key)
+    box = seal(pack(message) if plaintext is None else plaintext, enc_key)
     set_bits(rows, w, order, 0, [(len(box) >> b) & 1 for b in range(32)], ch)
     n = stc_carriers(len(order) * ch - 32, len(box) * 8)
     assert n, "message too long"
@@ -462,12 +485,21 @@ def reveal(src, passphrase):
     w, h, rows = read_png(src)
     ch = len(rows[0]) // w
     _, order, enc_key = layout(rows, w, h, passphrase.encode())
-    return read_box(rows, w, order, ch, enc_key)
+    pt = read_box(rows, w, order, ch, enc_key)
+    return None if pt is None else unpack(pt)
 
 
 def capacity(w, h, ch=3):
-    """Largest message encode accepts for a w x h cover"""
-    return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - BOX_OVERHEAD
+    """Largest message encode accepts for a w x h cover, stored as is (one
+    that compresses can be longer)"""
+    return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - BOX_OVERHEAD - 1
+
+
+def noise(n, seed=1):
+    """n bytes that don't compress, so a message of them is stored as is:
+    capacity limits are exact for them"""
+    import random
+    return random.Random(seed).randbytes(n)
 
 
 def cover_pixel(x, y):
@@ -498,6 +530,18 @@ class CliBase(unittest.TestCase):
     def decode(self, src, passphrase="correct horse"):
         return run(["decode", "-i", src], passphrases=[passphrase])
 
+    def decode_bytes(self, src, *flags, passphrase="correct horse"):
+        """What decode wrote to stdout, byte for byte"""
+        out = self.path("decoded.bin")
+        open(out, "wb").close()
+        code, log = run(["decode", *flags, "-i", src], passphrases=[passphrase], stdout_path=out)
+        self.assertEqual(code, 0, log)
+        with open(out, "rb") as f:
+            return f.read()
+
+    def encode_raw(self, message, out, passphrase="correct horse", src=None):
+        return run(["encode", "-r", "-i", src or self.cover, "-o", out], message, [passphrase, passphrase])
+
     def assertDecodes(self, src, message, passphrase="correct horse"):
         code, out = self.decode(src, passphrase)
         self.assertEqual(code, 0, out)
@@ -514,15 +558,6 @@ class CliTest(CliBase):
         code, log = self.encode(b"meet at the old bridge\n", out)
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "meet at the old bridge")
-
-    def decode_bytes(self, src, *flags, passphrase="correct horse"):
-        """What decode wrote to stdout, byte for byte"""
-        out = self.path("decoded.bin")
-        open(out, "wb").close()
-        code, log = run(["decode", *flags, "-i", src], passphrases=[passphrase], stdout_path=out)
-        self.assertEqual(code, 0, log)
-        with open(out, "rb") as f:
-            return f.read()
 
     def test_warns_when_message_cannot_be_locked(self):
         # Past the locked memory limit, the message can reach swap: say so
@@ -586,12 +621,12 @@ class CliTest(CliBase):
     def test_raw_message_too_long(self):
         # raw keeps the final newline, so it counts against the capacity
         out = self.path("long.png")
-        code, log = self.encode_raw(b"A" * 100000 + b"\n", out)
+        msg = noise(capacity(64, 64)) + b"\n"
+        code, log = self.encode_raw(msg, out)
         self.assertNotEqual(code, 0)
         self.assertIn("too long", log)
-
-    def encode_raw(self, message, out, passphrase="correct horse"):
-        return run(["encode", "-r", "-i", self.cover, "-o", out], message, [passphrase, passphrase])
+        code, log = self.encode(msg, out)
+        self.assertEqual(code, 0, log)
 
     def test_nul_in_passphrase(self):
         # A NUL typed or pasted would end the passphrase, as a C string does,
@@ -709,22 +744,25 @@ class CliTest(CliBase):
     def test_near_capacity(self):
         # 64x64: 4096 - 256 salt-region pixels (1/16 of the image) = 3840
         # px * 3 bits; minus the 32-bit header -> 1436 payload bytes; minus
-        # nonce 24 + MAC 16 = 1396
-        self.assertEqual(capacity(64, 64), 1396)
+        # nonce 24 + MAC 16 and the encoding byte = 1395
+        self.assertEqual(capacity(64, 64), 1395)
         out = self.path("full.png")
-        msg = ("x" * 1396).encode()
-        code, log = self.encode(msg, out)
+        msg = noise(1395)
+        code, log = self.encode_raw(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertDecodes(out, "x" * 1396)
+        self.assertEqual(self.decode_bytes(out, "-r"), msg)
+        code, log = self.encode_raw(noise(1396), self.path("over.png"))
+        self.assertEqual(code, 1, log)
+        self.assertIn("message too long for this image, which holds 1395 bytes", log)
 
     def test_info(self):
         # The capacity, with no passphrase asked: exactly what encode takes
         code, log = run(["info", "-i", self.cover])
-        self.assertEqual((code, log), (0, "Format:   PNG, 64x64, RGB\nCapacity: %d bytes\n" % capacity(64, 64)))
+        self.assertEqual((code, log), (0, "Format:   PNG, 64x64, RGB\nCapacity: %d bytes (more if the message compresses)\n" % capacity(64, 64)))
         gray = self.path("gray.png")
         write_png(gray, 50, 40, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
         code, log = run(["info", "-i", gray])
-        self.assertEqual((code, log), (0, "Format:   PNG, 50x40, gray\nCapacity: %d bytes\n" % capacity(50, 40, 1)))
+        self.assertEqual((code, log), (0, "Format:   PNG, 50x40, gray\nCapacity: %d bytes (more if the message compresses)\n" % capacity(50, 40, 1)))
         # On stdout, for scripts
         out = self.path("info.txt")
         open(out, "w").close()
@@ -855,12 +893,12 @@ class CliTest(CliBase):
     def test_gray_capacity(self):
         gray = self.path("gray.png")
         write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)
-        cap = capacity(40, 40, 1)  # salt region 128 px: (1600 - 128 - 32) / 8 - 40 = 140
-        self.assertEqual(cap, 140)
+        cap = capacity(40, 40, 1)  # salt region 128 px: (1600 - 128 - 32) / 8 - 40 - 1 = 139
+        self.assertEqual(cap, 139)
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"g" * cap, out, src=gray)[0], 0)
-        self.assertDecodes(out, "g" * cap)
-        code, log = self.encode(b"g" * (cap + 1), self.path("over.png"), src=gray)
+        self.assertEqual(self.encode_raw(noise(cap), out, src=gray)[0], 0)
+        self.assertEqual(self.decode_bytes(out, "-r"), noise(cap))
+        code, log = self.encode_raw(noise(cap + 1), self.path("over.png"), src=gray)
         self.assertEqual(code, 1, log)
         self.assertIn("too long", log)
 
@@ -1085,6 +1123,60 @@ class CliTest(CliBase):
         self.assertEqual(reveal(out, "correct horse"), msg)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_compressed_beyond_capacity(self):
+        # Text compresses: half again what the image holds stored as is fits,
+        # and comes back byte for byte, read by the binary and by Python
+        text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "THREAT_MODEL.md"), "rb").read()
+        msg = b" ".join(text.split())[:capacity(64, 64) * 3 // 2]
+        self.assertLessEqual(len(pack(msg)), capacity(64, 64) + 1)
+        out = self.path("steg.png")
+        code, log = self.encode_raw(msg, out)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.decode_bytes(out, "-r"), msg)
+        self.assertEqual(reveal(out, "correct horse"), msg)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_forged_compressed_message_decodes(self):
+        # Python's zlib compresses, the binary inflates
+        msg = b"meet at the old bridge at noon " * 40
+        self.assertEqual(pack(msg)[0], 1)
+        out = self.path("forged.png")
+        forge(self.cover, out, msg, "correct horse")
+        self.assertEqual(self.decode_bytes(out, "-r"), msg)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_malformed_message_refused(self):
+        # Only a sender who knows the passphrase can make these (they
+        # authenticate), but decode must refuse them cleanly, not crash or
+        # print part of them
+        c = zlib.compressobj(9, zlib.DEFLATED, -15)
+        hello = c.compress(b"hello") + c.flush()
+        for name, plaintext in [("empty", b""), ("unknown encoding", b"\x02hello"),
+                                ("not deflate", b"\x01hello"), ("cut short", b"\x01" + hello[:-1]),
+                                ("data after the stream", b"\x01" + hello + b"!")]:
+            with self.subTest(name):
+                out = self.path("forged.png")
+                forge(self.cover, out, b"", "correct horse", plaintext=plaintext)
+                code, log = self.decode(out)
+                self.assertEqual(code, 1, log)
+                self.assertIn("the message is malformed", log)
+                self.assertNotIn("hello", log)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_decompression_bomb_refused(self):
+        # 64 MiB + 1 of zeros deflates to ~65 KB; decode stops inflating
+        # past 64 MiB rather than fill memory
+        c = zlib.compressobj(9, zlib.DEFLATED, -15)
+        bomb = b"\x01" + c.compress(bytes(MESSAGE_MAX + 1)) + c.flush()
+        write_png(self.cover, 512, 512, cover_pixel)
+        self.assertLess(len(bomb), capacity(512, 512))
+        out = self.path("bomb.png")
+        forge(self.cover, out, b"", "correct horse", plaintext=bomb)
+        code, log = self.decode(out)
+        self.assertEqual(code, 1, log)
+        self.assertIn("the message is malformed", log)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_decode_empty_message_wrong_passphrase(self):
         # Still authenticated: a wrong passphrase must not "succeed" silently
         out = self.path("empty.png")
@@ -1094,16 +1186,16 @@ class CliTest(CliBase):
         self.assertIn("Error:", log)
 
     def test_large_image_full_capacity(self):
-        # 800x600: 1.44M bits -> 179,928 message bytes, through stdin, the
-        # pty and the 1 KiB-doubling read buffer
+        # 800x600: 1.44M bits -> 179,927 message bytes, through stdin and
+        # the 1 KiB-doubling read buffer
         write_png(self.cover, 800, 600, cover_pixel)
         cap = capacity(800, 600)
-        msg = bytes(65 + i % 26 for i in range(cap))
+        msg = noise(cap)
         out = self.path("big.png")
-        code, log = self.encode(msg, out)
+        code, log = self.encode_raw(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertDecodes(out, msg.decode())
-        self.assertEqual(self.encode(msg + b"!", self.path("over.png"))[0], 1)
+        self.assertEqual(self.decode_bytes(out, "-r"), msg)
+        self.assertEqual(self.encode_raw(noise(cap + 1), self.path("over.png"))[0], 1)
 
     def test_extreme_aspect_ratios(self):
         for w, h in ((1, 400), (400, 1), (2, 199)):
@@ -1377,20 +1469,20 @@ class CliTest(CliBase):
 
     def test_message_too_long(self):
         out = self.path("steg.png")
-        code, log = self.encode(("x" * 1476).encode(), out)
+        code, log = self.encode(noise(1476), out)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         self.assertFalse(os.path.exists(out))
 
     def test_endless_message_refused(self):
-        # Reading stops past the image's capacity: an endless stdin is
-        # refused quickly, rather than read until memory runs out (or, past
-        # 4 GiB, its 32-bit length wrapping)
+        # Reading stops past CODEC_MESSAGE_MAX (64 MiB): an endless stdin is
+        # refused, rather than read until memory runs out (or, past 4 GiB,
+        # its 32-bit length wrapping)
         out = self.path("steg.png")
         code, log = run(["encode", "-i", self.cover, "-o", out],
                         passphrases=["correct horse"] * 2, stdin_path="/dev/zero")
         self.assertEqual(code, 1, log)
-        self.assertIn("message too long for this image", log)
+        self.assertIn("message too long (max 64 MiB)", log)
         self.assertFalse(os.path.exists(out))
 
     def test_message_read_error(self):
@@ -1419,7 +1511,7 @@ class CliTest(CliBase):
         out = self.path("steg.png")
         with open(out, "wb") as f:
             f.write(b"precious")
-        self.assertEqual(self.encode(("x" * 5000).encode(), out)[0], 1)
+        self.assertEqual(self.encode(noise(5000), out)[0], 1)  # too long
         with open(out, "rb") as f:
             self.assertEqual(f.read(), b"precious")
         self.assertEqual(sorted(os.listdir(self.dir)), ["cover.png", "steg.png"])
@@ -1465,8 +1557,8 @@ class CliTest(CliBase):
         self.assertIn("too small", log)
         roomy = self.path("roomy.png")
         write_png(roomy, 16, 16, cover_pixel)
-        self.assertEqual(capacity(16, 16), 35)
-        code, log = self.encode(b"x" * 36, self.path("out.png"), src=roomy)
+        self.assertEqual(capacity(16, 16), 34)
+        code, log = self.encode(noise(35), self.path("out.png"), src=roomy)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         code, log = self.decode(tiny)
@@ -1524,6 +1616,12 @@ class CrossCheckTest(CliBase):
         # No NUL (printing stops there), no CR (the pty's \n -> \r\n
         # translation is undone on output) and no trailing newline (stripped)
         msg = bytes(rng.choice([b for b in range(1, 256) if b != 13]) for _ in range(n))
+        if rng.random() < 0.4:  # text that compresses, past the room stored as is
+            words = [b"bridge", b"the", b"old", b"meet", b"at", b"noon", b"\xc3\xa9t\xc3\xa9"]
+            msg = b" ".join(rng.choice(words) for _ in range(rng.randint(1, room)))[:3 * room]
+            while len(pack(msg)) > room + 1:  # the binaries' zlib compresses the same
+                msg = msg[:len(msg) * 3 // 4]
+            msg = msg.strip() or b"z"
         msg = msg.rstrip(b"\n") or b"z"
         pw = "".join(rng.choice("abcxyz019 !é✓") for _ in range(rng.randint(12, 60)))
         return w, h, ch, msg, pw
@@ -1640,7 +1738,7 @@ class JpegTest(CliBase):
 
     def test_too_long_and_too_small(self):
         out = self.path("steg.jpg")
-        code, log = self.encode(b"x" * 100000, out, src=self.jpeg)
+        code, log = self.encode(noise(100000), out, src=self.jpeg)
         self.assertEqual(code, 1, log)
         self.assertIn("too long", log)
         self.assertFalse(os.path.exists(out))
@@ -1654,16 +1752,16 @@ class JpegTest(CliBase):
         # The capacity info gives is exactly what encode takes
         code, log = run(["info", "-i", self.jpeg])
         self.assertEqual(code, 0, log)
-        m = re.fullmatch(r"Format:   JPEG, 256x192\nCapacity: (\d+) bytes\n", log)
+        m = re.fullmatch(r"Format:   JPEG, 256x192\nCapacity: (\d+) bytes \(more if the message compresses\)\n", log)
         self.assertTrue(m, log)
         n = int(m.group(1))
         out = self.path("steg.jpg")
-        code, log = self.encode(b"x" * (n + 1), out, src=self.jpeg)
+        code, log = self.encode_raw(noise(n + 1), out, src=self.jpeg)
         self.assertEqual(code, 1, log)
         self.assertIn("too long", log)
-        code, log = self.encode(b"x" * n, out, src=self.jpeg)
+        code, log = self.encode_raw(noise(n), out, src=self.jpeg)
         self.assertEqual(code, 0, log)
-        self.assertDecodes(out, "x" * n)
+        self.assertEqual(self.decode_bytes(out, "-r"), noise(n))
         tiny = self.path("tiny.jpg")
         make_jpeg(tiny, 8, 8, 1, 50)
         code, log = run(["info", "-i", tiny])

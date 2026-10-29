@@ -48,13 +48,13 @@ How hard the message is to detect depends mostly on the cover and on how much yo
 
 - **Use a photo nobody else has.** Anyone who has the original can compare the two and see that something changed. Don't use a photo you've posted or sent, or one from the internet; never encode twice from the same photo; delete the original afterwards.
 - **Use a noisy photo.** Busy, detailed photographs hide changes well. Flat areas, gradients, screenshots and drawings hide them badly.
-- **Keep the message small.** A few kilobytes in a photo-sized image is far below its capacity (`scattersteg info` shows it), and lighter than any payload measured. Detection rises with the message size.
+- **Keep the message small.** A few kilobytes in a photo-sized image is far below its capacity (`scattersteg info` shows it), and lighter than any payload measured. Detection rises with the message size. Text is compressed automatically, so it takes about half its size; files that are already compressed (photos, zip archives) don't shrink.
 - **Prefer a file that a program has already rewritten** over one straight from a camera or phone. ScatterSteg writes the file anew, and a careful observer could notice that (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)).
 
 | | PNG | JPEG |
 |---|---|---|
 | Accepted | 8-bit RGB or grayscale, no transparency | 8-bit baseline or progressive, Huffman or arithmetic coding |
-| Capacity | about 760 KB in a 1080p image | about 0.12–0.15 bits per pixel (about 68 KB in 4.5 MP) |
+| Capacity (before compression) | about 760 KB in a 1080p image | about 0.12–0.15 bits per pixel (about 68 KB in 4.5 MP) |
 | Kept from the cover | interlacing, and every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) or marks safe to copy, byte for byte and in place | quantization, sampling, coding mode, restart interval, APPn and COM markers |
 | Refused | palette, transparency, 16-bit, gray below 8 bits, an `sBIT` chunk under 8, RGB whose pixels are all gray, animation (APNG) | 12-bit, lossless, files that can't be rewritten exactly, data after the image (MPO, Ultra HDR) |
 
@@ -68,7 +68,8 @@ ScatterSteg refuses a cover rather than produce an output that would give it awa
 | `steghide extract -sf out.jpg -xf secret.txt` | `./scattersteg decode -r -i out.jpg > secret.txt` |
 | `-p passphrase` | not accepted: typed at the terminal instead |
 | `steghide info cover.jpg` | `./scattersteg info -i cover.jpg`: whether it can be a cover, and its capacity. It can't say whether an image holds a message: nothing can, without the passphrase. |
-| `-e`, `-z`, `-N`, `-K` | none: the encryption is fixed, and no filename is stored |
+| `-z`, `-Z` | none needed: the message is always compressed when that makes it shorter |
+| `-e`, `-N`, `-K` | none: the encryption is fixed, and no filename is stored |
 
 ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read the other's images. Every encode and decode takes about 0.2 s, on purpose: that is the cost that slows down passphrase guessing.
 
@@ -81,7 +82,7 @@ ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read th
  (16 random bytes,                   └──► encryption key
   at public positions)                          │
                                                 ▼
- message ─────────────────────────► XSalsa20-Poly1305 ──► box
+ message ──► DEFLATE ──────────────► XSalsa20-Poly1305 ──► box
                                                 │
                                                 ▼
              STC: find the cheapest bit changes that make
@@ -93,7 +94,7 @@ ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read th
 ```
 
 1. **Keys.** A random salt is hidden at public positions. Argon2id turns the passphrase and salt into a master key, which gives a *scatter key* and an *encryption key*.
-2. **Encryption.** The message is encrypted and authenticated with XSalsa20-Poly1305.
+2. **Compression and encryption.** The message is compressed (DEFLATE) if that makes it shorter, since fewer bits to hide means fewer changes; text typically shrinks to half. It is then encrypted and authenticated with XSalsa20-Poly1305.
 3. **Order.** The scatter key shuffles the image's carriers into a secret order: the pixel samples of a PNG, or the AC coefficients of magnitude 2 or more in a JPEG.
 4. **Syndrome coding.** Instead of writing one bit into each carrier, which changes about half of them, syndrome-trellis codes (STC) find the cheapest set of changes that encodes the message. "Cheapest" comes from content-adaptive costs: HILL for PNG and UERD for JPEG make a change cheap where the image is busy and expensive where it is flat. This makes 2 to 3 times fewer changes than writing the bits directly, in the places hardest to notice.
 5. **Changes.** Every change is ±1. Where two carriers that both need changing hold values one apart, they swap values instead, which leaves the image's histogram exactly as it was (93–98.5% of changes, on photographs).

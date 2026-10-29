@@ -17,6 +17,9 @@
 //!   payload  [nonce 24 | secretbox]: its 32-bit little-endian length in the
 //!            first 32 samples in that order, then its bits as the STC
 //!            syndrome of the samples after them (see payload_carriers)
+//!   message  the secretbox's plaintext: [encoding 1 | body], the body raw
+//!            DEFLATE (encoding 1) if that made the message shorter, else the
+//!            message as is (0); see compress.rs
 //!
 //! Every pixel carries one bit per sample (R, G, B, or gray LSBs); a JPEG,
 //! one per carrier coefficient. There is no header or version marker, which
@@ -24,6 +27,7 @@
 
 use crate::embed::{self, Carrier, EmbedPlan};
 use crate::sodium::{self, Secret, PwhashStrength, MAC_BYTES, NONCE_BYTES, SALT_BYTES};
+use crate::compress::{self, Unpack};
 use crate::{prng, stc};
 use zeroize::Zeroizing;
 
@@ -209,7 +213,13 @@ pub fn decode(c: &Carrier, passphrase: &[u8]) -> Result<Option<Decrypted>, Strin
     let Some(mut payload) = read_payload(c, &order, count - k) else { return Ok(None) };
     let opened = open_box(&payload, keys.enc());
     sodium::memzero(&mut payload);
-    Ok(opened?.map(|pt| Decrypted { len: pt.len() - 1, plaintext: pt }))
+    let Some(pt) = opened? else { return Ok(None) };
+    match compress::unpack(&pt[..pt.len() - 1]) {
+        Ok(msg) => Ok(Some(Decrypted { len: msg.len() - 1, plaintext: msg })),
+        Err(Unpack::Alloc) => Err("allocation failed".into()),
+        Err(Unpack::Malformed) => Err("the message is malformed; it authenticated, so whoever made the \
+                                       image knew the passphrase".into()),
+    }
 }
 
 /// Everything encode needs once the passphrase is keyed, before the message
@@ -231,14 +241,16 @@ pub fn too_small(c: &Carrier) -> bool {
     count < salt_region_pixels(count, ch) + header_pixels(ch)
 }
 
-/// The most the payload layout holds after the k salt pixels: one payload bit per
-/// sample after the 32-bit header
+/// The longest message that fits stored as is after the k salt pixels: one
+/// payload bit per sample after the 32-bit header, less the box and the
+/// encoding byte
 fn max_message(count: u32, k: u32, ch: u32) -> usize {
-    (payload_samples(count - k, ch) / 8).saturating_sub(BOX_OVERHEAD)
+    (payload_samples(count - k, ch) / 8).saturating_sub(BOX_OVERHEAD + 1)
 }
 
-/// The longest message the carrier holds, which needs no passphrase: what
-/// `Prepared::max_message` gives. 0 if `too_small`.
+/// The longest message the carrier holds stored as is (a compressible one can
+/// be longer), which needs no passphrase: what `Prepared::max_message` gives.
+/// 0 if `too_small`.
 pub fn capacity(c: &Carrier) -> usize {
     if too_small(c) { return 0; }
     let (count, ch) = (c.positions(), c.channels());
@@ -264,17 +276,23 @@ pub fn prepare_encode(c: &Carrier, passphrase: &[u8]) -> Result<Prepared, Option
 }
 
 impl Prepared {
-    /// The longest message this cover holds
+    /// The longest message this cover holds stored as is (a compressible
+    /// one can be longer)
     pub fn max_message(&self) -> usize { self.max_msg }
 
-    /// Encrypts the (non-empty) message and changes the cover to carry it
+    /// Compresses the (non-empty) message if that makes it shorter, encrypts
+    /// it, and changes the cover to carry it. TooLong if it doesn't fit even
+    /// compressed.
     pub fn embed(self, c: &mut Carrier, message: &[u8]) -> Result<(), EmbedError> {
-        // payload = [nonce | secretbox(message)]
-        let mut payload = vec![0u8; BOX_OVERHEAD + message.len()];
+        // payload = [nonce | secretbox([encoding | body])]
+        let (packed, packed_len) = compress::pack(message).ok_or(EmbedError::Alloc)?;
+        if packed_len > self.max_msg + 1 { return Err(EmbedError::TooLong); }
+        let mut payload = vec![0u8; BOX_OVERHEAD + packed_len];
         let mut nonce = [0u8; NONCE_BYTES];
         sodium::random_bytes(&mut nonce);
         payload[..NONCE_BYTES].copy_from_slice(&nonce);
-        sodium::secretbox_easy(&mut payload[NONCE_BYTES..], message, &nonce, self.keys.enc());
+        sodium::secretbox_easy(&mut payload[NONCE_BYTES..], &packed[..packed_len], &nonce, self.keys.enc());
+        drop(packed);
 
         // PNG: HILL costs (see embed::costs); JPEG keeps its own
         let hill = c.hill_costs();

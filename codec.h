@@ -13,6 +13,10 @@
 /* Outcome of trying to decode */
 enum { DECODED, NO_MATCH, FAILED };
 
+/* The longest message encode takes, before compression; decode refuses
+   one that inflates past it */
+#define CODEC_MESSAGE_MAX ((uint32_t)64 << 20)
+
 /* Positions the 32-bit length header takes: fewer, and no message fits */
 uint32_t codec_header_pixels(uint32_t channels);
 
@@ -22,18 +26,19 @@ uint32_t codec_header_pixels(uint32_t channels);
 int codec_decode(const Carrier *c, const char *passphrase,
                  uint8_t **plaintext, uint32_t *pt_len);
 
-/* Encode, in two steps so the message limit is known before the message
-   is read: codec_prepare keys the passphrase (one Argon2id run) and finds
-   the order, NULL if it fails or the carrier is too small; codec_embed
-   encrypts the message (1 to codec_max_message bytes) and records and
-   makes the changes. It frees p, and returns 0, -1 if the message doesn't
-   fit, or -2 if out of memory (the carrier then unchanged). */
+/* Encode, in two steps: codec_prepare keys the passphrase (one Argon2id
+   run) and finds the order, NULL if it fails or the carrier is too small;
+   codec_embed compresses the message (1 to CODEC_MESSAGE_MAX bytes) if
+   that makes it shorter, encrypts it, and records and makes the changes.
+   It frees p, and returns 0, -1 if the message doesn't fit even
+   compressed, or -2 if out of memory (the carrier then unchanged). */
 typedef struct CodecPrepared CodecPrepared;
 /* Whether the carrier can't hold the salt and length, whatever the message:
    cheap, so encode checks it before slower work on the cover */
 int codec_too_small(const Carrier *c);
-/* The longest message the carrier holds, which needs no passphrase: what
-   codec_max_message gives once prepared. 0 if codec_too_small. */
+/* The longest message the carrier holds stored as is (a compressible one
+   can be longer), which needs no passphrase: what codec_max_message gives
+   once prepared. 0 if codec_too_small. */
 size_t codec_capacity(const Carrier *c);
 CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase);
 size_t codec_max_message(const CodecPrepared *p);

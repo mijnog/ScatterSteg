@@ -19,5 +19,21 @@ fn main() {
         builder = builder.clang_arg(format!("-I{}", p.display()));
     }
     let bindings = builder.generate().expect("bindgen failed on jpeglib.h");
-    bindings.write_to_file(PathBuf::from(env::var("OUT_DIR").unwrap()).join("jpeg_bindings.rs")).unwrap();
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings.write_to_file(out.join("jpeg_bindings.rs")).unwrap();
+
+    // zlib, as the C version uses it: its buffers hold the message, so they
+    // must come from sodium_malloc (see compress.rs)
+    let z = pkg_config::Config::new().probe("zlib").expect("zlib not found");
+    let mut builder = bindgen::Builder::default()
+        .header_contents("zwrapper.h", "#include <zlib.h>\n")
+        .allowlist_function("(deflate|inflate)(Init2_|End)?|deflateBound")
+        .allowlist_type("z_stream")
+        .allowlist_var("Z_(OK|STREAM_END|MEM_ERROR|NO_FLUSH|FINISH|DEFLATED|BEST_COMPRESSION|DEFAULT_STRATEGY)|MAX_WBITS|ZLIB_VERSION")
+        .default_enum_style(bindgen::EnumVariation::Consts)
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
+    for p in z.include_paths {
+        builder = builder.clang_arg(format!("-I{}", p.display()));
+    }
+    builder.generate().expect("bindgen failed on zlib.h").write_to_file(out.join("zlib_bindings.rs")).unwrap();
 }

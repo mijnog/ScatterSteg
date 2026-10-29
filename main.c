@@ -465,7 +465,7 @@ static int show_info(const char *input) {
     cover_free(&cover);
 
     char out[128];
-    int n = snprintf(out, sizeof(out), "Format:   %s\nCapacity: %zu bytes\n", format, capacity);
+    int n = snprintf(out, sizeof(out), "Format:   %s\nCapacity: %zu bytes (more if the message compresses)\n", format, capacity);
     if (write_all(STDOUT_FILENO, out, (size_t)n) != 0) {
         fprintf(stderr, "Error: could not write the information: %s\n", strerror(errno));
         return 1;
@@ -617,16 +617,17 @@ int main(int argc, char *argv[]) {
 
         int too_long;
         size_t message_len;
-        char *message = read_message(codec_max_message(prep), &message_len, &too_long, raw, quiet);
+        size_t holds = codec_max_message(prep);
+        char *message = read_message(CODEC_MESSAGE_MAX, &message_len, &too_long, raw, quiet);
         int read_err = errno;  /* before the cleanup below changes it */
         if (!message) {
             codec_prepared_free(prep);
             cover_free(&cover);
-            if (too_long) fprintf(stderr, "Error: message too long for this image\n");
+            if (too_long) fprintf(stderr, "Error: message too long (max %u MiB)\n", CODEC_MESSAGE_MAX >> 20);
             else fprintf(stderr, "Error: could not read message: %s\n", strerror(read_err));
             return 1;
         }
-        uint32_t msg_len = (uint32_t)message_len;  /* at most codec_max_message */
+        uint32_t msg_len = (uint32_t)message_len;  /* at most CODEC_MESSAGE_MAX */
         warn_if_swappable(message, msg_len);
         /* Empty message: almost always a mistake (nothing piped in, an
            empty file, Ctrl+D too soon), and a script must not take it for
@@ -643,8 +644,11 @@ int main(int argc, char *argv[]) {
         sodium_free(message);
         if (embedded != 0) {
             cover_free(&cover);
-            fprintf(stderr, embedded == -1 ? "Error: message too long for this image\n"
-                                           : "Error: allocation failed\n");
+            if (embedded == -1)
+                fprintf(stderr, "Error: message too long for this image, which holds %zu bytes "
+                                "(more if the message compresses well)\n", holds);
+            else
+                fprintf(stderr, "Error: allocation failed\n");
             return 1;
         }
         int is_png = cover.png != NULL;

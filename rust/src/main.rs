@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Maxime de Montbron
 
 use scattersteg::codec::{self, EmbedError};
+use scattersteg::compress;
 use scattersteg::cover::{Cover, SaveError};
 use scattersteg::sodium::{self, Secret};
 use scattersteg::jpeg_io;
@@ -304,7 +305,7 @@ fn info(input: &Path) -> ExitCode {
     };
     let capacity = codec::capacity(&cover.carrier());
     drop(cover);
-    if let Err(e) = write_fd(1, format!("Format:   {format}\nCapacity: {capacity} bytes\n").as_bytes()) {
+    if let Err(e) = write_fd(1, format!("Format:   {format}\nCapacity: {capacity} bytes (more if the message compresses)\n").as_bytes()) {
         scattersteg::errln!("Error: could not write the information: {}", errno_message(&e));
         return ExitCode::FAILURE;
     }
@@ -418,10 +419,11 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
     };
     drop(passphrase);
 
-    let mut message = match read_message(prepared.max_message(), raw, quiet) {
+    let holds = prepared.max_message();
+    let mut message = match read_message(compress::MESSAGE_MAX, raw, quiet) {
         Ok(m) => m,
         Err(ReadError::TooLong) => {
-            scattersteg::errln!("Error: message too long for this image");
+            scattersteg::errln!("Error: message too long (max {} MiB)", compress::MESSAGE_MAX >> 20);
             return ExitCode::FAILURE;
         }
         Err(ReadError::Io(e)) => {
@@ -441,7 +443,8 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
 
     if let Err(e) = prepared.embed(&mut cover.carrier(), &message) {
         match e {
-            EmbedError::TooLong => scattersteg::errln!("Error: message too long for this image"),
+            EmbedError::TooLong => scattersteg::errln!("Error: message too long for this image, which holds {holds} \
+                                                        bytes (more if the message compresses well)"),
             EmbedError::Alloc => scattersteg::errln!("Error: allocation failed"),
         }
         return ExitCode::FAILURE;

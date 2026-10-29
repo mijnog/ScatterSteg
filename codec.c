@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zlib.h>
 
 /* The file format (FORMAT.md): how a message is keyed, laid out in a
    cover's carriers, and found again.
@@ -25,6 +26,9 @@
      payload  [nonce 24 | secretbox]: its 32-bit little-endian length in
               the first 32 samples in that order, then its bits as the STC
               syndrome of the samples after them (see payload_carriers)
+     message  the secretbox's plaintext: [encoding 1 | body], the body raw
+              DEFLATE (encoding 1) if that made the message shorter, else
+              the message as is (0); see pack_message
 
    Every pixel carries one bit per sample (R, G, B, or gray LSBs); a JPEG,
    one per carrier coefficient. There is no header or version marker,
@@ -244,6 +248,114 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     return r;
 }
 
+/* The message is compressed when that makes it shorter: fewer bits to
+   hide, so fewer changes. zlib's buffers hold the message, so they come
+   from sodium_malloc, locked and wiped like the rest. */
+enum { STORED = 0, DEFLATED = 1 };
+
+static voidpf secret_alloc(voidpf opaque, uInt items, uInt size) {
+    (void)opaque;
+    if (size && items > SIZE_MAX / size) return Z_NULL;
+    return sodium_malloc((size_t)items * size);
+}
+
+static void secret_free(voidpf opaque, voidpf p) {
+    (void)opaque;
+    sodium_free(p);
+}
+
+/* The secretbox's plaintext for a message: [encoding | body] (see the top
+   of this file), in sodium_malloc memory. NULL if out of memory. */
+static uint8_t *pack_message(const uint8_t *msg, uint32_t len, uint32_t *packed_len) {
+    z_stream z = {.zalloc = secret_alloc, .zfree = secret_free};
+    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 9, Z_DEFAULT_STRATEGY) != Z_OK)
+        return NULL;
+    uLong bound = deflateBound(&z, len);
+    size_t cap = 1 + (bound > len ? bound : len);
+    uint8_t *packed = sodium_malloc(cap);
+    if (packed) {
+        z.next_in = (Bytef *)msg;
+        z.avail_in = len;
+        z.next_out = packed + 1;
+        z.avail_out = (uInt)(cap - 1);
+        if (deflate(&z, Z_FINISH) == Z_STREAM_END && z.total_out < len) {
+            packed[0] = DEFLATED;
+            *packed_len = 1 + (uint32_t)z.total_out;
+        } else {
+            packed[0] = STORED;
+            memcpy(packed + 1, msg, len);
+            *packed_len = 1 + len;
+        }
+    }
+    deflateEnd(&z);
+    return packed;
+}
+
+/* Inflates src, which must be exactly one raw DEFLATE stream, into out
+   (out_cap bytes); or, if out is NULL, only measures it into *total.
+   Returns 0, -1 if it is malformed or inflates past CODEC_MESSAGE_MAX
+   (a sender could make it a decompression bomb), or -2 if out of memory. */
+static int inflate_message(const uint8_t *src, size_t src_len, uint8_t *out, size_t out_cap,
+                           size_t *total) {
+    z_stream z = {.zalloc = secret_alloc, .zfree = secret_free};
+    if (inflateInit2(&z, -MAX_WBITS) != Z_OK) return -2;
+    uint8_t *scratch = out ? NULL : sodium_malloc(65536);
+    if (!out && !scratch) {
+        inflateEnd(&z);
+        return -2;
+    }
+    z.next_in = (Bytef *)src;
+    z.avail_in = (uInt)src_len;
+    if (out) {
+        z.next_out = out;
+        z.avail_out = (uInt)out_cap;
+    }
+    int r;
+    do {
+        if (scratch) {
+            z.next_out = scratch;
+            z.avail_out = 65536;
+        }
+        r = inflate(&z, Z_NO_FLUSH);
+    } while (r == Z_OK && z.total_out <= CODEC_MESSAGE_MAX);
+    *total = z.total_out;
+    int ok = r == Z_STREAM_END && z.avail_in == 0 && z.total_out <= CODEC_MESSAGE_MAX;
+    inflateEnd(&z);
+    sodium_free(scratch);
+    return ok ? 0 : r == Z_MEM_ERROR ? -2 : -1;
+}
+
+/* Replaces the secretbox's plaintext (*pt, *len bytes and one to spare)
+   with the message it holds, also with one byte to spare. FAILED, with a
+   message, if it is malformed: only a faulty encoder, or a sender who knows
+   the passphrase, could make one that authenticates. */
+static int unpack_message(uint8_t **pt, uint32_t *len) {
+    const uint8_t *body = *pt + 1;
+    size_t body_len = *len ? *len - 1 : 0, size;
+    int r = *len == 0 ? -1 : 0;
+    if (r == 0 && **pt == STORED) {
+        memmove(*pt, body, body_len);
+        *len = (uint32_t)body_len;
+        return DECODED;
+    }
+    if (r == 0 && **pt != DEFLATED) r = -1;
+    if (r == 0) r = inflate_message(body, body_len, NULL, 0, &size);
+    uint8_t *msg = r == 0 ? sodium_malloc(size + 1) : NULL;
+    if (r == 0 && !msg) r = -2;
+    if (r == 0) r = inflate_message(body, body_len, msg, size + 1, &size);
+    if (r != 0) {
+        sodium_free(msg);
+        fprintf(stderr, r == -2 ? "Error: allocation failed\n"
+                                : "Error: the message is malformed; it authenticated, so "
+                                  "whoever made the image knew the passphrase\n");
+        return FAILED;
+    }
+    sodium_free(*pt);
+    *pt = msg;
+    *len = (uint32_t)size;
+    return DECODED;
+}
+
 /* Open [nonce | secretbox] with key. NO_MATCH if it doesn't authenticate. */
 static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
                     uint8_t **plaintext, uint32_t *pt_len) {
@@ -296,6 +408,10 @@ int codec_decode(const Carrier *c, const char *passphrase,
     int r = read_payload(c, order, count - k, &payload, &len);
     if (r == DECODED)
         r = open_box(payload, len, keys->enc, plaintext, pt_len);
+    if (r == DECODED && (r = unpack_message(plaintext, pt_len)) != DECODED) {
+        sodium_free(*plaintext);
+        *plaintext = NULL;
+    }
     if (payload) sodium_memzero(payload, len);
     free(payload);
     free_order(order, count);
@@ -317,12 +433,13 @@ int codec_too_small(const Carrier *c) {
     return count < salt_region_pixels(count, ch) + header_pixels(ch);
 }
 
-/* The most the payload layout holds after the k salt pixels: one payload bit
-   per sample after the 32-bit header. Under 2^32, as positions are 32-bit
-   and 3 samples each at most. */
+/* The longest message that fits stored as is after the k salt pixels: one
+   payload bit per sample after the 32-bit header, less the box and the
+   encoding byte. Under 2^32, as positions are 32-bit and 3 samples each at
+   most. */
 static size_t max_message(uint32_t count, uint32_t k, uint32_t ch) {
     size_t samples = payload_samples(count - k, ch);
-    return samples / 8 > BOX_OVERHEAD ? samples / 8 - BOX_OVERHEAD : 0;
+    return samples / 8 > BOX_OVERHEAD + 1 ? samples / 8 - BOX_OVERHEAD - 1 : 0;
 }
 
 size_t codec_capacity(const Carrier *c) {
@@ -378,16 +495,21 @@ void codec_prepared_free(CodecPrepared *p) {
 }
 
 int codec_embed(CodecPrepared *p, const Carrier *c, const uint8_t *message, uint32_t msg_len) {
-    /* payload = [nonce | secretbox(message)] */
-    uint32_t payload_len = BOX_OVERHEAD + msg_len;
-    uint8_t *payload = malloc(payload_len);
+    /* payload = [nonce | secretbox([encoding | body])] */
+    uint32_t packed_len = 0;
+    uint8_t *packed = pack_message(message, msg_len, &packed_len);
+    uint32_t payload_len = BOX_OVERHEAD + packed_len;
+    uint8_t *payload = packed && packed_len <= p->max_msg + 1 ? malloc(payload_len) : NULL;
     if (!payload) {
+        int too_long = packed && packed_len > p->max_msg + 1;
+        sodium_free(packed);
         codec_prepared_free(p);
-        return -2;
+        return too_long ? -1 : -2;
     }
     randombytes_buf(payload, crypto_secretbox_NONCEBYTES);
-    crypto_secretbox_easy(payload + crypto_secretbox_NONCEBYTES, message, msg_len,
+    crypto_secretbox_easy(payload + crypto_secretbox_NONCEBYTES, packed, packed_len,
                           payload, p->keys->enc);
+    sodium_free(packed);
     sodium_free(p->keys);  /* not needed past here */
     p->keys = NULL;
 

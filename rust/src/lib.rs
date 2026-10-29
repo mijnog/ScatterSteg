@@ -23,3 +23,5 @@ pub mod sodium;
 pub mod stc;
 pub mod jpeg_sys;
 pub mod jpeg_io;
+pub mod zlib_sys;
+pub mod compress;

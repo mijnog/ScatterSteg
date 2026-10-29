@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c17 -g
-LIBS    = -lsodium -lpng -ljpeg -lm
+LIBS    = -lsodium -lpng -ljpeg -lz -lm
 
 SRCS    = main.c codec.c prng.c embed.c stc.c png_io.c jpeg_io.c atomic_write.c
 OBJS    = $(SRCS:.c=.o)
@@ -130,7 +130,7 @@ $(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c $(HDRS) | $(FUZZ_
 
 # Built with Argon2id swapped for BLAKE2b (see codec.c), never for real use
 $(FUZZ_DIR)/fuzz_codec: tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c $(HDRS) | $(FUZZ_DIR)
-	$(FUZZ_CC) $(FUZZ_CFLAGS) -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c -o $@ -lsodium -lm
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c -o $@ -lsodium -lz -lm
 
 $(FUZZ_DIR)/fuzz_png_roundtrip: tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c -o $@ -lpng

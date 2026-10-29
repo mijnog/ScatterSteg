@@ -441,7 +441,7 @@ mod tests {
             .collect();
         let costs = Carrier::png(&mut px, 6, 5, 3).hill_costs();
         for (i, (r, c)) in costs.iter().zip(C).enumerate() {
-            assert!((r - c).abs() <= 1e-5 * c, "sample {{i}}: Rust {{r}}, C {{c}}");
+            assert!((r - c).abs() <= 1e-5 * c, "sample {i}: Rust {r}, C {c}");
         }
     }
 }

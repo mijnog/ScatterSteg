@@ -315,7 +315,7 @@ float *embed_hill_costs(const Image *img) {
     }
     static const int kb[3][3] = {{-1, 2, -1}, {2, -4, 2}, {-1, 2, -1}};
     for (uint32_t c = 0; c < ch; c++) {
-        /* |KB high-pass residual|, mirrored at the edges */
+        /* |KB high-pass residual|, edges repeated */
         for (uint32_t y = 0; y < h; y++)
             for (uint32_t x = 0; x < w; x++) {
                 int r = 0;

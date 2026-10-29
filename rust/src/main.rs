@@ -251,12 +251,68 @@ fn protect_process() {
     }
 }
 
-fn usage(prog: &str) {
-    scattersteg::errln!("Usage: {prog} encode [-r] -i <cover.png|jpg> -o <output.png|jpg>");
-    scattersteg::errln!("       {prog} decode [-r] -i <image.png|jpg>");
-    scattersteg::errln!("       {prog} passphrase");
-    scattersteg::errln!("Message is read from stdin. `passphrase` prints a strong random passphrase.");
-    scattersteg::errln!("Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.");
+/// To stderr after a mistake, to stdout when asked for (help)
+fn usage(prog: &str, to_stdout: bool) -> io::Result<()> {
+    let text = format!(
+        "Usage: {prog} encode [-r] -i <cover.png|jpg> -o <output.png|jpg>\n\
+         \x20      {prog} decode [-r] -i <image.png|jpg>\n\
+         \x20      {prog} info -i <cover.png|jpg>\n\
+         \x20      {prog} passphrase | help | version\n\
+         Message is read from stdin. `passphrase` prints a strong random passphrase.\n\
+         `info` says whether an image can be a cover, and the longest message it holds.\n\
+         Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
+    if to_stdout { write_fd(1, text.as_bytes()) } else { let _ = write_fd(2, text.as_bytes()); Ok(()) }
+}
+
+/// Whether the cover can carry a message: the output would keep its format
+/// and not give the changes away, and it holds at least one byte. If not,
+/// prints why. Checks a JPEG can be rewritten by encoding it in memory, so it
+/// costs about as much as loading it.
+fn check_cover(cover: &mut Cover, input: &Path) -> bool {
+    // A PNG output is 8-bit RGB or gray: any other cover would come out in a
+    // visibly different format, which gives it away
+    let unsuitable = match cover {
+        Cover::Png(img) => img.unsuitable.map(|why| (why, "use an 8-bit RGB or grayscale PNG without transparency as the cover")),
+        Cover::Jpeg(j) => j.unsuitable().map(|why| (why, "use another cover")),
+    };
+    if let Some((why, advice)) = unsuitable {
+        scattersteg::errln!("Error: '{}' has {why}, which the output can't keep; {advice}", input.display());
+        return false;
+    }
+    // Before check_writable, which decodes the cover again: a few bytes can
+    // declare a huge frame with next to no carriers
+    if codec::capacity(&cover.carrier()) == 0 {
+        scattersteg::errln!("Error: image too small to hide a message");
+        return false;
+    }
+    if let Cover::Jpeg(j) = cover && !j.check_writable() {
+        scattersteg::errln!("Error: '{}' is a JPEG that can't be rewritten losslessly; use another cover",
+                  input.display());
+        return false;
+    }
+    true
+}
+
+/// info: the cover's format and size, and the longest message it holds, or
+/// why it can't be a cover. Needs no passphrase: the capacity depends on the
+/// image alone.
+fn info(input: &Path) -> ExitCode {
+    let Some(mut cover) = Cover::load(input) else {
+        scattersteg::errln!("Error: could not load '{}'", input.display());
+        return ExitCode::FAILURE;
+    };
+    if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
+    let format = match &cover {
+        Cover::Png(img) => format!("PNG, {}x{}, {}", img.width, img.height, if img.channels == 1 { "gray" } else { "RGB" }),
+        Cover::Jpeg(j) => { let (w, h) = j.size(); format!("JPEG, {w}x{h}") }
+    };
+    let capacity = codec::capacity(&cover.carrier());
+    drop(cover);
+    if let Err(e) = write_fd(1, format!("Format:   {format}\nCapacity: {capacity} bytes\n").as_bytes()) {
+        scattersteg::errln!("Error: could not write the information: {}", errno_message(&e));
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 /// The output has the cover's format; refuse a name that says otherwise
@@ -348,33 +404,7 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    // A PNG output is 8-bit RGB or gray: any other cover would come out in a
-    // visibly different format, which gives it away
-    match &mut cover {
-        Cover::Png(img) => if let Some(why) = img.unsuitable {
-            scattersteg::errln!("Error: '{}' has {why}, which the output can't keep; use an 8-bit RGB or \
-                       grayscale PNG without transparency as the cover", input.display());
-            return ExitCode::FAILURE;
-        },
-        Cover::Jpeg(j) => {
-            if let Some(why) = j.unsuitable() {
-                scattersteg::errln!("Error: '{}' has {why}, which the output can't keep; use another cover",
-                          input.display());
-                return ExitCode::FAILURE;
-            }
-            // Before check_writable, which decodes the cover again: a few
-            // bytes can declare a huge frame with next to no carriers
-            if codec::too_small(&j.carrier()) {
-                scattersteg::errln!("Error: image too small to hide a message");
-                return ExitCode::FAILURE;
-            }
-            if !j.check_writable() {
-                scattersteg::errln!("Error: '{}' is a JPEG that can't be rewritten losslessly; use another cover",
-                          input.display());
-                return ExitCode::FAILURE;
-            }
-        }
-    }
+    if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
 
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,
@@ -499,32 +529,39 @@ fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let prog = args.first().map_or_else(|| "scattersteg".into(), |a| a.to_string_lossy().into_owned());
     if args.len() < 2 {
-        usage(&prog);
+        let _ = usage(&prog, false);
         return ExitCode::FAILURE;
     }
+    // The usual spellings of help and version, as their commands
+    let cmd: &[u8] = match args[1].as_bytes() {
+        b"-h" | b"--help" => b"help",
+        b"--version" => b"version",
+        other => other,
+    };
     let Some(opts) = parse_options(&args[2..]) else {
-        usage(&prog);
+        let _ = usage(&prog, false);
         return ExitCode::FAILURE;
     };
 
     // Anything left over, or an option the command doesn't use, is a typo or
     // a misunderstanding: say so rather than ignore it
-    let known = matches!(args[1].as_bytes(), b"passphrase" | b"encode" | b"decode");
+    let bare = matches!(cmd, b"passphrase" | b"help" | b"version");
+    let known = bare || matches!(cmd, b"encode" | b"decode" | b"info");
     if let (true, Some(a)) = (known, opts.extra.first()) {
         scattersteg::errln!("Error: unexpected argument '{}'", a.to_string_lossy());
-        usage(&prog);
+        let _ = usage(&prog, false);
         return ExitCode::FAILURE;
     }
 
-    match args[1].as_bytes() {
-        b"passphrase" if opts.input.is_some() || opts.output.is_some() || opts.raw => {
-            scattersteg::errln!("Error: passphrase takes no options");
-            usage(&prog);
+    match cmd {
+        _ if bare && (opts.input.is_some() || opts.output.is_some() || opts.raw) => {
+            scattersteg::errln!("Error: {} takes no options", String::from_utf8_lossy(cmd));
+            let _ = usage(&prog, false);
             ExitCode::FAILURE
         }
         b"decode" if opts.input.is_some() && opts.output.is_some() => {
             scattersteg::errln!("Error: decode takes no -o; the message goes to stdout (redirect it with >)");
-            usage(&prog);
+            let _ = usage(&prog, false);
             ExitCode::FAILURE
         }
         b"passphrase" => match generate_passphrase() {
@@ -534,11 +571,35 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        b"help" => match usage(&prog, true) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        },
+        b"version" => match write_fd(1, concat!("scattersteg ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                scattersteg::errln!("Error: could not write the version: {}", errno_message(&e));
+                ExitCode::FAILURE
+            }
+        },
+        b"info" => match (&opts.input, &opts.output, opts.raw) {
+            (Some(i), None, false) => info(Path::new(i)),
+            (None, _, _) => {
+                scattersteg::errln!("Error: info requires -i");
+                let _ = usage(&prog, false);
+                ExitCode::FAILURE
+            }
+            _ => {
+                scattersteg::errln!("Error: info takes only -i");
+                let _ = usage(&prog, false);
+                ExitCode::FAILURE
+            }
+        },
         b"encode" => match (&opts.input, &opts.output) {
             (Some(i), Some(o)) => encode(Path::new(i), Path::new(o), opts.raw),
             _ => {
                 scattersteg::errln!("Error: encode requires -i and -o");
-                usage(&prog);
+                let _ = usage(&prog, false);
                 ExitCode::FAILURE
             }
         },
@@ -546,13 +607,13 @@ fn main() -> ExitCode {
             Some(i) => decode(Path::new(i), opts.raw),
             None => {
                 scattersteg::errln!("Error: decode requires -i");
-                usage(&prog);
+                let _ = usage(&prog, false);
                 ExitCode::FAILURE
             }
         },
         other => {
             scattersteg::errln!("Error: unknown command '{}'", String::from_utf8_lossy(other));
-            usage(&prog);
+            let _ = usage(&prog, false);
             ExitCode::FAILURE
         }
     }

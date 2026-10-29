@@ -328,6 +328,20 @@ pub fn too_small(c: &Carrier) -> bool {
     count < salt_region_pixels(count, ch) + header_pixels(ch)
 }
 
+/// The most the v3 layout holds after the k salt pixels: one payload bit per
+/// sample after the 32-bit header
+fn max_message(count: u32, k: u32, ch: u32) -> usize {
+    (v3_samples(count - k, ch) / 8).saturating_sub(V2_OVERHEAD)
+}
+
+/// The longest message the carrier holds, which needs no passphrase: what
+/// `Prepared::max_message` gives. 0 if `too_small`.
+pub fn capacity(c: &Carrier) -> usize {
+    if too_small(c) { return 0; }
+    let (count, ch) = (c.positions(), c.channels());
+    max_message(count, salt_region_pixels(count, ch), ch)
+}
+
 /// Err(None) if the image is too small to hide a message; Err(Some(msg)) on
 /// other failures
 pub fn prepare_encode(c: &Carrier, passphrase: &[u8]) -> Result<Prepared, Option<String>> {
@@ -342,10 +356,7 @@ pub fn prepare_encode(c: &Carrier, passphrase: &[u8]) -> Result<Prepared, Option
     let order = payload_order(keys.scatter(), count, &salt_px)
         .ok_or_else(|| Some("allocation failed".to_string()))?;
 
-    // The most the v3 layout holds: one payload bit per sample after the
-    // 32-bit header
-    let samples = v3_samples(count - k, ch);
-    let max_msg = (samples / 8).saturating_sub(V2_OVERHEAD);
+    let max_msg = max_message(count, k, ch);
     Ok(Prepared { salt, keys, order, salt_px, k, count, max_msg })
 }
 

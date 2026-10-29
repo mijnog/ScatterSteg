@@ -427,6 +427,20 @@ int codec_too_small(const Carrier *c) {
     return count < salt_region_pixels(count, ch) + header_pixels(ch);
 }
 
+/* The most the v3 layout holds after the k salt pixels: one payload bit
+   per sample after the 32-bit header. Under 2^32, as positions are 32-bit
+   and 3 samples each at most. */
+static size_t max_message(uint32_t count, uint32_t k, uint32_t ch) {
+    size_t samples = v3_samples(count - k, ch);
+    return samples / 8 > V2_OVERHEAD ? samples / 8 - V2_OVERHEAD : 0;
+}
+
+size_t codec_capacity(const Carrier *c) {
+    if (codec_too_small(c)) return 0;
+    uint32_t count = carrier_positions(c), ch = carrier_channels(c);
+    return max_message(count, salt_region_pixels(count, ch), ch);
+}
+
 CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase) {
     uint32_t count = carrier_positions(c), ch = carrier_channels(c);
     uint32_t k = salt_region_pixels(count, ch);
@@ -457,11 +471,7 @@ CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase) {
         return NULL;
     }
 
-    /* The most the v3 layout holds: one payload bit per sample after the
-       32-bit header. Under 2^32, as positions are 32-bit and 3 samples
-       each at most. */
-    size_t samples = v3_samples(count - k, ch);
-    p->max_msg = samples / 8 > V2_OVERHEAD ? samples / 8 - V2_OVERHEAD : 0;
+    p->max_msg = max_message(count, k, ch);
     return p;
 }
 

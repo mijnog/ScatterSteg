@@ -26,6 +26,7 @@ void jpeg_free(JpegImage *j);
    JPEG steganalysis watches). Embedding keeps |value| >= 2, so a decoder
    finds the same carriers. Valid until jpeg_free. */
 Carrier jpeg_carrier(JpegImage *j);
+void jpeg_size(const JpegImage *j, uint32_t *width, uint32_t *height);
 
 /* How much dearer a change to a coefficient of |value| 2 is than its UERD
    cost: 2 can only go to 3, which shifts the 2:3 ratio JPEG detectors

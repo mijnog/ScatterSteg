@@ -13,6 +13,7 @@ import ctypes.util
 import hashlib
 import os
 import pty
+import re
 import resource
 import select
 import signal
@@ -830,6 +831,75 @@ class CliTest(CliBase):
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "x" * 1396)
 
+    def test_info(self):
+        # The capacity, with no passphrase asked: exactly what encode takes
+        code, log = run(["info", "-i", self.cover])
+        self.assertEqual((code, log), (0, "Format:   PNG, 64x64, RGB\nCapacity: %d bytes\n" % capacity(64, 64)))
+        gray = self.path("gray.png")
+        write_png(gray, 50, 40, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
+        code, log = run(["info", "-i", gray])
+        self.assertEqual((code, log), (0, "Format:   PNG, 50x40, gray\nCapacity: %d bytes\n" % capacity(50, 40, 1)))
+        # On stdout, for scripts
+        out = self.path("info.txt")
+        open(out, "w").close()
+        code, log = run(["info", "-i", self.cover], stdout_path=out)
+        self.assertEqual((code, log), (0, ""))
+        with open(out) as f:
+            self.assertIn("Capacity: %d bytes" % capacity(64, 64), f.read())
+
+    def test_info_refuses_what_encode_refuses(self):
+        # The same checks and messages as encode, and no prompt
+        gray_rgb = self.path("gray-rgb.png")
+        write_png(gray_rgb, 64, 64, lambda x, y: (cover_pixel(x, y)[0],) * 3)
+        # Past the salt and length, but no room for a byte of message:
+        # refused as too small, not left to fail as "too long" (encode too)
+        full = self.path("full.png")
+        write_png(full, 13, 13, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
+        self.assertLessEqual(capacity(13, 13, 1), 0)
+        for src, why in [(gray_rgb, "has only gray pixels, stored as RGB"),
+                         (full, "too small to hide a message"),
+                         (self.path("missing.png"), "could not load")]:
+            code, log = run(["info", "-i", src])
+            self.assertEqual(code, 1, log)
+            self.assertIn(why, log)
+            self.assertNotIn("assphrase", log)
+            if os.path.exists(src):
+                code, log = self.encode(b"x", self.path("out.png"), src=src)
+                self.assertEqual(code, 1, log)
+                self.assertIn(why, log)
+        for args, why in [(["info"], "info requires -i"),
+                          (["info", "-i", self.cover, "-r"], "info takes only -i"),
+                          (["info", "-i", self.cover, "-o", self.path("x.png")], "info takes only -i"),
+                          (["info", "-i", self.cover, "stray"], "unexpected argument 'stray'")]:
+            code, log = run(args)
+            self.assertEqual(code, 1, (args, log))
+            self.assertIn(why, log, args)
+
+    def test_help_and_version(self):
+        cargo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rust", "Cargo.toml")
+        with open(cargo) as f:
+            version = re.search(r'^version = "(.*)"', f.read(), re.M).group(1)
+        out = self.path("stdout.txt")
+        for args, want in [(["version"], "scattersteg %s\n" % version),
+                           (["--version"], "scattersteg %s\n" % version),
+                           (["help"], "Usage:"), (["-h"], "Usage:"), (["--help"], "Usage:")]:
+            open(out, "w").close()
+            code, log = run(args, stdout_path=out)  # on stdout, nothing on stderr
+            self.assertEqual((code, log), (0, ""), args)
+            with open(out) as f:
+                got = f.read()
+            if want == "Usage:":
+                self.assertTrue(got.startswith("Usage:"), got)
+                self.assertIn(" info -i ", got)
+            else:
+                self.assertEqual(got, want)
+        for args, why in [(["help", "-r"], "help takes no options"),
+                          (["version", "-i", self.cover], "version takes no options"),
+                          (["--version", "stray"], "unexpected argument 'stray'")]:
+            code, log = run(args)
+            self.assertEqual(code, 1, (args, log))
+            self.assertIn(why, log, args)
+
     def test_samples_change_by_at_most_one(self):
         out = self.path("steg.png")
         self.assertEqual(self.encode(b"some secret", out)[0], 0)
@@ -1536,9 +1606,18 @@ class CliTest(CliBase):
         code, log = self.encode(b"hi", self.path("out.png"), src=tiny)
         self.assertEqual(code, 1)
         self.assertIn("too small", log)
+        # 81 px: salt + header, but 4 payload bytes, short of the 40 the
+        # nonce and MAC take: no room for a byte of message
         small = self.path("small.png")
-        write_png(small, 9, 9, cover_pixel)  # 81 px: salt + header, 4 payload bytes
+        write_png(small, 9, 9, cover_pixel)
+        self.assertLessEqual(capacity(9, 9), 0)
         code, log = self.encode(b"hi", self.path("out.png"), src=small)
+        self.assertEqual(code, 1)
+        self.assertIn("too small", log)
+        roomy = self.path("roomy.png")
+        write_png(roomy, 16, 16, cover_pixel)
+        self.assertEqual(capacity(16, 16), 35)
+        code, log = self.encode(b"x" * 36, self.path("out.png"), src=roomy)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         code, log = self.decode(tiny)
@@ -1719,6 +1798,26 @@ class JpegTest(CliBase):
         tiny = self.path("tiny.jpg")
         make_jpeg(tiny, 8, 8, 1, 50)  # one block: nowhere near 160 carriers
         code, log = self.encode(b"x", out, src=tiny)
+        self.assertEqual(code, 1, log)
+        self.assertIn("too small", log)
+
+    def test_info(self):
+        # The capacity info gives is exactly what encode takes
+        code, log = run(["info", "-i", self.jpeg])
+        self.assertEqual(code, 0, log)
+        m = re.fullmatch(r"Format:   JPEG, 256x192\nCapacity: (\d+) bytes\n", log)
+        self.assertTrue(m, log)
+        n = int(m.group(1))
+        out = self.path("steg.jpg")
+        code, log = self.encode(b"x" * (n + 1), out, src=self.jpeg)
+        self.assertEqual(code, 1, log)
+        self.assertIn("too long", log)
+        code, log = self.encode(b"x" * n, out, src=self.jpeg)
+        self.assertEqual(code, 0, log)
+        self.assertDecodes(out, "x" * n)
+        tiny = self.path("tiny.jpg")
+        make_jpeg(tiny, 8, 8, 1, 50)
+        code, log = run(["info", "-i", tiny])
         self.assertEqual(code, 1, log)
         self.assertIn("too small", log)
 

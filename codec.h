@@ -32,6 +32,9 @@ typedef struct CodecPrepared CodecPrepared;
 /* Whether the carrier can't hold the salt and length, whatever the message:
    cheap, so encode checks it before slower work on the cover */
 int codec_too_small(const Carrier *c);
+/* The longest message the carrier holds, which needs no passphrase: what
+   codec_max_message gives once prepared. 0 if codec_too_small. */
+size_t codec_capacity(const Carrier *c);
 CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase);
 size_t codec_max_message(const CodecPrepared *p);
 int  codec_embed(CodecPrepared *p, const Carrier *c, const uint8_t *message, uint32_t msg_len);

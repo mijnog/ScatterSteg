@@ -28,6 +28,8 @@
 /* Shorter passphrases are refused on encode (decode accepts any, for old
    images). Length is a crude measure, so `passphrase` generates good ones. */
 #define PASSPHRASE_MIN_LEN 12
+/* As in rust/Cargo.toml, which tests/test_cli.py checks */
+#define SCATTERSTEG_VERSION "0.1.0"
 
 /* Secrets (passphrase, message, keys, plaintext) live in sodium_malloc
    memory: locked so it can't be swapped to disk (within the locked memory
@@ -170,6 +172,38 @@ static int cover_load(const char *path, Cover *c) {
 static void cover_free(Cover *c) {
     image_free(c->png);
     jpeg_free(c->jpeg);
+}
+
+/* Whether the cover can carry a message: the output would keep its format
+   and not give the changes away, and it holds at least one byte. If not,
+   prints why and returns -1. Checks a JPEG can be rewritten by encoding it
+   in memory, so it costs about as much as loading it. */
+static int cover_check(Cover *c, const char *path) {
+    /* A PNG output is 8-bit RGB or gray: any other cover would come out
+       in a visibly different format, which gives it away */
+    if (c->png && c->png->unsuitable) {
+        fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
+                        "use an 8-bit RGB or grayscale PNG without transparency "
+                        "as the cover\n", path, c->png->unsuitable);
+        return -1;
+    }
+    if (c->jpeg && jpeg_unsuitable(c->jpeg)) {
+        fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
+                        "use another cover\n", path, jpeg_unsuitable(c->jpeg));
+        return -1;
+    }
+    /* Before jpeg_check_writable, which decodes the cover again: a few
+       bytes can declare a huge frame with next to no carriers */
+    if (codec_capacity(&c->carrier) == 0) {
+        fprintf(stderr, "Error: image too small to hide a message\n");
+        return -1;
+    }
+    if (c->jpeg && jpeg_check_writable(c->jpeg) != 0) {
+        fprintf(stderr, "Error: '%s' is a JPEG that can't be rewritten losslessly; "
+                        "use another cover\n", path);
+        return -1;
+    }
+    return 0;
 }
 
 /* A digest of all a decoder reads: the carrier's size and every sample, in
@@ -395,12 +429,48 @@ static void protect_process(void) {
 #endif
 }
 
-static void usage(const char *prog) {
-    fprintf(stderr, "Usage: %s encode [-r] -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
-    fprintf(stderr, "       %s decode [-r] -i <image.png|jpg>\n", prog);
-    fprintf(stderr, "       %s passphrase\n", prog);
-    fprintf(stderr, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
-    fprintf(stderr, "Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
+/* To stderr after a mistake, to stdout when asked for (help) */
+static void usage(FILE *out, const char *prog) {
+    fprintf(out, "Usage: %s encode [-r] -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
+    fprintf(out, "       %s decode [-r] -i <image.png|jpg>\n", prog);
+    fprintf(out, "       %s info -i <cover.png|jpg>\n", prog);
+    fprintf(out, "       %s passphrase | help | version\n", prog);
+    fprintf(out, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
+    fprintf(out, "`info` says whether an image can be a cover, and the longest message it holds.\n");
+    fprintf(out, "Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
+}
+
+/* info: the cover's format and size, and the longest message it holds,
+   or why it can't be a cover. Needs no passphrase: the capacity depends on
+   the image alone. Returns the exit status. */
+static int show_info(const char *input) {
+    Cover cover;
+    if (cover_load(input, &cover) != 0) return 1;
+    if (cover_check(&cover, input) != 0) {
+        cover_free(&cover);
+        return 1;
+    }
+    uint32_t w, h;
+    char format[64];
+    if (cover.png) {
+        w = cover.png->width;
+        h = cover.png->height;
+        snprintf(format, sizeof(format), "PNG, %ux%u, %s", w, h,
+                 cover.png->channels == 1 ? "gray" : "RGB");
+    } else {
+        jpeg_size(cover.jpeg, &w, &h);
+        snprintf(format, sizeof(format), "JPEG, %ux%u", w, h);
+    }
+    size_t capacity = codec_capacity(&cover.carrier);
+    cover_free(&cover);
+
+    char out[128];
+    int n = snprintf(out, sizeof(out), "Format:   %s\nCapacity: %zu bytes\n", format, capacity);
+    if (write_all(STDOUT_FILENO, out, (size_t)n) != 0) {
+        fprintf(stderr, "Error: could not write the information: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -411,9 +481,14 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc < 2) {
-        usage(argv[0]);
+        usage(stderr, argv[0]);
         return 1;
     }
+
+    /* The usual spellings of help and version, as their commands */
+    const char *cmd = argv[1];
+    if (!strcmp(cmd, "-h") || !strcmp(cmd, "--help")) cmd = "help";
+    else if (!strcmp(cmd, "--version")) cmd = "version";
 
     const char *input  = NULL;
     const char *output = NULL;
@@ -426,33 +501,58 @@ int main(int argc, char *argv[]) {
             case 'o': output = optarg; break;
             case 'r': raw = 1; break;
             default:
-                usage(argv[0]);
+                usage(stderr, argv[0]);
                 return 1;
         }
     }
 
     /* Anything left over, or an option the command doesn't use, is a typo
        or a misunderstanding: say so rather than ignore it */
-    const char *cmd = argv[1];
-    int known = !strcmp(cmd, "passphrase") || !strcmp(cmd, "encode") || !strcmp(cmd, "decode");
+    int bare = !strcmp(cmd, "passphrase") || !strcmp(cmd, "help") || !strcmp(cmd, "version");
+    int known = bare || !strcmp(cmd, "encode") || !strcmp(cmd, "decode") || !strcmp(cmd, "info");
     if (known && optind < argc - 1) {
         fprintf(stderr, "Error: unexpected argument '%s'\n", argv[1 + optind]);
-        usage(argv[0]);
+        usage(stderr, argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[1], "passphrase") == 0) {
-        if (input || output || raw) {
-            fprintf(stderr, "Error: passphrase takes no options\n");
-            usage(argv[0]);
-            return 1;
-        }
+    if (bare && (input || output || raw)) {
+        fprintf(stderr, "Error: %s takes no options\n", cmd);
+        usage(stderr, argv[0]);
+        return 1;
+    }
+
+    if (strcmp(cmd, "passphrase") == 0) {
         if (generate_passphrase() != 0) return 1;
 
-    } else if (strcmp(argv[1], "encode") == 0) {
+    } else if (strcmp(cmd, "help") == 0) {
+        usage(stdout, argv[0]);
+        if (fflush(stdout) != 0) return 1;
+
+    } else if (strcmp(cmd, "version") == 0) {
+        static const char version[] = "scattersteg " SCATTERSTEG_VERSION "\n";
+        if (write_all(STDOUT_FILENO, version, sizeof(version) - 1) != 0) {
+            fprintf(stderr, "Error: could not write the version: %s\n", strerror(errno));
+            return 1;
+        }
+
+    } else if (strcmp(cmd, "info") == 0) {
+        if (!input) {
+            fprintf(stderr, "Error: info requires -i\n");
+            usage(stderr, argv[0]);
+            return 1;
+        }
+        if (output || raw) {
+            fprintf(stderr, "Error: info takes only -i\n");
+            usage(stderr, argv[0]);
+            return 1;
+        }
+        return show_info(input);
+
+    } else if (strcmp(cmd, "encode") == 0) {
         if (!input || !output) {
             fprintf(stderr, "Error: encode requires -i and -o\n");
-            usage(argv[0]);
+            usage(stderr, argv[0]);
             return 1;
         }
         /* Before the name check, which reads the input's first bytes: a
@@ -498,38 +598,8 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        /* A PNG output is 8-bit RGB or gray: any other cover would come out
-           in a visibly different format, which gives it away */
-        if (cover.png && cover.png->unsuitable) {
+        if (cover_check(&cover, input) != 0) {
             free_passphrase(passphrase);
-            fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
-                            "use an 8-bit RGB or grayscale PNG without transparency "
-                            "as the cover\n", input, cover.png->unsuitable);
-            cover_free(&cover);
-            return 1;
-        }
-
-        if (cover.jpeg && jpeg_unsuitable(cover.jpeg)) {
-            free_passphrase(passphrase);
-            fprintf(stderr, "Error: '%s' has %s, which the output can't keep; "
-                            "use another cover\n", input, jpeg_unsuitable(cover.jpeg));
-            cover_free(&cover);
-            return 1;
-        }
-
-        /* Before jpeg_check_writable, which decodes the cover again: a few
-           bytes can declare a huge frame with next to no carriers */
-        if (codec_too_small(&cover.carrier)) {
-            free_passphrase(passphrase);
-            cover_free(&cover);
-            fprintf(stderr, "Error: image too small to hide a message\n");
-            return 1;
-        }
-
-        if (cover.jpeg && jpeg_check_writable(cover.jpeg) != 0) {
-            free_passphrase(passphrase);
-            fprintf(stderr, "Error: '%s' is a JPEG that can't be rewritten losslessly; "
-                            "use another cover\n", input);
             cover_free(&cover);
             return 1;
         }
@@ -590,16 +660,16 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-    } else if (strcmp(argv[1], "decode") == 0) {
+    } else if (strcmp(cmd, "decode") == 0) {
         if (!input) {
             fprintf(stderr, "Error: decode requires -i\n");
-            usage(argv[0]);
+            usage(stderr, argv[0]);
             return 1;
         }
         if (output) {
             fprintf(stderr, "Error: decode takes no -o; the message goes to stdout "
                             "(redirect it with >)\n");
-            usage(argv[0]);
+            usage(stderr, argv[0]);
             return 1;
         }
 
@@ -649,7 +719,7 @@ int main(int argc, char *argv[]) {
 
     } else {
         fprintf(stderr, "Error: unknown command '%s'\n", argv[1]);
-        usage(argv[0]);
+        usage(stderr, argv[0]);
         return 1;
     }
 

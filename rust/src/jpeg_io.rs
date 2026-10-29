@@ -340,6 +340,11 @@ impl JpegImage {
         Carrier::jpeg(&mut self.coefs, &self.carriers, &self.costs)
     }
 
+    /// Width and height in pixels
+    pub fn size(&self) -> (u32, u32) {
+        (self.src.image_width, self.src.image_height)
+    }
+
     /// Why a cover this way would come out visibly changed, or None. Data
     /// after the EOI marker (MPF secondary images, Ultra HDR gain maps, depth
     /// maps) isn't kept, while the markers indexing it would be.

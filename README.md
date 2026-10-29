@@ -30,6 +30,7 @@ This builds `./scattersteg`. There is also a Rust version in [`rust/`](rust/READ
 
 ```bash
 ./scattersteg passphrase                                  # print a strong random passphrase
+./scattersteg info -i cover.png                           # can it be a cover, and how much does it hold?
 echo "your message" | ./scattersteg encode -i cover.png -o secret.png
 ./scattersteg decode -i secret.png
 ```
@@ -46,7 +47,7 @@ How hard the message is to detect depends mostly on the cover and on how much yo
 
 - **Use a photo nobody else has.** Anyone who has the original can compare the two and see that something changed. Don't use a photo you've posted or sent, or one from the internet; never encode twice from the same photo; delete the original afterwards.
 - **Use a noisy photo.** Busy, detailed photographs hide changes well. Flat areas, gradients, screenshots and drawings hide them badly.
-- **Keep the message small.** A few kilobytes in a photo-sized image is far below its capacity, and lighter than any payload measured. Detection rises with the message size.
+- **Keep the message small.** A few kilobytes in a photo-sized image is far below its capacity (`scattersteg info` shows it), and lighter than any payload measured. Detection rises with the message size.
 - **Prefer a file that a program has already rewritten** over one straight from a camera or phone. ScatterSteg writes the file anew, and a careful observer could notice that (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)).
 
 | | PNG | JPEG |
@@ -65,7 +66,7 @@ ScatterSteg refuses a cover rather than produce an output that would give it awa
 | `steghide embed -cf cover.jpg -ef secret.txt -sf out.jpg` | `./scattersteg encode -r -i cover.jpg -o out.jpg < secret.txt` |
 | `steghide extract -sf out.jpg -xf secret.txt` | `./scattersteg decode -r -i out.jpg > secret.txt` |
 | `-p passphrase` | not accepted: typed at the terminal instead |
-| `steghide info` | none: the image has no header, so there is nothing to report without the passphrase |
+| `steghide info cover.jpg` | `./scattersteg info -i cover.jpg`: whether it can be a cover, and its capacity. It can't say whether an image holds a message: nothing can, without the passphrase. |
 | `-e`, `-z`, `-N`, `-K` | none: the encryption is fixed, and no filename is stored |
 
 ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read the other's images. Every encode and decode takes about 0.2 s, on purpose: that is the cost that slows down passphrase guessing.

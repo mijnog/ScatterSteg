@@ -263,6 +263,11 @@ void jpeg_free(JpegImage *j) {
     free(j);
 }
 
+void jpeg_size(const JpegImage *j, uint32_t *width, uint32_t *height) {
+    *width = j->src.image_width;
+    *height = j->src.image_height;
+}
+
 const char *jpeg_unsuitable(const JpegImage *j) {
     return j->trailing_data ? "data after the end of the image (such as a second "
                               "image or an HDR gain map)" : NULL;

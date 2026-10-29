@@ -30,7 +30,7 @@ echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
 ### Engineering
 
 - Secrets are held in libsodium guarded memory (locked, guard pages, wiped on release); core dumps are disabled and, on Linux, debugger attachment is blocked. The release build uses `_FORTIFY_SOURCE=3`, stack protection, PIE and full RELRO.
-- The test suite comprises unit tests, end-to-end CLI tests, fault injection on every fallible library call, five libFuzzer targets and AddressSanitizer/UndefinedBehaviorSanitizer instrumentation, and runs in CI on every push.
+- The test suite comprises unit tests, end-to-end CLI tests, fault injection on every fallible library call, six libFuzzer targets and AddressSanitizer/UndefinedBehaviorSanitizer instrumentation, and runs in CI on every push.
 
 ## Quick start
 
@@ -63,7 +63,7 @@ What differs:
 - **Newlines.** Use `-r` (raw) on both commands to store and print a file byte for byte, any bytes included. Without it, `encode` drops one trailing newline from the message and `decode` adds one, which suits `echo "text" | encode` and prints a clean line at the terminal but changes a file that does not end in a newline. A message stored with `-r` and read without it gains a newline; one stored without it and read with `-r` loses its last newline.
 - **Passphrase.** At least 12 bytes for a new image. `./scattersteg passphrase` prints a random one.
 - **Not compatible.** Neither tool can read the other's images.
-- **Detectability.** Against the rich-model detectors in [`benchmark/`](benchmark/README.md), steghide is caught 96–98% of the time at every payload tested, and ScatterSteg about 65% at 0.05 bits per pixel. See [Steganalysis results](#steganalysis-results) for the numbers and what they do not show.
+- **Detectability.** Against the rich-model detectors in [`benchmark/`](benchmark/README.md), steghide is caught 96–98% of the time at every payload tested, and ScatterSteg about 56% at 0.05 bits per pixel and 65% at 0.4. See [Steganalysis results](#steganalysis-results) for the numbers and what they do not show.
 - **Speed.** Every encode and every decode costs one Argon2id run (about 0.2 s and 256 MiB), by design.
 
 ## How it works
@@ -103,7 +103,7 @@ Measured on the 480 benchmark photographs (512×512 RGB; `benchmark/classic.py` 
 | Sample pair analysis, shift from the cover | +0.008 to +0.064, tracking the payload | 0.000 | −0.001 to −0.019 (3 cover-to-stego sd at 0.4) | **−0.0002 to −0.0012** |
 | Ker's adjacency HCF-COM shift (cover 107.6, sd 10.6) | −0.45 to −1.51 | −0.56 to −4.54 | −0.15 to −1.14 | **−0.01 to −0.14** |
 
-Chi-square only catches sequential embedding, and none of the scattered methods trigger it. Sample pair analysis did see uniform costs, in the opposite direction from LSB replacement; HILL's shift is 7 to 16 times smaller. For JPEG, the 2:3 ratio of coefficients of magnitude 2 and 3 (cover 1.93, sd 0.13 across covers) moves +0.4%, +0.3% and −2.9% with UERD at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient (`benchmark/controls_jpg.py`). An earlier version of this table, measured on two photographs, is in the git history.
+Chi-square only catches sequential embedding, and none of the scattered methods trigger it. Sample pair analysis did see uniform costs, in the opposite direction from LSB replacement; HILL's shift is 7 to 16 times smaller. For JPEG, the 2:3 ratio of coefficients of magnitude 2 and 3 (cover 1.93, sd 0.13 across covers) moves +0.7%, +0.9% and −1.1% with UERD at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient (`benchmark/tune_two.py`). An earlier version of this table, measured on two photographs, is in the git history.
 
 ### Against a trained classifier, and against steghide
 
@@ -116,11 +116,13 @@ The classic detectors above test one statistic each. A harder test is a machine-
 | 0.20 | 0.16 | 0.10 | 0.31 | **0.48** |
 | 0.40 | 0.10 | 0.07 | 0.20 | **0.45** |
 
-| JPEG payload | steghide | **ScatterSteg** |
+| JPEG payload | steghide | ScatterSteg, quantization-step costs |
 |---|---|---|
-| 0.05 | 0.34 | **0.42** |
-| 0.10 | 0.24 | **0.40** |
-| 0.20 | 0.13 | **0.23** |
+| 0.05 | 0.34 | 0.42 |
+| 0.10 | 0.24 | 0.40 |
+| 0.20 | 0.13 | 0.23 |
+
+The JPEG column was measured before UERD costs and hasn't been re-run with this detector; the DCTR-style results below are current.
 
 This SVM is the weak detector. Its 0.45–0.50 for HILL means it cannot see HILL at these payloads, not that nothing can: it still works (two disjoint halves of the covers score 0.49–0.52, chance; uniform costs at 1.0 bits per pixel score 0.09, and HILL 0.36), and the stronger detector below catches HILL 56–65% of the time.
 
@@ -160,7 +162,7 @@ Fuzzing has found the following defects, each of which is fixed and retained as 
 Additional safeguards:
 - Decoded images are limited to 1 GiB of pixels or coefficients, checked before allocation, a PNG to 2²⁸ pixels (so the 4-byte-per-pixel permutation stays under 1 GiB too), and a JPEG to as many carriers as 1 GiB of per-carrier working memory allows (about 49 million).
 - libpng may hold at most 128 MiB in all, so compressed text chunks cannot inflate without bound.
-- Progressive JPEGs are limited to 500 scans.
+- JPEGs are limited to 500 scans and to 2²⁸ block visits across them, and a Huffman-coded JPEG whose header declares more blocks than its data could hold is refused before anything is allocated.
 - The output is encoded in memory and read back before anything is written: unless a decoder would see exactly the samples or coefficients that were embedded, the encode fails and nothing is written. A future libpng or libjpeg that changed a value on the way out would otherwise lose the message silently.
 - Output is written to a temporary file, synced and renamed into place (and the directory synced, so the rename survives a crash), so a failed or interrupted write never destroys an existing file or leaves the temporary one behind: Ctrl+C, SIGTERM and SIGHUP wait until it is renamed or removed. Existing permissions and group ownership are preserved, and symbolic links are written through.
 - The terminal is restored if the program is interrupted at the passphrase prompt.
@@ -168,7 +170,7 @@ Additional safeguards:
 ## Testing
 
 ```bash
-make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~2 min)
+make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~3 min)
 make fuzz       # libFuzzer: PNG loader, JPEG loader, embedder, STC, PNG round trip, file format (needs clang)
 make coverage   # line coverage over the whole suite (~98%); annotated sources in tests/build/cov
 ```
@@ -201,7 +203,7 @@ The image contains no header or version marker, as either would reveal the prese
 
 **JPEG** uses the same layout over a different kind of position: each *carrier* is one AC coefficient with |value| ≥ 2, taken in component, block-row, block and coefficient order, and carries one bit. Its salt region is counted in carriers (one sample each). DC coefficients, zeros and ±1 are never used, and embedding keeps every carrier at |value| ≥ 2 and within ±1023, so the decoder finds the same carriers and the encoder can write them.
 
-**Costs** determine which samples change and are chosen by the encoder alone (the decoder does not use them): uniform for PNG; for JPEG, the coefficient's quantization step, ×1.5 when |value| = 2.
+**Costs** determine which samples change and are chosen by the encoder alone (the decoder does not use them). PNG uses HILL: per channel, the reciprocal of the 3×3 mean of the absolute KB high-pass residual, smoothed by a 15×15 mean, so a change is cheap where the image is busy. JPEG uses UERD: the coefficient's quantization step over the energy of its block (the sum of its dequantized AC magnitudes) plus a quarter of each of its eight neighbours', ×1.75 when |value| = 2.
 
 **v3** wrote the salt's bits straight into the first 43 public pixels (128 samples), about 64 changes at positions anyone can compute; a targeted test of prediction error at those positions detected it slightly above chance (AUC 0.56 on 500 ALASKA2 images, against 0.50 for v4). **v2** is v3 with the box's bits also written straight in, into samples 32 on; **v1** used a BLAKE2b-only scatter key. Decode tries v4, then v3 and v2 (which share a salt layout and keys, so one further Argon2id run), then v1.
 

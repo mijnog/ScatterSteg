@@ -186,6 +186,16 @@ of the time at 0.05 and 78% at 0.4 (uniform costs: 69% and 92%; LSB matching
 and 0.078 against the published 0.315, 0.225, 0.149 and 0.079, and LSB
 matching is unchanged, so the harness is the same.
 
+## Classic detectors
+
+The first table in the [main README](../README.md#steganalysis-results)
+(chi-square, sample pair analysis, Ker's adjacency HCF-COM, and the number of
+changes) was measured on the 480 Wikimedia photographs with builds of `ca1a139`
+(uniform costs) and `83603fa` (HILL), at 0.05 to 0.4 bits per pixel.
+`classic.py` implements chi-square and sample pair analysis, calibrated on the
+LSB baselines first; `hcf.py` scores adjacency HCF-COM. Raw output is in
+`results-classic.txt`.
+
 ## Method
 
 1. `fetch_images.py`: 480 photos from Wikimedia Commons, resized and cropped to

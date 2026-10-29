@@ -49,6 +49,11 @@ void *fault_malloc(size_t size) {
     return malloc(size);
 }
 
+void *fault_calloc(size_t n, size_t size) {
+    if (fault_should_fail("calloc")) { errno = ENOMEM; return NULL; }
+    return calloc(n, size);
+}
+
 void *fault_realloc(void *p, size_t size) {
     if (fault_should_fail("realloc")) { errno = ENOMEM; return NULL; }
     return realloc(p, size);

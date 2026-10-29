@@ -16,6 +16,7 @@
 
 void *fault_malloc(size_t size);
 void *fault_realloc(void *p, size_t size);
+void *fault_calloc(size_t n, size_t size);
 FILE *fault_fopen(const char *path, const char *mode);
 FILE *fault_fdopen(int fd, const char *mode);
 int   fault_mkstemp(char *tmpl);
@@ -49,6 +50,7 @@ unsigned    fault_bad_closes(void);
 #ifndef FAULT_IMPL
 #define malloc  fault_malloc
 #define realloc fault_realloc
+#define calloc  fault_calloc
 #define fopen   fault_fopen
 #define fdopen  fault_fdopen
 #define mkstemp fault_mkstemp

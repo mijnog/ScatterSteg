@@ -297,28 +297,9 @@ static int is_marker(const jpeg_saved_marker_ptr m, int code, const char *tag, u
     return m->marker == code && m->data_length >= len && memcmp(m->data, tag, len) == 0;
 }
 
-/* A destination that throws the output away, for jpeg_check_writable */
-static JOCTET discard_buf[4096];
-static void discard_init(j_compress_ptr c) {
-    c->dest->next_output_byte = discard_buf;
-    c->dest->free_in_buffer = sizeof(discard_buf);
-}
-static boolean discard_empty(j_compress_ptr c) {
-    discard_init(c);
-    return TRUE;
-}
-static void discard_term(j_compress_ptr c) {
-    (void)c;
-}
-
-/* Encodes the coefficients and markers to fp, or nowhere if fp is NULL */
+/* Encodes the coefficients and markers to fp */
 static int write_coefficients(JpegImage *j, FILE *fp) {
     struct jpeg_compress_struct dst;
-    struct jpeg_destination_mgr discard = {
-        .init_destination = discard_init,
-        .empty_output_buffer = discard_empty,
-        .term_destination = discard_term,
-    };
     ErrorJump err;
     dst.err = jpeg_std_error(&err.pub);
     err.pub.error_exit = error_exit;
@@ -328,8 +309,7 @@ static int write_coefficients(JpegImage *j, FILE *fp) {
         return -1;
     }
     jpeg_create_compress(&dst);
-    if (fp) jpeg_stdio_dest(&dst, fp);
-    else    dst.dest = &discard;
+    jpeg_stdio_dest(&dst, fp);
 
     /* Same quantization, sampling, color space and coding as the cover */
     jpeg_copy_critical_parameters(&j->src, &dst);

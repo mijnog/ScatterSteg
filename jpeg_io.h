@@ -41,7 +41,8 @@ int jpeg_check_writable(JpegImage *j);
 /* Writes the coefficients and markers as a JPEG, atomically (see
    atomic_write). Returns 0, or -1 with errno set (0 if libjpeg failed). */
 int jpeg_save(const JpegImage *j, const char *path);
-/* The same on a stream, not atomically. jpeg_read closes fp. */
+/* The same on a stream, not atomically. jpeg_read closes fp; fp must not
+   be NULL. */
 JpegImage *jpeg_read(FILE *fp);
 int jpeg_write(JpegImage *j, FILE *fp);
 

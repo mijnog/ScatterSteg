@@ -131,7 +131,7 @@ int is_jpeg_file(const char *path) {
    is out of range, there are too many carriers, or out of memory. */
 static int collect_carriers(JpegImage *j) {
     struct jpeg_decompress_struct *s = &j->src;
-    /* UERD (Guo, Ni, Su, Chen and Shi, 2015): a block's energy is the sum
+    /* UERD (Guo, Ni, Su, Tang and Shi, 2015): a block's energy is the sum
        of its dequantized AC magnitudes, and a change costs the
        coefficient's quantization step over the energy of the block and,
        at a quarter weight, its 8 neighbours: cheap in busy blocks and

@@ -305,7 +305,7 @@ impl JpegImage {
             // (a corrupt file's component may lack a table)
             let quant = unsafe { comp.quant_table.as_ref() };
             let q = |k: usize| { let q = quant.map_or(1.0, |t| t.quantval[k] as f32); if q > 0.0 { q } else { 1.0 } };
-            // UERD (Guo, Ni, Su, Chen and Shi, 2015): a block's energy is the
+            // UERD (Guo, Ni, Su, Tang and Shi, 2015): a block's energy is the
             // sum of its dequantized AC magnitudes, and a change costs the
             // coefficient's quantization step over the energy of the block
             // and, at a quarter weight, its 8 neighbours: cheap in busy

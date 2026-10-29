@@ -147,8 +147,8 @@ ScatterSteg is free software, licensed under the [GNU Affero General Public Lice
 ## References
 
 - T. Filler, J. Judas, J. Fridrich — *Minimizing Additive Distortion in Steganography Using Syndrome-Trellis Codes* (2011)
-- Li, Wang, Huang and Li (2014): HILL, the PNG costs
-- Guo, Ni, Su, Chen and Shi (2015): UERD, the JPEG costs
+- B. Li, M. Wang, J. Huang, X. Li — *A New Cost Function for Spatial Image Steganography*, IEEE ICIP (2014), [doi:10.1109/ICIP.2014.7025854](https://doi.org/10.1109/ICIP.2014.7025854): HILL, the PNG costs
+- L. Guo, J. Ni, W. Su, C. Tang, Y.-Q. Shi — *Using Statistical Image Model for JPEG Steganography: Uniform Embedding Revisited*, IEEE Transactions on Information Forensics and Security 10 (2015), [doi:10.1109/TIFS.2015.2473815](https://doi.org/10.1109/TIFS.2015.2473815): UERD, the JPEG costs
 - S. Hetzl, P. Mutzel — *A Graph-Theoretic Approach to Steganography* (2005), the method behind steghide; reimplemented here from the paper
 - A. Ker — *Steganalysis of LSB Matching in Grayscale Images* (2005); S. Dumitrescu, X. Wu, Z. Wang — *Detection of LSB Steganography via Sample Pair Analysis* (2003); A. Westfeld, A. Pfitzmann — *Attacks on Steganographic Systems* (1999): the classic detectors measured against
 - [libsodium](https://doc.libsodium.org/), [libpng](http://www.libpng.org/pub/png/libpng.html), [libjpeg-turbo](https://libjpeg-turbo.org/)

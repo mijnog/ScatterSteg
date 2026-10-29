@@ -196,6 +196,8 @@ pub struct JpegImage {
     /// (blocking, and the count of zeros that JPEG steganalysis watches).
     pub carriers: Vec<u32>,
     pub costs: Vec<f32>,
+    /// How many AC coefficients aren't 0: what JPEG payloads are measured in
+    pub nonzero_ac: u64,
     /// Bytes after the EOI marker
     trailing_data: bool,
 }
@@ -259,6 +261,7 @@ impl JpegImage {
         let mut img = JpegImage {
             src, _err: err, _progress: progress,
             virt, comps: Vec::new(), coefs: Vec::new(), carriers: Vec::new(), costs: Vec::new(),
+            nonzero_ac: 0,
             trailing_data: false,
             _data: Vec::new(),
         };
@@ -315,6 +318,7 @@ impl JpegImage {
                 .collect();
             for (i, &c) in self.coefs[start..].iter().enumerate() {
                 let k = i % DCTSIZE2;
+                if k != 0 && c != 0 { self.nonzero_ac += 1; }
                 if k == 0 || (c > -2 && c < 2) { continue; }
                 if self.carriers.len() >= MAX_CARRIERS { return false; }
                 let (bx, by) = ((i / DCTSIZE2) % wb, (i / DCTSIZE2) / wb);

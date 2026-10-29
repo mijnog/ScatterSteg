@@ -38,6 +38,11 @@ const SALT_SAMPLES: u32 = 8192;
 const SALT_LABEL: &[u8] = b"ScatterSteg v2 salt positions";
 const KDF_CONTEXT: &[u8; 8] = b"ScatStg2";
 pub const BOX_OVERHEAD: usize = NONCE_BYTES + MAC_BYTES;
+/// The suggested most to store: 1 byte per this many pixels (PNG) or
+/// non-zero AC coefficients (JPEG), i.e. 0.05 bits each, the lightest
+/// payload the benchmarks measured (README, "Steganalysis results"). Lighter
+/// is harder to detect; it is advice, not a limit.
+pub const SUGGESTED_UNITS_PER_BYTE: u64 = 160;
 
 /// Pixels in the salt region: SALT_SAMPLES samples' worth, but at most 1/16
 /// of the image, and never fewer than one sample per salt bit

@@ -27,6 +27,8 @@ void jpeg_free(JpegImage *j);
    finds the same carriers. Valid until jpeg_free. */
 Carrier jpeg_carrier(JpegImage *j);
 void jpeg_size(const JpegImage *j, uint32_t *width, uint32_t *height);
+/* How many AC coefficients aren't 0: what JPEG payloads are measured in */
+uint64_t jpeg_nonzero_ac(const JpegImage *j);
 
 /* How much dearer a change to a coefficient of |value| 2 is than its UERD
    cost: 2 can only go to 3, which shifts the 2:3 ratio JPEG detectors

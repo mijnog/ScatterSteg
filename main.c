@@ -206,6 +206,14 @@ static int cover_check(Cover *c, const char *path) {
     return 0;
 }
 
+/* The suggested most to store in the cover (see
+   CODEC_SUGGESTED_UNITS_PER_BYTE), never more than it holds */
+static size_t suggested(const Cover *c) {
+    uint64_t units = c->png ? (uint64_t)c->png->width * c->png->height : jpeg_nonzero_ac(c->jpeg);
+    size_t most = (size_t)(units / CODEC_SUGGESTED_UNITS_PER_BYTE), holds = codec_capacity(&c->carrier);
+    return most < holds ? most : holds;
+}
+
 /* A digest of all a decoder reads: the carrier's size and every sample, in
    order */
 static void carrier_digest(const Carrier *c, uint8_t out[crypto_generichash_BYTES]) {
@@ -619,7 +627,7 @@ static int do_embed(const Options *o) {
     char *passphrase = NULL, *message = NULL;
     Cover cover = {0};
     CodecPrepared *prep = NULL;
-    size_t holds = 0, message_len = 0;
+    size_t holds = 0, suggest = 0, message_len = 0;
     int too_long = 0, read_err = 0;
     CodecEmbedded stored;
 
@@ -641,6 +649,7 @@ static int do_embed(const Options *o) {
 
     if (cover_load(o->cover_file, &cover) != 0 || cover_check(&cover, o->cover_file) != 0)
         goto done;
+    suggest = suggested(&cover);
     if (!o->quiet) fprintf(stderr, "Deriving keys...\n");
     prep = codec_prepare(&cover.carrier, passphrase);
     free_passphrase(passphrase);
@@ -694,6 +703,11 @@ static int do_embed(const Options *o) {
                       "lost; nothing written. Please report this, with the cover if you can\n");
         goto done;
     }
+    /* Advice, not a limit: lighter payloads are harder to detect */
+    if (!o->quiet && stored.hidden - 1 > suggest)
+        fprintf(stderr, "Warning: %u bytes stored, more than the %zu suggested for this image;\n"
+                        "the more is hidden, the easier it is to detect (see `scattersteg info`)\n",
+                stored.hidden - 1, suggest);
     if (o->verbose)
         fprintf(stderr, "Stored %zu bytes%s%s%s as %u (%s), in an image that holds %zu as is\n",
                 message_len, name ? " from '" : "", name ? name : "", name ? "'" : "",
@@ -799,11 +813,14 @@ static int show_info(const char *input) {
         jpeg_size(cover.jpeg, &w, &h);
         snprintf(format, sizeof(format), "JPEG, %ux%u", w, h);
     }
-    size_t capacity = codec_capacity(&cover.carrier);
+    size_t capacity = codec_capacity(&cover.carrier), suggest = suggested(&cover);
     cover_free(&cover);
 
-    char out[128];
-    int n = snprintf(out, sizeof(out), "Format:   %s\nCapacity: %zu bytes (more if the message compresses)\n", format, capacity);
+    char out[256];
+    int n = snprintf(out, sizeof(out), "Format:    %s\n"
+                                       "Capacity:  %zu bytes (more if the message compresses)\n"
+                                       "Suggested: at most %zu bytes; less is harder to detect\n",
+                     format, capacity, suggest);
     if (write_all(STDOUT_FILENO, out, (size_t)n) != 0) {
         fprintf(stderr, "Error: could not write the information: %s\n", strerror(errno));
         return 1;

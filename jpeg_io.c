@@ -82,7 +82,8 @@ struct JpegImage {
     int16_t **carriers;
     float *costs;  /* per carrier, see collect_carriers */
     uint32_t n_carriers;
-    int trailing_data;  /* bytes after the EOI marker */
+    uint64_t nonzero_ac;  /* AC coefficients that aren't 0 */
+    int trailing_data;    /* bytes after the EOI marker */
 };
 
 static void silent(j_common_ptr cinfo) {
@@ -172,6 +173,7 @@ static int collect_carriers(JpegImage *j) {
                         float q = comp->quant_table ? comp->quant_table->quantval[k] : 1;
                         if (q <= 0) q = 1;
                         if (!pass) e += (float)abs(*c) * q;
+                        if (!pass && *c) j->nonzero_ac++;
                         if (*c >= 2 || *c <= -2) {
                             if (pass) {
                                 /* And 2 can only go to 3, shifting the 2:3
@@ -261,6 +263,10 @@ void jpeg_free(JpegImage *j) {
     free(j->carriers);
     free(j->costs);
     free(j);
+}
+
+uint64_t jpeg_nonzero_ac(const JpegImage *j) {
+    return j->nonzero_ac;
 }
 
 void jpeg_size(const JpegImage *j, uint32_t *width, uint32_t *height) {

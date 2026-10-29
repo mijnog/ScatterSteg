@@ -54,7 +54,7 @@ How hard the message is to detect depends mostly on the cover and on how much yo
 
 - **Use a photo nobody else has.** Anyone who has the original can compare the two and see that something changed. Don't use a photo you've posted or sent, or one from the internet; never encode twice from the same photo; delete the original afterwards.
 - **Use a noisy photo.** Busy, detailed photographs hide changes well. Flat areas, gradients, screenshots and drawings hide them badly.
-- **Keep the message small.** A few kilobytes in a photo-sized image is far below its capacity (`scattersteg info` shows it), and lighter than any payload measured. Detection rises with the message size. Text is compressed automatically, so it takes about half its size; files that are already compressed (photos, zip archives) don't shrink.
+- **Keep the message small.** A few kilobytes in a photo-sized image is far below its capacity (`scattersteg info` shows it), and lighter than any payload measured. Detection rises with the message size. Text is compressed automatically, so it takes about half its size; files that are already compressed (photos, zip archives) don't shrink. `info` prints a suggested most: a byte per 160 pixels (PNG) or non-zero AC coefficients (JPEG), which is 0.05 bits each, the lightest payload measured in [Steganalysis results](#steganalysis-results). It is advice, not a limit and not a guarantee: `embed` warns when the stored message is over it (`-q` silences that) and goes ahead.
 - **Prefer a file that a program has already rewritten** over one straight from a camera or phone. ScatterSteg writes the file anew, and a careful observer could notice that (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)).
 
 | | PNG | JPEG |
@@ -76,7 +76,7 @@ The commands are the same: `embed`, `extract`, `info`, `encinfo`, `version`, `li
 | `-e` (choose or turn off encryption), `-K` (no checksum) | refused: the encryption is fixed (XSalsa20-Poly1305, see `encinfo`), and every message is authenticated |
 | `-cf -` or `-sf -` (cover from standard input, output to standard output) | not supported: the cover and the output are files |
 | an existing output file | refused unless `-f`; there is no yes/no question |
-| `info` | says whether the image can be a cover, and its capacity. It doesn't offer to look for a message: without the passphrase, nothing can tell. |
+| `info` | says whether the image can be a cover, its capacity, and a suggested most to store. It doesn't offer to look for a message: without the passphrase, nothing can tell. |
 | `passphrase` | an extra command: prints a strong random passphrase |
 
 ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read the other's images. Every `embed` and `extract` takes about 0.2 s, on purpose: that is the cost that slows down passphrase guessing.

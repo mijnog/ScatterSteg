@@ -532,6 +532,14 @@ def capacity(w, h, ch=3):
     return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - BOX_OVERHEAD - 2
 
 
+SUGGESTED_UNITS_PER_BYTE = 160  # 0.05 bits per pixel, the lightest payload measured
+
+
+def suggested(w, h, ch=3):
+    """The most `info` suggests storing in a PNG: a byte per 160 pixels"""
+    return min(w * h // SUGGESTED_UNITS_PER_BYTE, capacity(w, h, ch))
+
+
 def noise(n, seed=1):
     """n bytes that don't compress, so a message of them is stored as is:
     capacity limits are exact for them"""
@@ -890,18 +898,46 @@ class CliTest(CliBase):
     def test_info(self):
         # The capacity, with no passphrase asked: exactly what embed takes
         code, log = run(["info", self.cover])
-        self.assertEqual((code, log), (0, "Format:   PNG, 64x64, RGB\nCapacity: %d bytes (more if the message compresses)\n" % capacity(64, 64)))
+        self.assertEqual((code, log), (0, "Format:    PNG, 64x64, RGB\nCapacity:  %d bytes (more if the message compresses)\n"
+                                         "Suggested: at most %d bytes; less is harder to detect\n"
+                                         % (capacity(64, 64), suggested(64, 64))))
         gray = self.path("gray.png")
         write_png(gray, 50, 40, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
         code, log = run(["info", gray])
-        self.assertEqual((code, log), (0, "Format:   PNG, 50x40, gray\nCapacity: %d bytes (more if the message compresses)\n" % capacity(50, 40, 1)))
+        self.assertEqual((code, log), (0, "Format:    PNG, 50x40, gray\nCapacity:  %d bytes (more if the message compresses)\n"
+                                         "Suggested: at most %d bytes; less is harder to detect\n"
+                                         % (capacity(50, 40, 1), suggested(50, 40, 1))))
         # On stdout, for scripts
         out = self.path("info.txt")
         open(out, "w").close()
         code, log = run(["info", self.cover], stdout_path=out)
         self.assertEqual((code, log), (0, ""))
         with open(out) as f:
-            self.assertIn("Capacity: %d bytes" % capacity(64, 64), f.read())
+            self.assertIn("Capacity:  %d bytes" % capacity(64, 64), f.read())
+
+    def test_suggested_payload_warning(self):
+        # Advice, not a limit: past the suggestion embed still works, with a
+        # warning; within it, or with -q, nothing extra
+        write_png(self.cover, 200, 160, cover_pixel)
+        sug = suggested(200, 160)
+        self.assertEqual(sug, 200)  # 32000 pixels at a byte per 160
+        out = self.path("steg.png")
+        code, log = run(["info", self.cover])
+        self.assertIn("Suggested: at most 200 bytes", log)
+        code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug), ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertNotIn("Warning", log)
+        code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug + 1), ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertIn("Warning: 201 bytes stored, more than the 200 suggested", log)
+        self.assertEqual(self.extract_bytes(out), noise(sug + 1))
+        code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z", "-q"], noise(sug + 1), ["correct horse"] * 2)
+        self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
+        # What counts is what is stored: text that compresses to under it is fine
+        text = (b"the same words again and again " * 40)[:sug * 3]
+        code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f"], text, ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertNotIn("Warning", log)
 
     def test_info_refuses_what_encode_refuses(self):
         # The same checks and messages as embed, and no prompt
@@ -1897,9 +1933,18 @@ class JpegTest(CliBase):
         # The capacity info gives is exactly what embed takes
         code, log = run(["info", self.jpeg])
         self.assertEqual(code, 0, log)
-        m = re.fullmatch(r"Format:   JPEG, 256x192\nCapacity: (\d+) bytes \(more if the message compresses\)\n", log)
+        m = re.fullmatch(r"Format:    JPEG, 256x192\nCapacity:  (\d+) bytes \(more if the message compresses\)\n"
+                         r"Suggested: at most (\d+) bytes; less is harder to detect\n", log)
         self.assertTrue(m, log)
-        n = int(m.group(1))
+        n, sug = int(m.group(1)), int(m.group(2))
+        self.assertTrue(0 < sug < n, (sug, n))  # a byte per 160 non-zero AC coefficients
+        # The warning starts just past the suggestion
+        code, log = self.embed(noise(sug), self.path("w.jpg"), src=self.jpeg)
+        self.assertEqual(code, 0, log)
+        self.assertNotIn("Warning", log)
+        code, log = self.embed(noise(sug + 1), self.path("w.jpg"), src=self.jpeg)
+        self.assertEqual(code, 0, log)
+        self.assertIn("Warning: %d bytes stored, more than the %d suggested" % (sug + 1, sug), log)
         out = self.path("steg.jpg")
         code, log = self.embed(noise(n + 1), out, src=self.jpeg)
         self.assertEqual(code, 1, log)

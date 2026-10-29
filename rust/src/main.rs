@@ -307,6 +307,16 @@ fn check_cover(cover: &mut Cover, input: &Path) -> bool {
     true
 }
 
+/// The suggested most to store in the cover (see
+/// codec::SUGGESTED_UNITS_PER_BYTE), never more than it holds
+fn suggested(cover: &mut Cover) -> usize {
+    let units = match cover {
+        Cover::Png(img) => img.width as u64 * img.height as u64,
+        Cover::Jpeg(j) => j.nonzero_ac,
+    };
+    ((units / codec::SUGGESTED_UNITS_PER_BYTE) as usize).min(codec::capacity(&cover.carrier()))
+}
+
 /// info: the cover's format and size, and the longest message it holds, or
 /// why it can't be a cover. Needs no passphrase: the capacity depends on the
 /// image alone.
@@ -321,8 +331,12 @@ fn info(input: &Path) -> ExitCode {
         Cover::Jpeg(j) => { let (w, h) = j.size(); format!("JPEG, {w}x{h}") }
     };
     let capacity = codec::capacity(&cover.carrier());
+    let suggest = suggested(&mut cover);
     drop(cover);
-    if let Err(e) = write_fd(1, format!("Format:   {format}\nCapacity: {capacity} bytes (more if the message compresses)\n").as_bytes()) {
+    let text = format!("Format:    {format}\n\
+                        Capacity:  {capacity} bytes (more if the message compresses)\n\
+                        Suggested: at most {suggest} bytes; less is harder to detect\n");
+    if let Err(e) = write_fd(1, text.as_bytes()) {
         scattersteg::errln!("Error: could not write the information: {}", errno_message(&e));
         return ExitCode::FAILURE;
     }
@@ -542,6 +556,7 @@ fn embed(o: &Options) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
+    let suggest = suggested(&mut cover);
     if !o.quiet { scattersteg::errln!("Deriving keys..."); }
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,
@@ -613,6 +628,11 @@ fn embed(o: &Options) -> ExitCode {
                        nothing written. Please report this, with the cover if you can");
             return ExitCode::FAILURE;
         }
+    }
+    // Advice, not a limit: lighter payloads are harder to detect
+    if !o.quiet && stored.hidden - 1 > suggest {
+        scattersteg::errln!("Warning: {} bytes stored, more than the {suggest} suggested for this image;\n\
+                   the more is hidden, the easier it is to detect (see `scattersteg info`)", stored.hidden - 1);
     }
     if o.verbose {
         let from = if name.is_empty() { String::new() } else { format!(" from '{}'", String::from_utf8_lossy(name)) };

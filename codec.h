@@ -18,6 +18,11 @@ enum { DECODED, NO_MATCH, FAILED };
 #define CODEC_MESSAGE_MAX ((uint32_t)64 << 20)
 /* The longest file name stored with a message */
 #define CODEC_NAME_MAX 255
+/* The suggested most to store: 1 byte per this many pixels (PNG) or
+   non-zero AC coefficients (JPEG), i.e. 0.05 bits each, the lightest
+   payload the benchmarks measured (README, "Steganalysis results").
+   Lighter is harder to detect; it is advice, not a limit. */
+#define CODEC_SUGGESTED_UNITS_PER_BYTE 160
 
 /* Whether name can be stored with a message, and so created by extract: a
    bare file name of 1 to CODEC_NAME_MAX bytes, no '/' or control

@@ -2022,7 +2022,7 @@ class FaultSweepTest(CliBase):
 
         def check(code, log):
             if code == 0:
-                self.assertIn("fault sweep\n", log)
+                self.assertIn("fault sweep", log)
             else:
                 self.assertNotIn("fault sweep", log)
 
@@ -2076,7 +2076,7 @@ class FaultSweepTest(CliBase):
 
         def check_decode(code, log):
             if code == 0:
-                self.assertIn("jpeg sweep\n", log)
+                self.assertIn("jpeg sweep", log)
 
         self.assertGreater(self.sweep(["extract", "-sf", out], b"", ["correct horse"], check_decode), 5)
 

@@ -100,11 +100,21 @@ static char *read_passphrase(const char *prompt) {
     fputs(prompt, tty);
     fflush(tty);
 
+    /* One byte at a time with read(): even unbuffered, stdio passes each
+       byte through a buffer of its own, which nothing wipes */
     size_t cap = PASSPHRASE_CHUNK;
     size_t len = 0;
     char *buf = sodium_malloc(cap);
-    int c = EOF;
-    while (buf && (c = fgetc(tty)) != EOF && c != '\n') {
+    unsigned char c = 0;
+    int hit_eof = 0;
+    while (buf) {
+        ssize_t n = read(fd, &c, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            hit_eof = 1;
+            break;
+        }
+        if (c == '\n') break;
         if (len + 1 >= cap) {
             /* Grow by copying; sodium_free wipes the old buffer */
             char *bigger = sodium_malloc(cap + PASSPHRASE_CHUNK);
@@ -116,6 +126,7 @@ static char *read_passphrase(const char *prompt) {
         }
         buf[len++] = (char)c;
     }
+    sodium_memzero(&c, sizeof c);  /* the last byte read */
 
     tcsetattr(fd, TCSAFLUSH, &old);
     for (size_t i = 0; i < N_RESTORE_SIGNALS; i++)
@@ -123,7 +134,7 @@ static char *read_passphrase(const char *prompt) {
     fputs("\n", tty);
     fclose(tty);
 
-    if (!buf || (c == EOF && len == 0)) {  /* out of memory, or Ctrl+D */
+    if (!buf || (hit_eof && len == 0)) {  /* out of memory, or Ctrl+D */
         sodium_free(buf);
         fprintf(stderr, "Error: could not read passphrase\n");
         return NULL;

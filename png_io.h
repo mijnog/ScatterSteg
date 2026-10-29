@@ -17,8 +17,8 @@ typedef struct {
     const char *unsuitable;  /* why a cover this way would come out visibly
                                 changed, or give its changes away, e.g.
                                 "transparency"; NULL for 8-bit RGB or gray
-                                without transparency, sBIT < 8 or RGB that
-                                is all gray */
+                                without transparency, sBIT < 8, animation
+                                or RGB that is all gray */
     PngMeta *meta;       /* NULL if none */
 } Image;
 

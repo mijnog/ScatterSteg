@@ -51,7 +51,7 @@ pub struct Image {
     pub pixels: Vec<u8>,
     /// why a cover this way would come out visibly changed, or give its
     /// changes away, e.g. "transparency"; None for 8-bit RGB or gray without
-    /// transparency, sBIT < 8 or RGB that is all gray
+    /// transparency, sBIT < 8, animation or RGB that is all gray
     pub unsuitable: Option<&'static str>,
     pub meta: Option<PngMeta>,
 }
@@ -70,10 +70,12 @@ fn keep_chunk(name: &[u8; 4]) -> bool {
 }
 
 /// The cover's ancillary chunks, in order, with whether each follows the
-/// image data. Stops at the first damaged chunk. One failing its CRC is kept,
+/// image data, and whether it is an animated PNG (an acTL chunk, see
+/// `from_bytes`). Stops at the first damaged chunk. One failing its CRC is kept,
 /// as libpng keeps it (and so the C version writes it back, CRC fixed).
-fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
+fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
     let mut out = Vec::new();
+    let mut animated = false;
     let mut total = 0usize;
     let mut pos = 8;
     let mut after_idat = false;
@@ -101,11 +103,14 @@ fn parse_chunks(file: &[u8]) -> Option<Vec<Chunk>> {
         if name[0] & 0x20 == 0 { continue; } // an unknown critical chunk
         if len > MAX_CHUNK_BYTES || total + len > MAX_META_TOTAL { continue; }
         total += len;
+        // A well-formed acTL (8 bytes, at least one frame): viewers show a
+        // malformed one's still image
+        animated |= &name == b"acTL" && len == 8 && data[..4] != [0; 4];
         if keep_chunk(&name) {
             out.push(Chunk { name, data: data.to_vec(), after_idat });
         }
     }
-    Some(out)
+    Some((out, animated))
 }
 
 /// Rewrites `file` in place to the chunks the decoder needs: IHDR, PLTE, tRNS,
@@ -215,7 +220,7 @@ pub fn load(path: &Path) -> Option<Image> {
 /// The same from a PNG file's bytes
 pub fn from_bytes(mut file: Vec<u8>) -> Option<Image> {
     if !is_png_signature(&file) { return None; }
-    let chunks = parse_chunks(&file)?;
+    let (chunks, animated) = parse_chunks(&file)?;
     if !decoder_view(&mut file) { return None; }
     let mut decoder = png::Decoder::new(Cursor::new(&file[..]));
     // Text and profile chunks are copied as raw bytes (see parse_chunks), so
@@ -277,9 +282,14 @@ pub fn from_bytes(mut file: Vec<u8>) -> Option<Image> {
         src.chunks_exact(src_channels).flat_map(|px| px[..channels as usize].iter().copied()).collect()
     };
 
-    // Covers whose low bits are visibly structured: the changes would stand out
+    // Covers the output would give away: an animated PNG (APNG), as the
+    // decoder reads only its first frame and the output drops the chunks that
+    // hold the rest (acTL, fcTL, fdAT); or low bits visibly structured, where
+    // the changes would stand out
     let unsuitable = unsuitable.or_else(|| {
-        if low_sbit(&chunks) {
+        if animated {
+            Some("an animation (APNG)")
+        } else if low_sbit(&chunks) {
             Some(LOW_SBIT)
         } else if all_gray(&pixels, channels) {
             Some(GRAY_AS_RGB)

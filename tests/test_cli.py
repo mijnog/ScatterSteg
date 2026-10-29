@@ -909,6 +909,12 @@ class CliTest(CliBase):
             "sBIT 5": (8, 2, b"".join(b"\x00" + bytes((x * 8 + y + k) & 0xF8 for x in range(32) for k in range(3))
                                       for y in range(32)),
                        _chunk(b"sBIT", bytes([5, 5, 5])), "has fewer than 8 significant bits"),
+            # The output would keep only the first frame
+            "APNG": (8, 2, b"".join(b"\x00" + bytes(cover_pixel(x, y)[k] for x in range(32) for k in range(3))
+                                    for y in range(32)),
+                     _chunk(b"acTL", struct.pack(">II", 1, 0))
+                     + _chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 32, 32, 0, 0, 1, 10, 0, 0)),
+                     "has an animation (APNG)"),
         }
         for name, (depth, ctype, rows, extra, message) in cases.items():
             with self.subTest(cover=name):

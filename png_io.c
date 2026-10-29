@@ -83,6 +83,20 @@ static int low_sbit(png_structp png, png_infop info) {
     return 0;
 }
 
+/* An animated PNG (APNG): libpng reads only its first frame, and the
+   output drops the chunks that hold the rest (acTL, fcTL, fdAT), so the
+   animation would visibly stop. Only a well-formed acTL (8 bytes, at
+   least one frame) counts: viewers show a malformed one's still image. */
+static int animated(png_structp png, png_infop info) {
+    png_unknown_chunkp chunks;
+    int n = png_get_unknown_chunks(png, info, &chunks);
+    for (int i = 0; i < n; i++)
+        if (memcmp(chunks[i].name, "acTL", 4) == 0 && chunks[i].size == 8 &&
+            (chunks[i].data[0] | chunks[i].data[1] | chunks[i].data[2] | chunks[i].data[3]))
+            return 1;
+    return 0;
+}
+
 /* Gray stored as RGB: R = G = B in every pixel. Changing the channels
    independently breaks that, which a one-line check finds. */
 static int all_gray(const Image *img) {
@@ -226,9 +240,12 @@ Image *png_read(FILE *fp) {
     read_end(png, info);
     fclose(fp);
 
-    /* Covers whose low bits are visibly structured: the changes would stand
-       out. Checked once the pixels and every chunk are in. */
-    if (!img->unsuitable && low_sbit(png, info))
+    /* Covers the output would give away: an animation it would stop, or
+       low bits visibly structured, where the changes would stand out.
+       Checked once the pixels and every chunk are in. */
+    if (!img->unsuitable && animated(png, info))
+        img->unsuitable = "an animation (APNG)";
+    else if (!img->unsuitable && low_sbit(png, info))
         img->unsuitable = PNG_LOW_SBIT;
     else if (!img->unsuitable && all_gray(img))
         img->unsuitable = PNG_GRAY_AS_RGB;

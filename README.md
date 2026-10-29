@@ -54,7 +54,7 @@ How hard the message is to detect depends mostly on the cover and on how much yo
 | Accepted | 8-bit RGB or grayscale, no transparency | 8-bit baseline or progressive, Huffman or arithmetic coding |
 | Capacity | about 760 KB in a 1080p image | about 0.12–0.15 bits per pixel (about 68 KB in 4.5 MP) |
 | Kept from the cover | interlacing, and every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) or marks safe to copy, byte for byte and in place | quantization, sampling, coding mode, restart interval, APPn and COM markers |
-| Refused | palette, transparency, 16-bit, gray below 8 bits, an `sBIT` chunk under 8, RGB whose pixels are all gray | 12-bit, lossless, files that can't be rewritten exactly, data after the image (MPO, Ultra HDR) |
+| Refused | palette, transparency, 16-bit, gray below 8 bits, an `sBIT` chunk under 8, RGB whose pixels are all gray, animation (APNG) | 12-bit, lossless, files that can't be rewritten exactly, data after the image (MPO, Ultra HDR) |
 
 ScatterSteg refuses a cover rather than produce an output that would give it away.
 

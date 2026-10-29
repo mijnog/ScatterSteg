@@ -279,17 +279,18 @@ struct Args {
     input: Option<OsString>,
     output: Option<OsString>,
     raw: bool, // -r: no newline stripped from the message or added to it
+    extra: Vec<OsString>, // non-option arguments, which no command takes
 }
 
 /// getopt "i:o:r" over the arguments after the command; None on a bad option
 fn parse_options(args: &[OsString]) -> Option<Args> {
-    let mut out = Args { input: None, output: None, raw: false };
+    let mut out = Args { input: None, output: None, raw: false, extra: Vec::new() };
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_bytes();
         i += 1;
-        if a == b"--" { break; }
-        if a.len() < 2 || a[0] != b'-' { continue; } // a non-option: getopt permutes it past
+        if a == b"--" { out.extra.extend_from_slice(&args[i..]); break; }
+        if a.len() < 2 || a[0] != b'-' { out.extra.push(args[i - 1].clone()); continue; } // as getopt permutes it past
         let mut k = 1; // a cluster such as -ri file: flags, then an option that takes a value
         while k < a.len() {
             let slot = match a[k] {
@@ -399,10 +400,12 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Empty message: nothing to hide, so write nothing
+    // Empty message: almost always a mistake (nothing piped in, an empty
+    // file, Ctrl+D too soon), and a script must not take it for a written
+    // output: fail, and write nothing
     if message.is_empty() {
-        scattersteg::errln!("Message is empty; nothing written");
-        return ExitCode::SUCCESS;
+        scattersteg::errln!("Error: the message is empty; nothing written");
+        return ExitCode::FAILURE;
     }
     let len = message.len();
     warn_if_swappable(&mut message, len);
@@ -504,7 +507,26 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // Anything left over, or an option the command doesn't use, is a typo or
+    // a misunderstanding: say so rather than ignore it
+    let known = matches!(args[1].as_bytes(), b"passphrase" | b"encode" | b"decode");
+    if let (true, Some(a)) = (known, opts.extra.first()) {
+        scattersteg::errln!("Error: unexpected argument '{}'", a.to_string_lossy());
+        usage(&prog);
+        return ExitCode::FAILURE;
+    }
+
     match args[1].as_bytes() {
+        b"passphrase" if opts.input.is_some() || opts.output.is_some() || opts.raw => {
+            scattersteg::errln!("Error: passphrase takes no options");
+            usage(&prog);
+            ExitCode::FAILURE
+        }
+        b"decode" if opts.input.is_some() && opts.output.is_some() => {
+            scattersteg::errln!("Error: decode takes no -o; the message goes to stdout (redirect it with >)");
+            usage(&prog);
+            ExitCode::FAILURE
+        }
         b"passphrase" => match generate_passphrase() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

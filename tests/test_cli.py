@@ -1020,13 +1020,16 @@ class CliTest(CliBase):
         self.assertGreater(kinds.index(b"tEXt"), len(kinds) - 1 - kinds[::-1].index(b"IDAT"))
         self.assertDecodes(out, "rich metadata")
 
-    def test_empty_message_writes_nothing(self):
+    def test_empty_message_refused(self):
+        # Almost always a mistake (nothing piped in, an empty file): it fails,
+        # so a script can't take it for a written output
         out = self.path("steg.png")
         code, log = self.encode(b"", out)
-        self.assertEqual(code, 0, log)
+        self.assertEqual(code, 1, log)
+        self.assertIn("the message is empty", log)
         self.assertFalse(os.path.exists(out))
         # A lone newline is stripped, so it counts as empty too
-        self.assertEqual(self.encode(b"\n", out)[0], 0)
+        self.assertEqual(self.encode(b"\n", out)[0], 1)
         self.assertFalse(os.path.exists(out))
 
     def test_one_byte_message(self):
@@ -1546,6 +1549,21 @@ class CliTest(CliBase):
         code, log = run(["frobnicate", "-i", self.cover])
         self.assertEqual(code, 1)
         self.assertIn("unknown command", log)
+        # Leftovers and options a command doesn't use are refused, not ignored
+        out = self.path("out.png")
+        for args, why in [
+            (["encode", "-i", self.cover, "-o", out, "stray"], "unexpected argument 'stray'"),
+            (["decode", "-i", self.cover, "stray"], "unexpected argument 'stray'"),
+            (["decode", "-i", self.cover, "--", "-r"], "unexpected argument '-r'"),
+            (["passphrase", "stray"], "unexpected argument 'stray'"),
+            (["passphrase", "-r"], "passphrase takes no options"),
+            (["decode", "-i", self.cover, "-o", out], "decode takes no -o"),
+        ]:
+            code, log = run(args, passphrases=["correct horse"] * 2)
+            self.assertEqual(code, 1, (args, log))
+            self.assertIn(why, log, args)
+            self.assertNotIn("Passphrase", log, args)
+        self.assertFalse(os.path.exists(out))
 
     def test_no_passphrase_given(self):
         # EOF at the prompt must fail cleanly, not encode with an empty key

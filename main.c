@@ -431,7 +431,22 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Anything left over, or an option the command doesn't use, is a typo
+       or a misunderstanding: say so rather than ignore it */
+    const char *cmd = argv[1];
+    int known = !strcmp(cmd, "passphrase") || !strcmp(cmd, "encode") || !strcmp(cmd, "decode");
+    if (known && optind < argc - 1) {
+        fprintf(stderr, "Error: unexpected argument '%s'\n", argv[1 + optind]);
+        usage(argv[0]);
+        return 1;
+    }
+
     if (strcmp(argv[1], "passphrase") == 0) {
+        if (input || output || raw) {
+            fprintf(stderr, "Error: passphrase takes no options\n");
+            usage(argv[0]);
+            return 1;
+        }
         if (generate_passphrase() != 0) return 1;
 
     } else if (strcmp(argv[1], "encode") == 0) {
@@ -540,13 +555,15 @@ int main(int argc, char *argv[]) {
         }
         uint32_t msg_len = (uint32_t)message_len;  /* at most codec_max_message */
         warn_if_swappable(message, msg_len);
-        /* Empty message: nothing to hide, so write nothing */
+        /* Empty message: almost always a mistake (nothing piped in, an
+           empty file, Ctrl+D too soon), and a script must not take it for
+           a written output: fail, and write nothing */
         if (msg_len == 0) {
             codec_prepared_free(prep);
             sodium_free(message);
             cover_free(&cover);
-            fprintf(stderr, "Message is empty; nothing written\n");
-            return 0;
+            fprintf(stderr, "Error: the message is empty; nothing written\n");
+            return 1;
         }
 
         int embedded = codec_embed(prep, &carrier, (const uint8_t *)message, msg_len);
@@ -576,6 +593,12 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "decode") == 0) {
         if (!input) {
             fprintf(stderr, "Error: decode requires -i\n");
+            usage(argv[0]);
+            return 1;
+        }
+        if (output) {
+            fprintf(stderr, "Error: decode takes no -o; the message goes to stdout "
+                            "(redirect it with >)\n");
             usage(argv[0]);
             return 1;
         }

@@ -103,7 +103,7 @@ static void test_load_sweep(void) {
 static void test_save_sweep(void) {
     Image *img = make_image(16, 8);
     int fds = count_open_fds();
-    unsigned n, fired = 0;
+    unsigned n, fired = 0, rename_at = 0;
     for (n = 1; n < 1000; n++) {
         write_text(out_path, "precious");
         fault_arm(n);
@@ -123,9 +123,12 @@ static void test_save_sweep(void) {
             break;
         }
         fired++;
-        if (strcmp(name, "fchown") == 0) {
-            /* Not fatal: the save goes ahead without the old file's group
-               (test_save_fchown_failure_drops_group_access checks the mode) */
+        if (strcmp(name, "rename") == 0) rename_at = n;
+        /* Not fatal: fchown (the save goes ahead without the old file's
+           group; test_save_fchown_failure_drops_group_access checks the
+           mode), and the directory sync after the rename, by which point
+           the file is in place */
+        if (strcmp(name, "fchown") == 0 || (rename_at && n > rename_at)) {
             CHECK(r == 0);
             Image *back = png_load(out_path);
             CHECK(back && images_equal(back, img));

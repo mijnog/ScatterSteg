@@ -3,10 +3,12 @@
 #define _POSIX_C_SOURCE 200809L  /* mkdtemp */
 #include "test.h"
 #include "png_io.h"
+#include "atomic_write.h"
 #include <png.h>
 #include <zlib.h>
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -593,6 +595,40 @@ static void test_save_dangling_symlink(void) {
     remove(link);
 }
 
+/* Ctrl+C mid-write: the signal waits until the temp file is renamed into
+   place or removed, so it is never left behind */
+static volatile sig_atomic_t delivered, entries_at_delivery, output_at_delivery;
+
+static void count_on_signal(int sig) {
+    (void)sig;
+    delivered = 1;
+    entries_at_delivery = count_dir_entries();
+    output_at_delivery = access(path_in_dir("sig.out"), F_OK) == 0;
+}
+
+static int interrupted_write(FILE *fp, const void *ctx) {
+    fputs("data", fp);
+    raise(SIGINT);
+    return *(const int *)ctx;
+}
+
+static void test_signal_waits_for_write(void) {
+    struct sigaction on = {.sa_handler = count_on_signal}, old;
+    sigemptyset(&on.sa_mask);
+    sigaction(SIGINT, &on, &old);
+    for (int fail = 0; fail <= 1; fail++) {
+        int ret = fail ? -1 : 0;
+        delivered = 0;
+        entries_at_delivery = output_at_delivery = -1;
+        CHECK(atomic_write(path_in_dir("sig.out"), interrupted_write, &ret) == ret);
+        CHECK(delivered);
+        CHECK(entries_at_delivery == (fail ? 0 : 1));  /* just the output, or nothing */
+        CHECK(output_at_delivery == !fail);
+        remove(path_in_dir("sig.out"));
+    }
+    sigaction(SIGINT, &old, NULL);
+}
+
 static void test_save_missing_dir(void) {
     Image *img = make_image(2, 2);
     CHECK(png_save(img, path_in_dir("no/such/dir/x.png")) == -1);
@@ -714,6 +750,7 @@ int main(void) {
     RUN(test_save_keeps_existing_mode);
     RUN(test_save_through_symlink);
     RUN(test_save_dangling_symlink);
+    RUN(test_signal_waits_for_write);
     RUN(test_save_missing_dir);
     RUN(test_save_unwritable_dir);
     RUN(test_save_libpng_failure_keeps_existing);

@@ -10,7 +10,8 @@
    existing file (e.g. -i a.png -o a.png). A symlink at `path` is written
    through, and an existing file keeps its permissions and group. Anything
    at `path` other than a regular file (a FIFO, device, directory...) is
-   left alone: errno EINVAL.
+   left alone: errno EINVAL. SIGINT, SIGQUIT, SIGTERM and SIGHUP are held
+   until the temp file is renamed or removed, so none leaves it behind.
 
    write returns 0, or -1 leaving errno set (or 0 if the cause has no errno,
    e.g. an encoder's internal error). Returns 0, or -1 with errno likewise. */

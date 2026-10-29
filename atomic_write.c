@@ -3,12 +3,28 @@
 #define _XOPEN_SOURCE 700  /* mkstemp, fchmod, fchown, fsync, realpath */
 #include "atomic_write.h"
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
+/* Make the rename itself durable: until the directory is synced, a crash
+   can lose it even though the file's data was synced. Best effort: the file
+   is already in place, and some filesystems can't sync a directory. */
+static void sync_dir_of(const char *dest) {
+    const char *slash = strrchr(dest, '/');
+    char *dir = slash ? strndup(dest, slash == dest ? 1 : (size_t)(slash - dest)) : strdup(".");
+    if (!dir) return;
+    int fd = open(dir, O_RDONLY | O_DIRECTORY);
+    free(dir);
+    if (fd < 0) return;
+    if (fsync(fd) != 0) { /* nothing to do */ }
+    close(fd);
+}
+
+static int write_and_rename(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
     /* Write through a symlink to the file it points to rather than replacing
        the link itself. A new path, or a dangling link, is used as is. */
     char *target = realpath(path, NULL);
@@ -79,6 +95,7 @@ int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), cons
     fd = -1;
     if (closed != 0) goto fail;
     if (rename(tmp, dest) != 0) goto fail;
+    sync_dir_of(dest);
     free(tmp);
     free(target);
     return 0;
@@ -95,4 +112,24 @@ fail:
         errno = err;
         return -1;
     }
+}
+
+/* Ctrl+C (or kill, or a closed terminal) while the temp file exists would
+   leave it behind, beside the output. So those signals wait until it has
+   been renamed into place or removed; one that arrived meanwhile is
+   delivered then. The CLI writes from memory, so this holds them for the
+   write and fsync alone. */
+int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
+    sigset_t hold, old;
+    sigemptyset(&hold);
+    sigaddset(&hold, SIGINT);
+    sigaddset(&hold, SIGQUIT);
+    sigaddset(&hold, SIGTERM);
+    sigaddset(&hold, SIGHUP);
+    sigprocmask(SIG_BLOCK, &hold, &old);
+    int r = write_and_rename(path, write, ctx);
+    int err = errno;
+    sigprocmask(SIG_SETMASK, &old, NULL);
+    errno = err;
+    return r;
 }

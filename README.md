@@ -161,7 +161,7 @@ Additional safeguards:
 - libpng may hold at most 128 MiB in all, so compressed text chunks cannot inflate without bound.
 - Progressive JPEGs are limited to 500 scans.
 - The output is encoded in memory and read back before anything is written: unless a decoder would see exactly the samples or coefficients that were embedded, the encode fails and nothing is written. A future libpng or libjpeg that changed a value on the way out would otherwise lose the message silently.
-- Output is written to a temporary file, synced and renamed into place, so a failed write never destroys an existing file. Existing permissions and group ownership are preserved, and symbolic links are written through.
+- Output is written to a temporary file, synced and renamed into place (and the directory synced, so the rename survives a crash), so a failed or interrupted write never destroys an existing file or leaves the temporary one behind: Ctrl+C, SIGTERM and SIGHUP wait until it is renamed or removed. Existing permissions and group ownership are preserved, and symbolic links are written through.
 - The terminal is restored if the program is interrupted at the passphrase prompt.
 
 ## Testing

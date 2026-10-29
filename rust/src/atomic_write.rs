@@ -6,6 +6,8 @@
 //! (e.g. -i a.png -o a.png). A symlink at `path` is written through, and an
 //! existing file keeps its permissions and group. Anything at `path` other
 //! than a regular file (a FIFO, device, directory...) is left alone: EINVAL.
+//! SIGINT, SIGQUIT, SIGTERM and SIGHUP are held until the temp file is
+//! renamed or removed, so none leaves it behind.
 
 use crate::fault::should_fail;
 use std::ffi::CString;
@@ -20,7 +22,42 @@ fn os_error(errno: i32) -> io::Error { io::Error::from_raw_os_error(errno) }
 
 /// `write` gets the temp file; an Err from it is returned as is. It must
 /// flush anything it buffers itself.
+///
+/// Ctrl+C (or kill, or a closed terminal) while the temp file exists would
+/// leave it behind, beside the output. So those signals wait until it has
+/// been renamed into place or removed; one that arrived meanwhile is
+/// delivered then. The CLI writes from memory, so this holds them for the
+/// write and fsync alone.
 pub fn atomic_write<F>(path: &Path, write: F) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
+    // SAFETY: plain signal-mask calls on sigset_ts we own
+    let old = unsafe {
+        let mut hold: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut hold);
+        for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] { libc::sigaddset(&mut hold, sig); }
+        libc::pthread_sigmask(libc::SIG_BLOCK, &hold, &mut old);
+        old
+    };
+    let result = write_and_rename(path, write);
+    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
+    result
+}
+
+/// Make the rename itself durable: until the directory is synced, a crash
+/// can lose it even though the file's data was synced. Best effort: the file
+/// is already in place, and some filesystems can't sync a directory.
+fn sync_dir_of(dest: &Path) {
+    let dir = match dest.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    if let Ok(d) = File::open(dir) { let _ = d.sync_all(); }
+}
+
+fn write_and_rename<F>(path: &Path, write: F) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
@@ -79,10 +116,75 @@ where
                  else if should_fail("fclose") { Err(os_error(libc::EIO)) } else { Ok(()) };
     let result = written.and(closed).and_then(|()| {
         if should_fail("rename") { return Err(os_error(libc::EXDEV)); }
-        fs::rename(&tmp_path, dest)
+        fs::rename(&tmp_path, dest)?;
+        sync_dir_of(dest);
+        Ok(())
     });
     if result.is_err() {
         let _ = fs::remove_file(&tmp_path);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::atomic_write;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::OnceLock;
+
+    // Ctrl+C mid-write: the signal waits until the temp file is renamed into
+    // place or removed, so it is never left behind
+    static PATHS: OnceLock<(CString, CString)> = OnceLock::new();  // dir, output
+    static ENTRIES: AtomicI32 = AtomicI32::new(-1);
+    static OUTPUT: AtomicI32 = AtomicI32::new(-1);
+
+    extern "C" fn count_on_signal(_: libc::c_int) {
+        let (dir, out) = PATHS.get().unwrap();
+        // SAFETY: valid C strings; the directory exists
+        unsafe {
+            let d = libc::opendir(dir.as_ptr());
+            let mut n = 0;
+            loop {
+                let e = libc::readdir(d);
+                if e.is_null() { break; }
+                let name = std::ffi::CStr::from_ptr((*e).d_name.as_ptr()).to_bytes();
+                if name != b"." && name != b".." { n += 1; }
+            }
+            libc::closedir(d);
+            ENTRIES.store(n, Ordering::SeqCst);
+            OUTPUT.store((libc::access(out.as_ptr(), libc::F_OK) == 0) as i32, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn signal_waits_for_write() {
+        let dir = std::env::temp_dir().join(format!("scattersteg-aw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("sig.out");
+        let c = |p: &std::path::Path| CString::new(p.as_os_str().as_bytes()).unwrap();
+        PATHS.set((c(&dir), c(&out))).unwrap();
+        let mut on: libc::sigaction = unsafe { std::mem::zeroed() };
+        on.sa_sigaction = count_on_signal as *const () as usize;
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigaction(libc::SIGINT, &on, &mut old) };
+        for fail in [false, true] {
+            ENTRIES.store(-1, Ordering::SeqCst);
+            OUTPUT.store(-1, Ordering::SeqCst);
+            let r = atomic_write(&out, |f| {
+                use std::io::Write;
+                f.write_all(b"data")?;
+                unsafe { libc::raise(libc::SIGINT) };
+                if fail { Err(std::io::Error::other("failed")) } else { Ok(()) }
+            });
+            assert_eq!(r.is_err(), fail);
+            // just the output, or nothing
+            assert_eq!(ENTRIES.load(Ordering::SeqCst), if fail { 0 } else { 1 }, "fail: {fail}");
+            assert_eq!(OUTPUT.load(Ordering::SeqCst), !fail as i32, "fail: {fail}");
+            let _ = std::fs::remove_file(&out);
+        }
+        unsafe { libc::sigaction(libc::SIGINT, &old, std::ptr::null_mut()) };
+        let _ = std::fs::remove_dir(&dir);
+    }
 }

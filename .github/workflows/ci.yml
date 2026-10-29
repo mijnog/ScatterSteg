@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # Nothing here reads Markdown, so a push or pull request that changes only
+  # .md files has nothing to test
   push:
+    paths-ignore: ['**.md']
   pull_request:
+    paths-ignore: ['**.md']
 
 jobs:
   test:

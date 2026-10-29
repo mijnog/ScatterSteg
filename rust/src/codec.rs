@@ -111,7 +111,6 @@ impl Keys {
 
 /// v2: both keys from one Argon2id run, so every passphrase guess costs one
 fn derive_keys_v2(passphrase: &[u8], salt: &[u8; SALT_BYTES]) -> Result<Keys, String> {
-    crate::errln!("Deriving keys...");
     let oom = || "key derivation failed (out of memory)".to_string();
     let mut buf = Secret::new(64).ok_or_else(oom)?;
     let mut master = Secret::new(sodium::KDF_KEY_BYTES).ok_or_else(oom)?;

@@ -875,6 +875,27 @@ class CliTest(CliBase):
             self.assertEqual(code, 1, (args, log))
             self.assertIn(why, log, args)
 
+    def test_quiet(self):
+        # -q leaves the passphrase prompts, warnings and errors, and nothing else
+        out = self.path("steg.png")
+        code, log = run(["encode", "-q", "-i", self.cover, "-o", out], b"hush", ["correct horse"] * 2)
+        self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
+        msg = self.path("msg.txt")
+        open(msg, "w").close()
+        code, log = run(["decode", "-qr", "-i", out], passphrases=["correct horse"], stdout_path=msg)
+        self.assertEqual((code, log), (0, "Passphrase: \n"))
+        with open(msg, "rb") as f:
+            self.assertEqual(f.read(), b"hush")
+        code, log = run(["decode", "-q", "-i", out], passphrases=["wrong horse!"])
+        self.assertEqual(code, 1, log)
+        self.assertIn("decryption failed", log)
+        self.assertNotIn("Deriving keys", log)
+        for args, why in [(["info", "-q", "-i", self.cover], "info takes only -i"),
+                          (["passphrase", "-q"], "passphrase takes no options")]:
+            code, log = run(args)
+            self.assertEqual(code, 1, (args, log))
+            self.assertIn(why, log, args)
+
     def test_help_and_version(self):
         cargo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rust", "Cargo.toml")
         with open(cargo) as f:

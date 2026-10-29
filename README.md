@@ -38,6 +38,7 @@ echo "your message" | ./scattersteg encode -i cover.png -o secret.png
 - **The passphrase** is always typed at the terminal, with echo off, so it never appears in the process list or your shell history. A new image needs one of at least 12 bytes; `scattersteg passphrase` prints a random one of about 124 bits.
 - **The message** is read from standard input: pipe it in, or type it and press Ctrl+D. An empty message is an error.
 - **Files, byte for byte:** use `-r` on both commands, as in `encode -r -i cover.jpg -o out.jpg < secret.txt` and `decode -r -i out.jpg > secret.txt`. Without `-r`, encode drops one trailing newline and decode adds one, which suits typed text.
+- **Quiet:** `-q` on encode or decode drops the progress messages ("Deriving keys..." and the prompt to type a message), for scripts. The passphrase prompts, warnings and errors remain.
 - **The output** has the cover's format and metadata: a progressive JPEG stays progressive, a grayscale PNG stays grayscale, and EXIF, ICC profiles and text are kept.
 - **Nothing is written unless it will decode.** The output is built in memory and read back first; if a decoder wouldn't see exactly what was embedded, encode fails and writes nothing. An existing file is replaced in one step, so a failed or interrupted encode never destroys it.
 

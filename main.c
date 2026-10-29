@@ -304,15 +304,15 @@ static int output_name_matches(const char *input, const char *output) {
 }
 
 /* Read the entire contents of stdin into a sodium_malloc buffer.
-   Prints a prompt first if stdin is a terminal. Caller must sodium_free.
+   Prints a prompt first if stdin is a terminal, unless quiet. Caller must sodium_free.
    The message may hold any bytes, NUL included: its length (less a final
    newline, unless raw) goes in *out_len. Stops reading once that is longer than
    max_len, so a huge stdin can't exhaust memory or overflow the payload
    length: then sets *too_long and returns NULL. Also NULL on a read error
    or out of memory, with errno set. */
-static char *read_message(size_t max_len, size_t *out_len, int *too_long, int raw) {
+static char *read_message(size_t max_len, size_t *out_len, int *too_long, int raw, int quiet) {
     *too_long = 0;
-    if (isatty(STDIN_FILENO))
+    if (isatty(STDIN_FILENO) && !quiet)
         fprintf(stderr, "Message (Ctrl+D when done):\n");
 
     size_t cap = 1024;
@@ -431,13 +431,14 @@ static void protect_process(void) {
 
 /* To stderr after a mistake, to stdout when asked for (help) */
 static void usage(FILE *out, const char *prog) {
-    fprintf(out, "Usage: %s encode [-r] -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
-    fprintf(out, "       %s decode [-r] -i <image.png|jpg>\n", prog);
+    fprintf(out, "Usage: %s encode [-r] [-q] -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
+    fprintf(out, "       %s decode [-r] [-q] -i <image.png|jpg>\n", prog);
     fprintf(out, "       %s info -i <cover.png|jpg>\n", prog);
     fprintf(out, "       %s passphrase | help | version\n", prog);
     fprintf(out, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
     fprintf(out, "`info` says whether an image can be a cover, and the longest message it holds.\n");
     fprintf(out, "Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
+    fprintf(out, "-q prints only prompts for the passphrase, warnings and errors.\n");
 }
 
 /* info: the cover's format and size, and the longest message it holds,
@@ -493,13 +494,15 @@ int main(int argc, char *argv[]) {
     const char *input  = NULL;
     const char *output = NULL;
     int raw = 0;  /* -r: no newline stripped from the message or added to it */
+    int quiet = 0;  /* -q: no progress messages */
 
     int opt;
-    while ((opt = getopt(argc - 1, argv + 1, "i:o:r")) != -1) {
+    while ((opt = getopt(argc - 1, argv + 1, "i:o:rq")) != -1) {
         switch (opt) {
             case 'i': input  = optarg; break;
             case 'o': output = optarg; break;
             case 'r': raw = 1; break;
+            case 'q': quiet = 1; break;
             default:
                 usage(stderr, argv[0]);
                 return 1;
@@ -516,7 +519,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (bare && (input || output || raw)) {
+    if (bare && (input || output || raw || quiet)) {
         fprintf(stderr, "Error: %s takes no options\n", cmd);
         usage(stderr, argv[0]);
         return 1;
@@ -542,7 +545,7 @@ int main(int argc, char *argv[]) {
             usage(stderr, argv[0]);
             return 1;
         }
-        if (output || raw) {
+        if (output || raw || quiet) {
             fprintf(stderr, "Error: info takes only -i\n");
             usage(stderr, argv[0]);
             return 1;
@@ -605,6 +608,7 @@ int main(int argc, char *argv[]) {
         }
 
         Carrier carrier = cover.carrier;
+        if (!quiet) fprintf(stderr, "Deriving keys...\n");
         CodecPrepared *prep = codec_prepare(&carrier, passphrase);
         free_passphrase(passphrase);
         if (!prep) {
@@ -614,7 +618,7 @@ int main(int argc, char *argv[]) {
 
         int too_long;
         size_t message_len;
-        char *message = read_message(codec_max_message(prep), &message_len, &too_long, raw);
+        char *message = read_message(codec_max_message(prep), &message_len, &too_long, raw, quiet);
         int read_err = errno;  /* before the cleanup below changes it */
         if (!message) {
             codec_prepared_free(prep);
@@ -692,6 +696,7 @@ int main(int argc, char *argv[]) {
         uint8_t *plaintext = NULL;
         uint32_t pt_len = 0;
         int v1;
+        if (!quiet) fprintf(stderr, "Deriving keys...\n");
         int r = codec_decode(&carrier, passphrase, &plaintext, &pt_len, &v1);
         if (v1)
             fprintf(stderr, "Warning: this image uses the old v1 format, which protects "

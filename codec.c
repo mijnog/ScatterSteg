@@ -136,7 +136,6 @@ typedef struct {
 static Keys *derive_keys_v2(const char *passphrase, const uint8_t salt[SALT_BYTES]) {
     Keys *keys = sodium_malloc(sizeof(Keys));
     uint8_t *master = sodium_malloc(crypto_kdf_KEYBYTES);
-    fprintf(stderr, "Deriving keys...\n");
     if (!keys || !master ||
         pwhash(master, crypto_kdf_KEYBYTES, passphrase, salt,
                crypto_pwhash_OPSLIMIT_MODERATE, crypto_pwhash_MEMLIMIT_MODERATE) != 0) {

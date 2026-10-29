@@ -161,12 +161,12 @@ enum ReadError {
 }
 
 /// Read the entire contents of stdin into a Secret. Prints a prompt first if
-/// stdin is a terminal. The message may hold any bytes, NUL included: its
+/// stdin is a terminal, unless quiet. The message may hold any bytes, NUL included: its
 /// length (less a final newline, unless raw) is the Secret's. Stops reading once that is
 /// longer than max_len, so a huge stdin can't exhaust memory or overflow the
 /// payload length.
-fn read_message(max_len: usize, raw: bool) -> Result<Secret, ReadError> {
-    if unsafe { libc::isatty(0) } == 1 { scattersteg::errln!("Message (Ctrl+D when done):"); }
+fn read_message(max_len: usize, raw: bool, quiet: bool) -> Result<Secret, ReadError> {
+    if !quiet && unsafe { libc::isatty(0) } == 1 { scattersteg::errln!("Message (Ctrl+D when done):"); }
 
     let oom = || ReadError::Io(io::Error::from_raw_os_error(libc::ENOMEM));
     let mut cap = 1024;
@@ -254,13 +254,14 @@ fn protect_process() {
 /// To stderr after a mistake, to stdout when asked for (help)
 fn usage(prog: &str, to_stdout: bool) -> io::Result<()> {
     let text = format!(
-        "Usage: {prog} encode [-r] -i <cover.png|jpg> -o <output.png|jpg>\n\
-         \x20      {prog} decode [-r] -i <image.png|jpg>\n\
+        "Usage: {prog} encode [-r] [-q] -i <cover.png|jpg> -o <output.png|jpg>\n\
+         \x20      {prog} decode [-r] [-q] -i <image.png|jpg>\n\
          \x20      {prog} info -i <cover.png|jpg>\n\
          \x20      {prog} passphrase | help | version\n\
          Message is read from stdin. `passphrase` prints a strong random passphrase.\n\
          `info` says whether an image can be a cover, and the longest message it holds.\n\
-         Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
+         Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n\
+         -q prints only prompts for the passphrase, warnings and errors.\n");
     if to_stdout { write_fd(1, text.as_bytes()) } else { let _ = write_fd(2, text.as_bytes()); Ok(()) }
 }
 
@@ -335,12 +336,13 @@ struct Args {
     input: Option<OsString>,
     output: Option<OsString>,
     raw: bool, // -r: no newline stripped from the message or added to it
+    quiet: bool, // -q: no progress messages
     extra: Vec<OsString>, // non-option arguments, which no command takes
 }
 
-/// getopt "i:o:r" over the arguments after the command; None on a bad option
+/// getopt "i:o:rq" over the arguments after the command; None on a bad option
 fn parse_options(args: &[OsString]) -> Option<Args> {
-    let mut out = Args { input: None, output: None, raw: false, extra: Vec::new() };
+    let mut out = Args { input: None, output: None, raw: false, quiet: false, extra: Vec::new() };
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_bytes();
@@ -351,6 +353,7 @@ fn parse_options(args: &[OsString]) -> Option<Args> {
         while k < a.len() {
             let slot = match a[k] {
                 b'r' => { out.raw = true; k += 1; continue; }
+                b'q' => { out.quiet = true; k += 1; continue; }
                 b'i' => &mut out.input,
                 b'o' => &mut out.output,
                 _ => return None,
@@ -368,7 +371,7 @@ fn parse_options(args: &[OsString]) -> Option<Args> {
     Some(out)
 }
 
-fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
+fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
     // Before the name check, which reads the input's first bytes: a missing
     // file would otherwise be called a PNG
     let opened = if scattersteg::fault::should_fail("fopen") { Err(io::Error::from_raw_os_error(libc::EMFILE)) }
@@ -406,6 +409,7 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
 
     if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
 
+    if !quiet { scattersteg::errln!("Deriving keys..."); }
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,
         Err(None) => {
@@ -419,7 +423,7 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
     };
     drop(passphrase);
 
-    let mut message = match read_message(prepared.max_message(), raw) {
+    let mut message = match read_message(prepared.max_message(), raw, quiet) {
         Ok(m) => m,
         Err(ReadError::TooLong) => {
             scattersteg::errln!("Error: message too long for this image");
@@ -473,7 +477,7 @@ fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn decode(input: &Path, raw: bool) -> ExitCode {
+fn decode(input: &Path, raw: bool, quiet: bool) -> ExitCode {
     let Some(passphrase) = read_passphrase("Passphrase: ", true) else { return ExitCode::FAILURE };
     let Some(mut cover) = Cover::load(input) else {
         scattersteg::errln!("Error: could not load '{}'", input.display());
@@ -485,6 +489,7 @@ fn decode(input: &Path, raw: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if !quiet { scattersteg::errln!("Deriving keys..."); }
     let result = codec::decode(&carrier, &passphrase);
     drop(passphrase);
     drop(cover);
@@ -554,7 +559,7 @@ fn main() -> ExitCode {
     }
 
     match cmd {
-        _ if bare && (opts.input.is_some() || opts.output.is_some() || opts.raw) => {
+        _ if bare && (opts.input.is_some() || opts.output.is_some() || opts.raw || opts.quiet) => {
             scattersteg::errln!("Error: {} takes no options", String::from_utf8_lossy(cmd));
             let _ = usage(&prog, false);
             ExitCode::FAILURE
@@ -582,7 +587,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        b"info" => match (&opts.input, &opts.output, opts.raw) {
+        b"info" => match (&opts.input, &opts.output, opts.raw || opts.quiet) {
             (Some(i), None, false) => info(Path::new(i)),
             (None, _, _) => {
                 scattersteg::errln!("Error: info requires -i");
@@ -596,7 +601,7 @@ fn main() -> ExitCode {
             }
         },
         b"encode" => match (&opts.input, &opts.output) {
-            (Some(i), Some(o)) => encode(Path::new(i), Path::new(o), opts.raw),
+            (Some(i), Some(o)) => encode(Path::new(i), Path::new(o), opts.raw, opts.quiet),
             _ => {
                 scattersteg::errln!("Error: encode requires -i and -o");
                 let _ = usage(&prog, false);
@@ -604,7 +609,7 @@ fn main() -> ExitCode {
             }
         },
         b"decode" => match &opts.input {
-            Some(i) => decode(Path::new(i), opts.raw),
+            Some(i) => decode(Path::new(i), opts.raw, opts.quiet),
             None => {
                 scattersteg::errln!("Error: decode requires -i");
                 let _ = usage(&prog, false);

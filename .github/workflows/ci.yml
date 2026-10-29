@@ -28,6 +28,19 @@ jobs:
       - name: Unit, CLI and fault-injection tests
         run: make test
 
+  # The jobs run side by side, so CI takes as long as the slowest one: the
+  # fuzzing and the C-against-Rust checks each get their own
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev clang python3
+
+      - name: Let AddressSanitizer run
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
       - name: Fuzz each target for a minute
         run: make fuzz FUZZ_TIME=60
 
@@ -74,12 +87,41 @@ jobs:
           SCATTERSTEG=$R/release/scattersteg SCATTERSTEG_FAULT=$R/fault/release/scattersteg \
             FAULT_LONG_MIN=15 python3 tests/test_cli.py
 
+  differential:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev libclang-dev pkg-config clang python3
+
+      - name: Build both versions and the test fixture
+        run: |
+          make && make tests/build/jpeg_fixture
+          cd rust && cargo build --release --locked
+
       - name: C and Rust agree on what loads
         env:
           SCATTERSTEG_C: ./scattersteg
           SCATTERSTEG_RUST: rust/target/release/scattersteg
           JPEG_FIXTURE: tests/build/jpeg_fixture
         run: python3 tests/differential.py
+
+  # One job per target, side by side
+  rust-fuzz:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false  # a crash in one target shouldn't hide the others' results
+      matrix:
+        target: [png_load, jpeg_load, diff_png, diff_jpeg, diff_codec]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev libclang-dev pkg-config clang python3
+
+      - name: Build the test fixture (for the JPEG seeds)
+        run: make tests/build/jpeg_fixture
 
       - name: Install the fuzzer
         run: |
@@ -100,19 +142,22 @@ jobs:
           cp fuzz/corpus/png_load/* fuzz/corpus/diff_png/
           cp fuzz/corpus/jpeg_load/* fuzz/corpus/diff_jpeg/
 
-      - name: Fuzz the Rust loaders, and C against Rust, for a minute each
+      - name: Fuzz for a minute
         working-directory: rust
+        env:
+          T: ${{ matrix.target }}
         run: |
-          for t in png_load jpeg_load diff_png diff_jpeg; do
-            case $t in *png*) dict=fuzz/dicts/png.dict;; *) dict=fuzz/dicts/jpeg.dict;; esac
-            cargo +nightly fuzz run $t -- -dict=$dict -max_total_time=60 -rss_limit_mb=7000 -max_len=20000 -timeout=60
-          done
-          cargo +nightly fuzz run diff_codec -- -max_total_time=60 -rss_limit_mb=7000 -timeout=60
+          case $T in
+            diff_codec) cargo +nightly fuzz run $T -- -max_total_time=60 -rss_limit_mb=7000 -timeout=60; exit;;
+            *png*) dict=fuzz/dicts/png.dict;;
+            *) dict=fuzz/dicts/jpeg.dict;;
+          esac
+          cargo +nightly fuzz run $T -- -dict=$dict -max_total_time=60 -rss_limit_mb=7000 -max_len=20000 -timeout=60
 
       - name: Keep fuzzer crashes
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: rust-fuzz-crashes
+          name: rust-fuzz-crashes-${{ matrix.target }}
           path: rust/fuzz/artifacts/
           if-no-files-found: ignore

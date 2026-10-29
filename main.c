@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -889,9 +889,10 @@ int main(int argc, char *argv[]) {
           "algorithm or mode to choose.\n"
         : "ScatterSteg " SCATTERSTEG_VERSION "\n"
           "Copyright (C) 2026 Maxime de Montbron\n"
-          "Free software under the GNU Affero General Public License v3.0 or later: you may\n"
+          "Free software under the MIT license or the Apache License 2.0, at your option: you may\n"
           "use, change and share it on its terms. It comes with NO WARRANTY. See the\n"
-          "LICENSE file, or <https://www.gnu.org/licenses/agpl-3.0.html>.\n";
+          "LICENSE-MIT and LICENSE-APACHE files, or <https://opensource.org/license/mit> and\n"
+          "<https://www.apache.org/licenses/LICENSE-2.0>.\n";
     if (write_all(STDOUT_FILENO, text, strlen(text)) != 0) {
         fprintf(stderr, "Error: could not write: %s\n", strerror(errno));
         return 1;

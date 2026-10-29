@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (C) 2026 Maxime de Montbron
 
 //! Where the bits go: positions of one or more samples each, in an order the

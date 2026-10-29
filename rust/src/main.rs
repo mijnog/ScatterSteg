@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (C) 2026 Maxime de Montbron
 
 use scattersteg::codec::{self, EmbedError};
@@ -783,9 +783,10 @@ fn main() -> ExitCode {
                        algorithm or mode to choose.\n".to_string(),
         _ => format!("ScatterSteg {version}\n\
                       Copyright (C) 2026 Maxime de Montbron\n\
-                      Free software under the GNU Affero General Public License v3.0 or later: you may\n\
+                      Free software under the MIT license or the Apache License 2.0, at your option: you may\n\
                       use, change and share it on its terms. It comes with NO WARRANTY. See the\n\
-                      LICENSE file, or <https://www.gnu.org/licenses/agpl-3.0.html>.\n"),
+                      LICENSE-MIT and LICENSE-APACHE files, or <https://opensource.org/license/mit> and\n\
+                      <https://www.apache.org/licenses/LICENSE-2.0>.\n"),
     };
     if let Err(e) = write_fd(1, text.as_bytes()) {
         scattersteg::errln!("Error: could not write: {}", errno_message(&e));

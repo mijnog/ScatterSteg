@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (C) 2026 Maxime de Montbron
 """Runs the C and Rust binaries on the same odd covers and checks they agree
 on whether each loads. An image written by one must decode with the other,

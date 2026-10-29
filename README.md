@@ -152,7 +152,9 @@ Secrets are held in libsodium's guarded memory (locked against swap, fenced by g
 
 Copyright (C) 2026 Maxime de Montbron.
 
-ScatterSteg is free software, licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later). You may use, modify and distribute it, but any distributed version, and any modified version made available to users over a network, must be released under the same license with its source code.
+ScatterSteg is free software, dual-licensed under the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE), at your option (`MIT OR Apache-2.0`). You may use, modify, distribute and integrate it, including in closed-source products, on the terms of either license.
+
+The license was changed from AGPL-3.0-or-later to MIT OR Apache-2.0 to remove corporate adoption friction and let ScatterSteg be freely integrated into security frameworks, forensics tools, and open or closed pipelines.
 
 ## References
 

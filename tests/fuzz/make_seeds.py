@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (C) 2026 Maxime de Montbron
 """Writes a seed corpus for fuzz_png_load: small valid PNGs of every color
 type, bit depth and interlace mode, plus ancillary chunks (tRNS, gAMA,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (C) 2026 Maxime de Montbron
 """End-to-end tests for the scattersteg binary.
 
@@ -1008,7 +1008,7 @@ class CliTest(CliBase):
                 self.assertIn(" info <image", got)
             else:
                 self.assertEqual(got, want)
-        for cmd, want in (("encinfo", "XSalsa20-Poly1305"), ("--license", "GNU Affero General Public License")):
+        for cmd, want in (("encinfo", "XSalsa20-Poly1305"), ("--license", "MIT license or the Apache License 2.0")):
             code, log = run([cmd])
             self.assertEqual(code, 0, log)
             self.assertIn(want, log)

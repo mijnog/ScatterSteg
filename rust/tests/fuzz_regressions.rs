@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (C) 2026 Maxime de Montbron
 
 //! Replays every input the fuzzers once broke the loaders with (the C ones in

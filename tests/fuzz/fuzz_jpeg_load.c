@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: jpeg_load on arbitrary bytes. Every JPEG that loads
    must have valid carriers, and if jpeg_check_writable accepts it (as

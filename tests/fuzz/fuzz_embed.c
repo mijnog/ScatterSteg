@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: scatter + embed. Checks that encode followed by decode
    gives the data back for any image size, key and message, and that

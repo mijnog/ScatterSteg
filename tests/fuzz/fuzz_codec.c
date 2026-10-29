@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 /* libFuzzer target: the file format (codec.c) on hostile carriers, past key
    derivation, which this build makes cheap (FUZZING_BUILD_MODE_UNSAFE_FOR_

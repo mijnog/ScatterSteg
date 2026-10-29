@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (C) 2026 Maxime de Montbron
 
 /// `eprintln!` panics if stderr can't be written (a closed pipe, a full disk),

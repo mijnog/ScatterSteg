@@ -21,12 +21,35 @@ The commands and options are steghide's, for everything ScatterSteg does, so ste
 
 ## Install
 
+Install the libraries for your distribution, then build:
+
 ```bash
-sudo apt install libsodium-dev libpng-dev libjpeg-dev   # Ubuntu/Debian
+# Ubuntu / Debian
+sudo apt install gcc make libsodium-dev libpng-dev libjpeg-dev zlib1g-dev
+
+# Arch (and Omarchy)
+sudo pacman -S --needed base-devel libsodium libpng libjpeg-turbo zlib
+
+# Fedora
+sudo dnf install gcc make libsodium-devel libpng-devel libjpeg-turbo-devel zlib-devel
+
 make
 ```
 
-This builds `./scattersteg`. There is also a Rust version in [`rust/`](rust/README.md) with the same commands and file format (an image written by one extracts with the other): `cd rust && cargo build --release`, which also needs pkg-config and libclang.
+This builds `./scattersteg`. There is also a Rust version in [`rust/`](rust/README.md) with the same commands and file format (an image written by one extracts with the other). It needs a Rust toolchain from [rustup.rs](https://rustup.rs) (edition 2024, so Rust 1.85 or newer), plus pkg-config and libclang:
+
+```bash
+# Ubuntu / Debian
+sudo apt install libclang-dev pkg-config
+
+# Arch (and Omarchy)
+sudo pacman -S --needed clang pkgconf
+
+# Fedora
+sudo dnf install clang-devel pkgconf-pkg-config
+
+cd rust && cargo build --release
+```
 
 ## Use
 

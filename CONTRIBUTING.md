@@ -4,8 +4,9 @@ Bug reports, test cases and fixes are welcome. For a vulnerability, or a detecto
 
 ## Build and test
 
+Install the libraries for your distribution as in the [README's install section](README.md#install), then:
+
 ```bash
-sudo apt install libsodium-dev libpng-dev libjpeg-dev    # Ubuntu/Debian
 make
 make test            # unit tests and the end-to-end CLI tests
 make fuzz            # builds the libFuzzer targets (needs clang)

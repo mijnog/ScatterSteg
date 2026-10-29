@@ -4,7 +4,7 @@ A line-for-line port of the C implementation in the repository root. It keeps
 the file format and the command line: an image written by one decodes with the
 other, for PNG and JPEG.
 
-    cargo build --release        # needs libsodium, libjpeg-turbo, pkg-config, libclang
+    cargo build --release        # needs libsodium, libjpeg-turbo, pkg-config, libclang (see the README's install section)
     cd ../tests && SCATTERSTEG=../rust/target/release/scattersteg python3 test_cli.py
 
 `--features fault-injection` builds the variant the fault sweeps in

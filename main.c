@@ -25,8 +25,8 @@
 /* The terminal's line editor holds 4095 bytes per line and silently drops
    the rest, so a line that long may have been cut short: refuse it. */
 #define PASSPHRASE_MAX_LEN 4094
-/* Shorter passphrases are refused on encode (decode accepts any, for old
-   images). Length is a crude measure, so `passphrase` generates good ones. */
+/* Shorter passphrases are refused on encode (on decode, one can only fail).
+   Length is a crude measure, so `passphrase` generates good ones. */
 #define PASSPHRASE_MIN_LEN 12
 /* As in rust/Cargo.toml, which tests/test_cli.py checks */
 #define SCATTERSTEG_VERSION "0.1.0"
@@ -59,10 +59,9 @@ static void restore_tty_and_die(int sig) {
 
 /* Read a passphrase from the terminal with echo off. Returns it in a heap
    buffer for free_passphrase; on EOF or error, prints why and returns NULL.
-   As a C string it ends at the first NUL (typed as Ctrl+@, or pasted), which
-   would silently cut it short: refused unless allow_nul, which decode
-   passes so images made with such a passphrase still open. */
-static char *read_passphrase(const char *prompt, int allow_nul) {
+   As a C string it would end at the first NUL (typed as Ctrl+@, or pasted),
+   which would silently cut it short: refused. */
+static char *read_passphrase(const char *prompt) {
     FILE *tty = fopen("/dev/tty", "r+");
     if (!tty) {
         fprintf(stderr, "Error: could not read passphrase\n");
@@ -133,7 +132,7 @@ static char *read_passphrase(const char *prompt, int allow_nul) {
         fprintf(stderr, "Error: passphrase too long (max %d bytes)\n", PASSPHRASE_MAX_LEN);
         return NULL;
     }
-    if (!allow_nul && memchr(buf, '\0', len)) {
+    if (memchr(buf, '\0', len)) {
         sodium_free(buf);
         fprintf(stderr, "Error: the passphrase contains a NUL byte (Ctrl+@), "
                         "which would cut it short\n");
@@ -574,7 +573,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char *passphrase = read_passphrase("Passphrase: ", 0);
+        char *passphrase = read_passphrase("Passphrase: ");
         if (!passphrase) return 1;
         if (strlen(passphrase) < PASSPHRASE_MIN_LEN) {
             free_passphrase(passphrase);
@@ -582,7 +581,7 @@ int main(int argc, char *argv[]) {
                             "`scattersteg passphrase` generates a strong one\n", PASSPHRASE_MIN_LEN);
             return 1;
         }
-        char *confirm = read_passphrase("Confirm passphrase: ", 0);
+        char *confirm = read_passphrase("Confirm passphrase: ");
         if (!confirm) {
             free_passphrase(passphrase);
             return 1;
@@ -677,7 +676,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char *passphrase = read_passphrase("Passphrase: ", 1);
+        char *passphrase = read_passphrase("Passphrase: ");
         if (!passphrase) return 1;
 
         Cover cover;
@@ -695,12 +694,8 @@ int main(int argc, char *argv[]) {
 
         uint8_t *plaintext = NULL;
         uint32_t pt_len = 0;
-        int v1;
         if (!quiet) fprintf(stderr, "Deriving keys...\n");
-        int r = codec_decode(&carrier, passphrase, &plaintext, &pt_len, &v1);
-        if (v1)
-            fprintf(stderr, "Warning: this image uses the old v1 format, which protects "
-                            "the passphrase less well; re-encode it\n");
+        int r = codec_decode(&carrier, passphrase, &plaintext, &pt_len);
         free_passphrase(passphrase);
         cover_free(&cover);
         if (r == NO_MATCH)

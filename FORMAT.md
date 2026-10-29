@@ -1,8 +1,8 @@
 # File format
 
-What ScatterSteg writes into an image, exactly enough to write a compatible decoder. The current format is v4; earlier versions are described after it, and every version stays readable. The implementations are `codec.c` (C) and `rust/src/codec.rs` (Rust), and `tests/test_cli.py` checks both against an independent Python decoder.
+What ScatterSteg writes into an image, exactly enough to write a compatible decoder. Until the first release it may still change: an image made by one commit may not open with a later one. The implementations are `codec.c` (C) and `rust/src/codec.rs` (Rust), and `tests/test_cli.py` checks both against an independent Python decoder.
 
-## v4
+## Layout
 
 The image contains no header or version marker, as either would reveal the presence of a message. Every pixel holds one bit per sample, in the LSBs of R, G and B (or of the gray value), set by exchanging values between pairs of samples where possible and LSB matching otherwise. Below, "sample k" means bit position k counted along the payload order: pixel `order[k / channels]`, channel `k % channels`.
 
@@ -15,7 +15,5 @@ The image contains no header or version marker, as either would reveal the prese
 **JPEG** uses the same layout over a different kind of position: each *carrier* is one AC coefficient with |value| ≥ 2, taken in component, block-row, block and coefficient order, and carries one bit. Its salt region is counted in carriers (one sample each). DC coefficients, zeros and ±1 are never used, and embedding keeps every carrier at |value| ≥ 2 and within ±1023, so the decoder finds the same carriers and the encoder can write them.
 
 **Costs** determine which samples change and are chosen by the encoder alone (the decoder does not use them). PNG uses HILL: per channel, the reciprocal of the 3×3 mean of the absolute KB high-pass residual, smoothed by a 15×15 mean, so a change is cheap where the image is busy. JPEG uses UERD: the coefficient's quantization step over the energy of its block (the sum of its dequantized AC magnitudes) plus a quarter of each of its eight neighbours', ×1.75 when |value| = 2.
-
-**v3** wrote the salt's bits straight into the first 43 public pixels (128 samples), about 64 changes at positions anyone can compute; a targeted test of prediction error at those positions detected it slightly above chance (AUC 0.56 on 500 ALASKA2 images, against 0.50 for v4). **v2** is v3 with the box's bits also written straight in, into samples 32 on; **v1** used a BLAKE2b-only scatter key. Decode tries v4, then v3 and v2 (which share a salt layout and keys, so one further Argon2id run), then v1.
 
 `prng_permutation(key, n)` is a forward Fisher–Yates shuffle (for `i` from 0 to n−2, swap slot `i` with `i + uniform(n − i)`), with `uniform` drawing little-endian 32-bit words from the ChaCha20-IETF keystream of `key` (zero nonce, counter from 0) and rejecting values below `2³² mod bound`.

@@ -54,12 +54,12 @@ impl Samples {
         }
     }
 
-    fn decode_rust(&mut self, passphrase: &[u8]) -> Option<(Vec<u8>, bool)> {
+    fn decode_rust(&mut self, passphrase: &[u8]) -> Option<Vec<u8>> {
         let d: Option<Decrypted> = codec::decode(&self.carrier(), passphrase).expect("Rust decode failed");
-        d.map(|d| (d.plaintext[..d.len].to_vec(), d.v1))
+        d.map(|d| d.plaintext[..d.len].to_vec())
     }
 
-    fn decode_c(&mut self, passphrase: &[u8]) -> Option<(Vec<u8>, bool)> {
+    fn decode_c(&mut self, passphrase: &[u8]) -> Option<Vec<u8>> {
         self.c_cover().decode(passphrase).expect("C decode failed")
     }
 }
@@ -83,7 +83,7 @@ fuzz_target!(init: scattersteg::sodium::init().expect("sodium_init failed"), |da
     if message.is_empty() { return; }
     if prepared.embed(&mut s.carrier(), message).is_err() { panic!("Rust embed failed within the limit"); }
     for decoded in [s.decode_rust(PASSPHRASE), s.decode_c(PASSPHRASE)] {
-        assert_eq!(decoded, Some((message.to_vec(), false)), "a Rust-encoded message didn't decode");
+        assert_eq!(decoded, Some(message.to_vec()), "a Rust-encoded message didn't decode");
     }
     assert_eq!(s.decode_rust(WRONG), None);
     assert_eq!(s.decode_c(WRONG), None);
@@ -92,6 +92,6 @@ fuzz_target!(init: scattersteg::sodium::init().expect("sodium_init failed"), |da
     let mut s = cover.clone();
     assert!(s.c_cover().embed(PASSPHRASE, message), "C embed failed within the limit");
     for decoded in [s.decode_c(PASSPHRASE), s.decode_rust(PASSPHRASE)] {
-        assert_eq!(decoded, Some((message.to_vec(), false)), "a C-encoded message didn't decode");
+        assert_eq!(decoded, Some(message.to_vec()), "a C-encoded message didn't decode");
     }
 });

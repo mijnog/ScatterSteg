@@ -80,8 +80,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     /* Hostile decode: never FAILED, and no crash or overread */
     uint8_t *plaintext = NULL;
     uint32_t pt_len = 0;
-    int v1;
-    int r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len, &v1);
+    int r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len);
     if (r == FAILED) abort();
     if (r == DECODED) sodium_free(plaintext);
 
@@ -94,10 +93,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             codec_prepared_free(prep);
         } else {
             if (codec_embed(prep, &cover.carrier, data, len) != 0) abort();
-            r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len, &v1);
-            if (r != DECODED || v1 || pt_len != len || memcmp(plaintext, data, len) != 0) abort();
+            r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len);
+            if (r != DECODED || pt_len != len || memcmp(plaintext, data, len) != 0) abort();
             sodium_free(plaintext);
-            if (codec_decode(&cover.carrier, "wrong horse battery", &plaintext, &pt_len, &v1) != NO_MATCH)
+            if (codec_decode(&cover.carrier, "wrong horse battery", &plaintext, &pt_len) != NO_MATCH)
                 abort();
         }
     }

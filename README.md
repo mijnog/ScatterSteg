@@ -123,7 +123,6 @@ These are relative results, not a claim of undetectability: the detectors are re
 - **Big messages are much easier to detect.** Near capacity, the coding has little freedom left.
 - **Not deniable.** There is no decoy message: if you're forced to give up the passphrase, the message is revealed.
 - **Very large images need a lot of memory**, up to several GB for the largest accepted (see A5 in the threat model).
-- **Old images** (format v1) still open, with a warning to re-encode them: that format let wrong passphrases be rejected cheaply.
 - **Suspending the program** (Ctrl+Z) at the passphrase prompt can leave the terminal's echo off. Ctrl+C, SIGTERM and SIGHUP are handled.
 
 ## Development

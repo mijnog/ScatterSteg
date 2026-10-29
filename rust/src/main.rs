@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 /// The terminal's line editor holds 4095 bytes per line and silently drops
 /// the rest, so a line that long may have been cut short: refuse it.
 const PASSPHRASE_MAX_LEN: usize = 4094;
-/// Shorter passphrases are refused on encode (decode accepts any, for old
-/// images). Length is a crude measure, so `passphrase` generates good ones.
+/// Shorter passphrases are refused on encode (on decode, one can only fail).
+/// Length is a crude measure, so `passphrase` generates good ones.
 const PASSPHRASE_MIN_LEN: usize = 12;
 
 // Secrets (passphrase, message, keys, plaintext) live in sodium_malloc
@@ -65,11 +65,10 @@ fn errno_message(e: &io::Error) -> String {
 }
 
 /// Read a passphrase from the terminal with echo off. On EOF or error,
-/// prints why and returns None. It ends at the first NUL (typed as Ctrl+@,
-/// or pasted), as in C, which would silently cut it short: refused unless
-/// allow_nul, which decode passes so images made with such a passphrase
-/// still open.
-fn read_passphrase(prompt: &str, allow_nul: bool) -> Option<Secret> {
+/// prints why and returns None. One with a NUL byte (typed as Ctrl+@, or
+/// pasted) is refused: the C version would end it there, silently cutting it
+/// short.
+fn read_passphrase(prompt: &str) -> Option<Secret> {
     let fail = || { scattersteg::errln!("Error: could not read passphrase"); None };
     if scattersteg::fault::should_fail("fopen") { return fail(); }
     let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
@@ -141,14 +140,10 @@ fn read_passphrase(prompt: &str, allow_nul: bool) -> Option<Secret> {
         scattersteg::errln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
         return None;
     }
-    // The C version held the passphrase as a C string, so it ends at the first
-    // NUL (Ctrl+@, or pasted): keep that, or its images wouldn't decode here
-    let nul = buf[..len].iter().position(|&b| b == 0);
-    if nul.is_some() && !allow_nul {
+    if buf[..len].contains(&0) {
         scattersteg::errln!("Error: the passphrase contains a NUL byte (Ctrl+@), which would cut it short");
         return None;
     }
-    let len = nul.unwrap_or(len);
     match Secret::from_slice(&buf[..len]) {
         Some(p) => Some(p),
         None => fail(),
@@ -389,13 +384,13 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
         }
     }
 
-    let Some(passphrase) = read_passphrase("Passphrase: ", false) else { return ExitCode::FAILURE };
+    let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
     if passphrase.len() < PASSPHRASE_MIN_LEN {
         scattersteg::errln!("Error: passphrase too short (min {PASSPHRASE_MIN_LEN} bytes); \
                    `scattersteg passphrase` generates a strong one");
         return ExitCode::FAILURE;
     }
-    let Some(confirm) = read_passphrase("Confirm passphrase: ", false) else { return ExitCode::FAILURE };
+    let Some(confirm) = read_passphrase("Confirm passphrase: ") else { return ExitCode::FAILURE };
     if *passphrase != *confirm {
         scattersteg::errln!("Error: passphrases do not match");
         return ExitCode::FAILURE;
@@ -478,7 +473,7 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
 }
 
 fn decode(input: &Path, raw: bool, quiet: bool) -> ExitCode {
-    let Some(passphrase) = read_passphrase("Passphrase: ", true) else { return ExitCode::FAILURE };
+    let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
     let Some(mut cover) = Cover::load(input) else {
         scattersteg::errln!("Error: could not load '{}'", input.display());
         return ExitCode::FAILURE;
@@ -504,11 +499,6 @@ fn decode(input: &Path, raw: bool, quiet: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if found.v1 {
-        scattersteg::errln!("Warning: this image uses the old v1 format, which protects the passphrase less \
-                   well; re-encode it");
-    }
-
     warn_if_swappable(&mut found.plaintext, found.len);
     if found.len > 0 { // empty message: print nothing
         // All of it, NULs too. The newline goes in the same write, so the

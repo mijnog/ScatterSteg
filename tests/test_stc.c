@@ -117,7 +117,7 @@ static void test_carriers(void) {
 }
 
 static void test_known_answer(void) {
-    /* Pins the v3 format's code (submatrix, block layout, chunking): any
+    /* Pins the format's code (submatrix, block layout, chunking): any
        change here makes existing images unreadable. The Python
        implementation in test_cli.py computes the same. */
     size_t n = 1000, mlen = 77;

@@ -7,22 +7,6 @@ use crate::sodium;
 
 const KEY: usize = sodium::CHACHA_KEY_BYTES;
 
-/// Format v1 (legacy, decode only): Fisher-Yates driven by a ChaCha20
-/// stream read in host byte order, with modulo bias. Kept unchanged so
-/// images written by older versions still decode.
-pub fn scatter(key: &[u8; KEY], count: u32) -> Option<Vec<u32>> {
-    if count == 0 || count > u32::MAX / 4 { return None; }
-    let mut stream = vec![0u8; count as usize * 4];
-    sodium::chacha20_stream(&mut stream, key);
-    let mut indices: Vec<u32> = (0..count).collect();
-    for i in (1..count as usize).rev() {
-        let r = u32::from_ne_bytes(stream[i * 4..i * 4 + 4].try_into().unwrap());
-        indices.swap(i, (r as usize) % (i + 1));
-    }
-    sodium::memzero(&mut stream); // the order can be told from it
-    Some(indices)
-}
-
 const CHUNK: usize = 4096; // keystream bytes generated at a time (64 blocks)
 
 struct Stream<'a> {
@@ -66,7 +50,7 @@ impl Drop for Stream<'_> {
     fn drop(&mut self) { sodium::memzero(&mut self.buf); }
 }
 
-/// Format v2: a permutation of [0, count), from an unbiased forward
+/// A permutation of [0, count), from an unbiased forward
 /// Fisher-Yates shuffle driven by the ChaCha20-IETF keystream of `key`
 /// (zero nonce), read as little-endian u32s. None if count == 0.
 pub fn permutation(key: &[u8; KEY], count: u32) -> Option<Vec<u32>> {

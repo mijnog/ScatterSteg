@@ -16,11 +16,11 @@ enum { DECODED, NO_MATCH, FAILED };
 /* Positions the 32-bit length header takes: fewer, and no message fits */
 uint32_t codec_header_pixels(uint32_t channels);
 
-/* Tries v4, then v3 and v2, then v1 (setting *v1). DECODED gives the
-   message in *plaintext (sodium_malloc memory, pt_len bytes and one more
-   to spare); NO_MATCH means a wrong passphrase or no message. */
+/* DECODED gives the message in *plaintext (sodium_malloc memory, pt_len
+   bytes and one more to spare); NO_MATCH means a wrong passphrase or no
+   message. Costs one Argon2id run. */
 int codec_decode(const Carrier *c, const char *passphrase,
-                 uint8_t **plaintext, uint32_t *pt_len, int *v1);
+                 uint8_t **plaintext, uint32_t *pt_len);
 
 /* Encode, in two steps so the message limit is known before the message
    is read: codec_prepare keys the passphrase (one Argon2id run) and finds

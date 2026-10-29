@@ -5,12 +5,7 @@
 
 #include <stdint.h>
 
-/* Format v1 (legacy, decode only): Fisher-Yates driven by a ChaCha20
-   stream read in host byte order, with modulo bias. Kept unchanged so
-   images written by older versions still decode. */
-uint32_t *prng_scatter(const uint8_t *key, uint32_t count);
-
-/* Format v2: a permutation of [0, count), from an unbiased forward
+/* A permutation of [0, count), from an unbiased forward
    Fisher-Yates shuffle driven by the ChaCha20-IETF keystream of `key`
    (32 bytes, zero nonce), read as little-endian uint32s whatever the
    host byte order. NULL on allocation failure or count == 0. */

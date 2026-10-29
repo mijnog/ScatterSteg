@@ -84,7 +84,7 @@ impl Drop for CJpeg { fn drop(&mut self) { unsafe { jpeg_free(self.0) } } }
 // The C file format (codec.h), on a carrier that borrows Rust's samples
 unsafe extern "C" {
     fn codec_decode(c: *const CCarrier, passphrase: *const c_char, plaintext: *mut *mut u8,
-                    pt_len: *mut u32, v1: *mut c_int) -> c_int;
+                    pt_len: *mut u32) -> c_int;
     fn codec_prepare(c: *const CCarrier, passphrase: *const c_char) -> *mut c_void;
     fn codec_max_message(p: *const c_void) -> usize;
     fn codec_embed(p: *mut c_void, c: *const CCarrier, message: *const u8, msg_len: u32) -> c_int;
@@ -124,14 +124,14 @@ impl<'a> CCodecCover<'a> {
     }
 
     /// Ok(None) if nothing is found, Err if C's decode failed
-    pub fn decode(&mut self, passphrase: &[u8]) -> Result<Option<(Vec<u8>, bool)>, ()> {
+    pub fn decode(&mut self, passphrase: &[u8]) -> Result<Option<Vec<u8>>, ()> {
         let pass = CString::new(passphrase).unwrap();
-        let (mut pt, mut len, mut v1) = (std::ptr::null_mut(), 0u32, 0 as c_int);
-        match unsafe { codec_decode(&self.carrier, pass.as_ptr(), &mut pt, &mut len, &mut v1) } {
+        let (mut pt, mut len) = (std::ptr::null_mut(), 0u32);
+        match unsafe { codec_decode(&self.carrier, pass.as_ptr(), &mut pt, &mut len) } {
             DECODED => {
                 let msg = unsafe { std::slice::from_raw_parts(pt, len as usize) }.to_vec();
                 unsafe { sodium_free(pt.cast()) };
-                Ok(Some((msg, v1 != 0)))
+                Ok(Some(msg))
             }
             NO_MATCH => Ok(None),
             _ => Err(()),

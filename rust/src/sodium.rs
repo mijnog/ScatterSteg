@@ -80,15 +80,6 @@ pub fn chacha20_ietf_xor_ic(buf: &mut [u8], block: u32, key: &[u8; CHACHA_KEY_BY
     assert_eq!(r, 0);
 }
 
-/// The original ChaCha20 keystream (zero 8-byte nonce), for format v1
-pub fn chacha20_stream(out: &mut [u8], key: &[u8; CHACHA_KEY_BYTES]) {
-    let nonce = [0u8; 8];
-    let r = unsafe {
-        sys::crypto_stream_chacha20(out.as_mut_ptr(), out.len() as c_ulonglong, nonce.as_ptr(), key.as_ptr())
-    };
-    assert_eq!(r, 0);
-}
-
 #[derive(Clone, Copy)]
 pub enum PwhashStrength {
     Interactive,

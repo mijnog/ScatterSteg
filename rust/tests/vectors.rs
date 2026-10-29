@@ -16,7 +16,6 @@ fn prng_matches_c() {
     sodium::init().unwrap();
     let a = prng::permutation(&key(), 100003).unwrap();
     assert_eq!((fnv32(&a), a[0], a[99999]), (5751850905229347223, 71343, 25739));
-    assert_eq!(fnv32(&prng::scatter(&key(), 5000).unwrap()), 7794030596742661031);
     assert_eq!(fnv32(&prng::sample(&key(), 100003, 300).unwrap()), 13580493453081099827);
     assert_eq!(prng::sample(&key(), 100003, 300).unwrap(), a[..300]);
 }

@@ -54,14 +54,14 @@ void embed_decode(const Carrier *c, const uint32_t *indices,
 
 uint32_t embed_peek_len(const Carrier *c, const uint32_t *indices, uint32_t count);
 
-/* Raw bytes with no length header (format v2 uses these for the salt).
+/* Raw bytes with no length header (the format's 32-bit length uses these).
    Return 0, or -1 if len bytes don't fit in count positions. */
 int embed_write_raw(const Carrier *c, const uint32_t *indices, uint32_t count,
                     const uint8_t *data, uint32_t len, EmbedPlan *plan);
 int embed_read_raw(const Carrier *c, const uint32_t *indices, uint32_t count,
                    uint8_t *out, uint32_t len);
 
-/* For syndrome coding (format v3). Sample k is the one bit position k of
+/* For syndrome coding (see stc.h). Sample k is the one bit position k of
    data written in `indices` order goes to, as above. */
 
 /* The LSBs of samples start .. start+n-1 */

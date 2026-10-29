@@ -238,7 +238,7 @@ static void test_empty_message(void) {
 }
 
 static void test_raw_roundtrip(void) {
-    /* 16 bytes = 128 bits in 43 pixels (129 bits): the v2 salt layout */
+    /* 16 bytes = 128 bits in 43 pixels (129 bits), all but one sample */
     Image *img = make_image(10, 10, 0x80);
     Image *orig = make_image(10, 10, 0x80);
     uint32_t px[43];

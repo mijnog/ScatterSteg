@@ -331,6 +331,13 @@ static void test_many_scans_refused(void) {
     CHECK(jpeg_load("tests/fuzz/regressions/jpeg_load/many-scans-large-frame.jpg") == NULL);
 }
 
+/* 330 bytes declaring a 15144x32800 gray frame with no entropy data:
+   libjpeg filled it with zeros, 1.5 s and ~1 GB. Fewer bits than blocks,
+   so refused before reading. */
+static void test_hollow_frame_refused(void) {
+    CHECK(jpeg_load("tests/fuzz/regressions/jpeg_load/hollow-huge-frame.jpg") == NULL);
+}
+
 static void test_unrewritable_refused(void) {
     /* Each decodes, but libjpeg writes it back wrong or not at all (found
        by fuzzing): the rewrite check refuses it. Encode now refuses these
@@ -463,6 +470,7 @@ int main(void) {
     RUN(test_scan_limit);
     RUN(test_extreme_dc_accepted);
     RUN(test_many_scans_refused);
+    RUN(test_hollow_frame_refused);
     RUN(test_unrewritable_refused);
     RUN(test_uerd_costs);
     RUN(test_fuzz_regressions);

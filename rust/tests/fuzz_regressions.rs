@@ -88,6 +88,14 @@ fn many_scans_refused() {
     assert!(JpegImage::load(&f).is_none());
 }
 
+/// 330 bytes declaring a 15144x32800 gray frame with no entropy data: libjpeg
+/// filled it with zeros, 1.5 s and ~1 GB. Fewer bits than blocks, so refused.
+#[test]
+fn hollow_frame_refused() {
+    let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fuzz/regressions/jpeg_load/hollow-huge-frame.jpg");
+    assert!(JpegImage::load(&f).is_none());
+}
+
 /// Newer libpng refuses a chunk name with a lowercase third letter, so we load
 /// such a file but never write the chunk back.
 #[test]

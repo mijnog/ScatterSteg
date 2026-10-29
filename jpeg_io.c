@@ -28,6 +28,28 @@
    visit each block about ten times (the largest image allowed here, some
    84 million visits); past this, one costs about a second. */
 #define JPEG_MAX_SCAN_BLOCKS ((uint64_t)1 << 28)
+/* And a frame's size is only what its header claims: a 330-byte file can
+   declare 15144x32800 with no entropy data, which libjpeg fills with zeros,
+   at 1.5 s and ~1 GB. Huffman coding spends at least 1 bit on every block
+   (its DC code), so a frame of more blocks than the file has bits is
+   refused before anything is allocated. Arithmetic coding can spend far
+   less than a bit on a block, so it isn't bound this way. */
+static int hollow_frame(const struct jpeg_decompress_struct *s, uint64_t bytes_left) {
+    if (s->arith_code) return 0;
+    uint64_t blocks = 0;
+    for (int ci = 0; ci < s->num_components; ci++)
+        blocks += (uint64_t)s->comp_info[ci].width_in_blocks * s->comp_info[ci].height_in_blocks;
+    return bytes_left * 8 < blocks;
+}
+
+/* Bytes of fp from here to its end, or UINT64_MAX if it can't seek */
+static uint64_t bytes_to_end(FILE *fp) {
+    long here = ftell(fp), end;
+    if (here < 0 || fseek(fp, 0, SEEK_END) != 0) return UINT64_MAX;
+    end = ftell(fp);
+    if (fseek(fp, here, SEEK_SET) != 0 || end < here) return UINT64_MAX;
+    return (uint64_t)(end - here);
+}
 /* What an 8-bit encoder can write: DC in [-1024, 1023] (an all-black block
    at quality 100 is -1024), so block-to-block differences fit its 11 bits;
    AC values that fit 10 bits */
@@ -214,6 +236,9 @@ JpegImage *jpeg_read(FILE *fp) {
     if (j->src.data_precision != 8 ||
         (uint64_t)j->src.image_width * j->src.image_height * j->src.num_components * 2 >
             JPEG_MAX_COEF_BYTES)
+        error_exit((j_common_ptr)&j->src);
+    uint64_t rest = bytes_to_end(fp);
+    if (rest != UINT64_MAX && hollow_frame(&j->src, j->src.src->bytes_in_buffer + rest))
         error_exit((j_common_ptr)&j->src);
 
     j->coefs = jpeg_read_coefficients(&j->src);

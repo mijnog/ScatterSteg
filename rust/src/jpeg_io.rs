@@ -37,6 +37,25 @@ const MAX_SCANS: c_int = 500;
 /// each block about ten times (the largest image allowed here, some 84
 /// million visits); past this, one costs about a second.
 const MAX_SCAN_BLOCKS: u64 = 1 << 28;
+
+/// And a frame's size is only what its header claims: a 330-byte file can
+/// declare 15144x32800 with no entropy data, which libjpeg fills with zeros,
+/// at 1.5 s and ~1 GB. Huffman coding spends at least 1 bit on every block
+/// (its DC code), so a frame of more blocks than the file has bits is refused
+/// before anything is allocated. Arithmetic coding can spend far less than a
+/// bit on a block, so it isn't bound this way.
+///
+/// # Safety
+/// `s` has read its header.
+unsafe fn hollow_frame(s: *const jpeg_decompress_struct, bytes_left: u64) -> bool {
+    if unsafe { (*s).arith_code } != 0 { return false; }
+    let n = unsafe { (*s).num_components } as usize;
+    let blocks: u64 = (0..n)
+        .map(|ci| unsafe { &*(*s).comp_info.add(ci) })
+        .map(|c| c.width_in_blocks as u64 * c.height_in_blocks as u64)
+        .sum();
+    bytes_left * 8 < blocks
+}
 /// What an 8-bit encoder can write: DC in [-1024, 1023], so block-to-block
 /// differences fit its 11 bits; AC values that fit 10 bits
 const MIN_DC: i16 = -1024;
@@ -222,6 +241,8 @@ impl JpegImage {
                     > MAX_COEF_BYTES as u64 {
                 error_exit(s as j_common_ptr);
             }
+            // (from memory, so what libjpeg has left is the rest of the file)
+            if hollow_frame(s, (*(*s).src).bytes_in_buffer as u64) { error_exit(s as j_common_ptr); }
             let virt = jpeg_read_coefficients(s);
             if virt.is_null() { error_exit(s as j_common_ptr); }
             virt

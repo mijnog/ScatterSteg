@@ -4,6 +4,13 @@ How easily can a steganalysis classifier tell a ScatterSteg image from its
 cover, compared with steghide and with naive LSB embedding? This is a first,
 modest measurement. Read the limitations before quoting a number.
 
+**Current results** (HILL costs for PNG, UERD for JPEG) are in
+[HILL](#content-adaptive-costs-hill), [UERD](#content-adaptive-jpeg-costs-uerd),
+[BOSSbase](#second-cover-set-bossbase) and [Classic detectors](#classic-detectors).
+The tables before the HILL section are the original measurements, from
+before content-adaptive costs, kept as the baseline the later ones are
+compared to.
+
 ## Result
 
 Detection error **P_E** (0.5 = the detector cannot do better than guessing;
@@ -188,13 +195,18 @@ matching is unchanged, so the harness is the same.
 
 ## Classic detectors
 
-The first table in the [main README](../README.md#steganalysis-results)
-(chi-square, sample pair analysis, Ker's adjacency HCF-COM, and the number of
-changes) was measured on the 480 Wikimedia photographs with builds of `ca1a139`
-(uniform costs) and `83603fa` (HILL), at 0.05 to 0.4 bits per pixel.
-`classic.py` implements chi-square and sample pair analysis, calibrated on the
-LSB baselines first; `hcf.py` scores adjacency HCF-COM. Raw output is in
-`results-classic.txt`.
+Measured on the 480 benchmark photographs (512×512 RGB; `classic.py` and `hcf.py`; raw output in `results-classic.txt`) at 0.05 to 0.4 bits per pixel, against the classic detectors for LSB steganography, with builds of `ca1a139` (uniform costs) and `83603fa` (HILL, current). The baselines write the message bits directly: LSB replacement from the first pixel on (sequential) or at scattered positions, and LSB matching at scattered positions.
+
+| Detector | LSB replacement | LSB matching | ScatterSteg, uniform costs | **ScatterSteg, HILL** |
+|---|---|---|---|---|
+| Changes per image (0.05 / 0.4 bits per pixel) | 6,550 / 52,400 | 6,550 / 52,400 | 1,850 / 18,200 | **2,370 / 25,600** |
+| Chi-square attack, p over the first 2% of samples (cover 0.09) | 0.60–0.96 sequential, 0.10–0.12 scattered | 0.10–0.11 | 0.09 | **0.09–0.10** |
+| Sample pair analysis, shift from the cover | +0.008 to +0.064, tracking the payload | 0.000 | −0.001 to −0.019 (3 cover-to-stego sd at 0.4) | **−0.0002 to −0.0012** |
+| Ker's adjacency HCF-COM shift (cover 107.6, sd 10.6) | −0.45 to −1.51 | −0.56 to −4.54 | −0.15 to −1.14 | **−0.01 to −0.14** |
+
+Chi-square only catches sequential embedding, and none of the scattered methods trigger it. Sample pair analysis did see uniform costs, in the opposite direction from LSB replacement; HILL's shift is 7 to 16 times smaller. For JPEG, the 2:3 ratio of coefficients of magnitude 2 and 3 (cover 1.93, sd 0.13 across covers) moves +0.7%, +0.9% and −1.1% with UERD at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient (`tune_two.py`). An earlier version of this table, measured on two photographs, is in the git history.
+
+`classic.py` implements chi-square and sample pair analysis and was calibrated on the LSB baselines first; `hcf.py` scores adjacency HCF-COM.
 
 ## Method
 

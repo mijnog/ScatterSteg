@@ -1,4 +1,4 @@
-"""The classic LSB detectors from the README's first table, on the benchmark
+"""The classic LSB detectors from the benchmark README's table, on the benchmark
 covers: the chi-square attack (Westfeld and Pfitzmann, 2000) and sample pair
 analysis (Dumitrescu, Wu and Wang, 2003), per RGB channel, averaged.
 

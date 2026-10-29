@@ -321,8 +321,6 @@ pub struct Prepared {
     max_msg: usize,
 }
 
-/// Err(None) if the image is too small to hide a message; Err(Some(msg)) on
-/// other failures
 /// Whether the carrier can't hold the salt and length, whatever the message:
 /// cheap, so encode checks it before slower work on the cover
 pub fn too_small(c: &Carrier) -> bool {
@@ -330,6 +328,8 @@ pub fn too_small(c: &Carrier) -> bool {
     count < salt_region_pixels(count, ch) + header_pixels(ch)
 }
 
+/// Err(None) if the image is too small to hide a message; Err(Some(msg)) on
+/// other failures
 pub fn prepare_encode(c: &Carrier, passphrase: &[u8]) -> Result<Prepared, Option<String>> {
     let (count, ch) = (c.positions(), c.channels());
     let k = salt_region_pixels(count, ch);

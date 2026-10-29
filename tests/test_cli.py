@@ -1663,8 +1663,8 @@ class JpegTest(CliBase):
         # they'd be lost while the MPF marker indexing them was kept
         src = self.path("mpo.jpg")
         make_jpeg(src, 200, 150)
-        with open(src, "ab") as f:
-            f.write(open(self.jpeg, "rb").read())  # a second image
+        with open(src, "ab") as f, open(self.jpeg, "rb") as second:
+            f.write(second.read())  # a second image
         out = self.path("steg.jpg")
         code, log = self.encode(b"x", out, src=src)
         self.assertEqual(code, 1, log)

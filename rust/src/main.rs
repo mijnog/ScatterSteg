@@ -312,6 +312,14 @@ fn parse_options(args: &[OsString]) -> Option<Args> {
 }
 
 fn encode(input: &Path, output: &Path, raw: bool) -> ExitCode {
+    // Before the name check, which reads the input's first bytes: a missing
+    // file would otherwise be called a PNG
+    let opened = if scattersteg::fault::should_fail("fopen") { Err(io::Error::from_raw_os_error(libc::EMFILE)) }
+                 else { std::fs::File::open(input).map(drop) };
+    if let Err(e) = opened {
+        scattersteg::errln!("Error: could not load '{}': {}", input.display(), errno_message(&e));
+        return ExitCode::FAILURE;
+    }
     if !output_name_matches(input, output) { return ExitCode::FAILURE; }
     // Checked again when writing; here, before the passphrase prompt
     if let Ok(m) = std::fs::metadata(output) {

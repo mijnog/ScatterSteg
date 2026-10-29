@@ -440,6 +440,14 @@ int main(int argc, char *argv[]) {
             usage(argv[0]);
             return 1;
         }
+        /* Before the name check, which reads the input's first bytes: a
+           missing file would otherwise be called a PNG */
+        FILE *in = fopen(input, "rb");
+        if (!in) {
+            fprintf(stderr, "Error: could not load '%s': %s\n", input, strerror(errno));
+            return 1;
+        }
+        fclose(in);
         if (!output_name_matches(input, output)) return 1;
         /* Checked again when writing; here, before the passphrase prompt */
         struct stat out_st;

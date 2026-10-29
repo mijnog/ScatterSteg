@@ -1503,9 +1503,15 @@ class CliTest(CliBase):
         self.assertIn("No such file or directory", log)
 
     def test_missing_input(self):
-        code, log = self.encode(b"x", self.path("out.png"), src=self.path("nope.png"))
-        self.assertEqual(code, 1)
-        self.assertIn("could not load", log)
+        # Said plainly, before the passphrase, whatever the names: a missing
+        # .jpg used to be called a PNG by the output name check
+        for name in ("nope.png", "nope.jpg"):
+            out = self.path("out" + os.path.splitext(name)[1])
+            code, log = self.encode(b"x", out, src=self.path(name))
+            self.assertEqual(code, 1, log)
+            self.assertIn("could not load", log)
+            self.assertIn("No such file or directory", log)
+            self.assertNotIn("Passphrase", log)
 
     def test_input_not_png(self):
         bogus = self.path("bogus.png")

@@ -18,8 +18,9 @@
 //!            first 32 samples in that order, then its bits as the STC
 //!            syndrome of the samples after them (see payload_carriers)
 //!   message  the secretbox's plaintext: [encoding 1 | body], the body raw
-//!            DEFLATE (encoding 1) if that made the message shorter, else the
-//!            message as is (0); see compress.rs
+//!            DEFLATE (encoding 1) of the record if that made it shorter,
+//!            else the record as is (0); the record is [name length 1 | file
+//!            name | message] (see compress.rs)
 //!
 //! Every pixel carries one bit per sample (R, G, B, or gray LSBs); a JPEG,
 //! one per carrier coefficient. There is no header or version marker, which
@@ -158,6 +159,13 @@ fn read_payload(c: &Carrier, order: &[u32], n: u32) -> Option<Vec<u8>> {
     Some(payload)
 }
 
+/// How a message was stored
+pub struct Embedded {
+    /// Bytes stored: the record, compressed or not
+    pub hidden: usize,
+    pub compressed: bool,
+}
+
 pub enum EmbedError {
     TooLong,
     Alloc,
@@ -195,9 +203,10 @@ fn open_box(boxed: &[u8], key: &[u8; 32]) -> Result<Option<Secret>, String> {
 }
 
 pub struct Decrypted {
-    /// The message, followed by one spare byte
+    /// The message
     pub plaintext: Secret,
-    pub len: usize,
+    /// The file name stored with it, empty for none (see compress::name_ok)
+    pub name: Vec<u8>,
 }
 
 /// Ok(None) for a wrong passphrase or no message; Err carries a message.
@@ -215,7 +224,7 @@ pub fn decode(c: &Carrier, passphrase: &[u8]) -> Result<Option<Decrypted>, Strin
     sodium::memzero(&mut payload);
     let Some(pt) = opened? else { return Ok(None) };
     match compress::unpack(&pt[..pt.len() - 1]) {
-        Ok(msg) => Ok(Some(Decrypted { len: msg.len() - 1, plaintext: msg })),
+        Ok((plaintext, name)) => Ok(Some(Decrypted { plaintext, name })),
         Err(Unpack::Alloc) => Err("allocation failed".into()),
         Err(Unpack::Malformed) => Err("the message is malformed; it authenticated, so whoever made the \
                                        image knew the passphrase".into()),
@@ -241,15 +250,16 @@ pub fn too_small(c: &Carrier) -> bool {
     count < salt_region_pixels(count, ch) + header_pixels(ch)
 }
 
-/// The longest message that fits stored as is after the k salt pixels: one
-/// payload bit per sample after the 32-bit header, less the box and the
-/// encoding byte
+/// The longest message that fits stored as is, with no file name, after the
+/// k salt pixels: one payload bit per sample after the 32-bit header, less
+/// the box, the encoding byte and the name length
 fn max_message(count: u32, k: u32, ch: u32) -> usize {
-    (payload_samples(count - k, ch) / 8).saturating_sub(BOX_OVERHEAD + 1)
+    (payload_samples(count - k, ch) / 8).saturating_sub(BOX_OVERHEAD + 2)
 }
 
-/// The longest message the carrier holds stored as is (a compressible one can
-/// be longer), which needs no passphrase: what `Prepared::max_message` gives.
+/// The longest message the carrier holds stored as is, with no file name (a
+/// compressible one can be longer, a name takes its length), which needs no
+/// passphrase: what `Prepared::max_message` gives.
 /// 0 if `too_small`.
 pub fn capacity(c: &Carrier) -> usize {
     if too_small(c) { return 0; }
@@ -280,13 +290,15 @@ impl Prepared {
     /// one can be longer)
     pub fn max_message(&self) -> usize { self.max_msg }
 
-    /// Compresses the (non-empty) message if that makes it shorter, encrypts
-    /// it, and changes the cover to carry it. TooLong if it doesn't fit even
-    /// compressed.
-    pub fn embed(self, c: &mut Carrier, message: &[u8]) -> Result<(), EmbedError> {
+    /// Stores the (non-empty) message with its file name (empty for none; see
+    /// compress::name_ok), compressed at `level` 1-9 if that makes it
+    /// shorter (0: never), encrypts it, and changes the cover to carry it.
+    /// TooLong if it doesn't fit even compressed.
+    pub fn embed(self, c: &mut Carrier, name: &[u8], message: &[u8], level: u32) -> Result<Embedded, EmbedError> {
         // payload = [nonce | secretbox([encoding | body])]
-        let (packed, packed_len) = compress::pack(message).ok_or(EmbedError::Alloc)?;
-        if packed_len > self.max_msg + 1 { return Err(EmbedError::TooLong); }
+        let (packed, packed_len) = compress::pack(name, message, level).ok_or(EmbedError::Alloc)?;
+        let stored = Embedded { hidden: packed_len - 1, compressed: packed[0] != 0 };
+        if packed_len > self.max_msg + 2 { return Err(EmbedError::TooLong); }
         let mut payload = vec![0u8; BOX_OVERHEAD + packed_len];
         let mut nonce = [0u8; NONCE_BYTES];
         sodium::random_bytes(&mut nonce);
@@ -306,6 +318,6 @@ impl Prepared {
         embedded?;
         write_salt(c, &self.salt_px, self.k, &self.salt, &mut plan).map_err(|_| EmbedError::Alloc)?;
         embed::apply(c, &mut plan);
-        Ok(())
+        Ok(stored)
     }
 }

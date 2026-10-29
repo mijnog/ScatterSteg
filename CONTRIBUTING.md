@@ -18,6 +18,7 @@ CI runs all of this on every push and pull request. A change should pass it.
 ## What a change needs
 
 - **The two implementations stay compatible.** An image written by the C version must decode with the Rust one and the other way round. A change to the file format or to what counts as a loadable image goes into both, with a test in `tests/test_cli.py` and, for image loading, a file in `tests/fuzz/regressions` or `rust/fuzz/regressions`.
+- **The command line keeps steghide's syntax**: its command and option names, for every feature ScatterSteg has, so steghide users already know it. The wording of messages and help is ScatterSteg's own. [`CLAUDE.md`](CLAUDE.md) lists the deliberate differences.
 - **A bug found by fuzzing gets its input kept** as a regression file, so it is replayed by the tests.
 - **Anything that changes which pixels or coefficients are altered** (costs, pairing, the STC) needs a detectability measurement, not just a round-trip test. [`benchmark/`](benchmark/README.md) shows how. Say what you measured and on what, and do not claim more than it supports.
 - **Secrets stay in libsodium memory** (`Secret` in Rust). Do not copy a key, passphrase or plaintext into ordinary heap memory.

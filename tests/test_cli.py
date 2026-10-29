@@ -65,29 +65,44 @@ def jpeg_segments(path):
     return out
 
 
+def exec_or_exit(argv):
+    """In a forked child: become argv, or exit; never go on to run the rest of
+    the tests in the child"""
+    try:
+        os.execv(argv[0], argv)
+    finally:
+        os._exit(127)
+
+
 def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
-        stdin_path=None, stdout_path=None, memlock=None):
+        stdin_path=None, stdout_path=None, memlock=None, cwd=None):
     """Run scattersteg, answer each passphrase prompt in order. The message
     goes in on stdin (from the file stdin_path, if given), or with `typed`,
     is typed at the terminal instead. stdout goes to the terminal, or to
-    the file stdout_path.
+    the file stdout_path. It runs in cwd, if given (where extract restores
+    a file under its stored name).
     Returns (exit_code, combined stdout+stderr as text)."""
-    binary = binary or BINARY
+    binary = os.path.abspath(binary or BINARY)  # it may run in another directory (cwd)
     with tempfile.TemporaryFile() as stdin:
         stdin.write(message)
         stdin.flush()
         stdin.seek(0)
         pid, master = pty.fork()
         if pid == 0:
-            if stdin_path is not None:
-                os.dup2(os.open(stdin_path, os.O_RDONLY), 0)
-            elif typed is None:
-                os.dup2(stdin.fileno(), 0)
-            if stdout_path is not None:
-                os.dup2(os.open(stdout_path, os.O_WRONLY), 1)
-            if memlock is not None:  # the locked memory limit, soft and hard
-                resource.setrlimit(resource.RLIMIT_MEMLOCK, (memlock, memlock))
-            os.execve(binary, [binary] + list(args), {**os.environ, **(env or {})})
+            try:
+                if stdin_path is not None:
+                    os.dup2(os.open(stdin_path, os.O_RDONLY), 0)
+                elif typed is None:
+                    os.dup2(stdin.fileno(), 0)
+                if stdout_path is not None:
+                    os.dup2(os.open(stdout_path, os.O_WRONLY), 1)
+                if memlock is not None:  # the locked memory limit, soft and hard
+                    resource.setrlimit(resource.RLIMIT_MEMLOCK, (memlock, memlock))
+                if cwd is not None:
+                    os.chdir(cwd)
+                os.execve(binary, [binary] + list(args), {**os.environ, **(env or {})})
+            finally:
+                os._exit(127)  # never go on to run the rest of the tests in the child
 
     answers = list(passphrases)
     out = b""
@@ -267,25 +282,46 @@ def open_box(box, key):
     return pt.raw[:len(ct) - MAC]
 
 
-def pack(message):
+NAME_MAX = 255
+RECORD_MAX = MESSAGE_MAX + 1 + NAME_MAX
+
+
+def name_ok(name):
+    """A file name a record may carry: a bare name"""
+    return (0 < len(name) <= NAME_MAX and name not in (b".", b"..")
+            and not any(b == 0x2F or b < 0x20 or b == 0x7F for b in name))
+
+
+def pack(message, name=b"", level=9):
     """The secretbox's plaintext: [encoding | body], the body raw DEFLATE
-    (encoding 1) if that is shorter, else the message as is (0)"""
-    c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
-    body = c.compress(message) + c.flush()
-    return b"\1" + body if len(body) < len(message) else b"\0" + message
+    (encoding 1) of the record if that is shorter, else the record as is
+    (0). The record is [name length | name | message]."""
+    record = bytes([len(name)]) + name + message
+    if level:
+        c = zlib.compressobj(level, zlib.DEFLATED, -15, 9)
+        body = c.compress(record) + c.flush()
+        if len(body) < len(record):
+            return b"\1" + body
+    return b"\0" + record
 
 
 def unpack(pt):
-    """The message in the secretbox's plaintext, or None if it's malformed"""
+    """(name, message) from the secretbox's plaintext, or None if it's
+    malformed"""
     if not pt or pt[0] not in (0, 1):
         return None
-    if pt[0] == 0:
-        return pt[1:]
-    d = zlib.decompressobj(-15)
-    msg = d.decompress(pt[1:], MESSAGE_MAX + 1)
-    if not d.eof or d.unused_data or d.unconsumed_tail or len(msg) > MESSAGE_MAX:
+    record = pt[1:]
+    if pt[0] == 1:
+        d = zlib.decompressobj(-15)
+        record = d.decompress(pt[1:], RECORD_MAX + 1)
+        if not d.eof or d.unused_data or d.unconsumed_tail or len(record) > RECORD_MAX:
+            return None
+    if not record or 1 + record[0] > len(record):
         return None
-    return msg
+    name = record[1:1 + record[0]]
+    if name and not name_ok(name):
+        return None
+    return name, record[1 + record[0]:]
 
 
 def seal(message, key):
@@ -441,10 +477,10 @@ def layout(rows, w, h, pw):
     return salt_px, payload_order(scatter_key, w * h, salt_px), enc_key
 
 
-def forge(src, dst, message, passphrase, plaintext=None):
-    """Embed `message` the way scattersteg encode does, without its checks
-    (so an empty message is allowed), or the secretbox's `plaintext` as
-    given. Overwrites LSBs; decoding can't tell the difference from LSB
+def forge(src, dst, message, passphrase, plaintext=None, name=b""):
+    """Embed `message` (stored with `name`) the way scattersteg embed does,
+    without its checks (so an empty message or a bad name are allowed), or
+    the secretbox's `plaintext` as given. Overwrites LSBs; decoding can't tell the difference from LSB
     matching."""
     w, h, rows = read_png(src)
     rows = [bytearray(r) for r in rows]
@@ -456,7 +492,7 @@ def forge(src, dst, message, passphrase, plaintext=None):
     set_bits(rows, w, salt_px, 0, stc_solve(x, to_bits(salt), used), ch)
     scatter_key, enc_key = keys(pw, salt)
     order = payload_order(scatter_key, w * h, salt_px)
-    box = seal(pack(message) if plaintext is None else plaintext, enc_key)
+    box = seal(pack(message, name) if plaintext is None else plaintext, enc_key)
     set_bits(rows, w, order, 0, [(len(box) >> b) & 1 for b in range(32)], ch)
     n = stc_carriers(len(order) * ch - 32, len(box) * 8)
     assert n, "message too long"
@@ -479,20 +515,21 @@ def read_box(rows, w, order, ch, enc_key):
     return open_box(box, enc_key)
 
 
-def reveal(src, passphrase):
+def reveal(src, passphrase, name=False):
     """Extract and decrypt a message independently of the binary. Returns
-    the plaintext bytes, or None."""
+    the message's bytes, or None. With name=True, (name, message)."""
     w, h, rows = read_png(src)
     ch = len(rows[0]) // w
     _, order, enc_key = layout(rows, w, h, passphrase.encode())
     pt = read_box(rows, w, order, ch, enc_key)
-    return None if pt is None else unpack(pt)
+    found = None if pt is None else unpack(pt)
+    return found if name or found is None else found[1]
 
 
 def capacity(w, h, ch=3):
-    """Largest message encode accepts for a w x h cover, stored as is (one
-    that compresses can be longer)"""
-    return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - BOX_OVERHEAD - 1
+    """Largest message embed accepts for a w x h cover, stored as is with no
+    file name (one that compresses can be longer; a name takes its length)"""
+    return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - BOX_OVERHEAD - 2
 
 
 def noise(n, seed=1):
@@ -523,30 +560,29 @@ class CliBase(unittest.TestCase):
     def path(self, name):
         return os.path.join(self.dir, name)
 
-    def encode(self, message, out, passphrase="correct horse", confirm=None, src=None):
-        return run(["encode", "-i", src or self.cover, "-o", out], message,
+    def embed(self, message, out, passphrase="correct horse", confirm=None, src=None):
+        """Embed message, from standard input, in src (the cover by default),
+        replacing out if it exists"""
+        return run(["embed", "-cf", src or self.cover, "-sf", out, "-f"], message,
                    [passphrase, passphrase if confirm is None else confirm])
 
-    def decode(self, src, passphrase="correct horse"):
-        return run(["decode", "-i", src], passphrases=[passphrase])
+    def extract(self, src, passphrase="correct horse"):
+        return run(["extract", "-sf", src], passphrases=[passphrase])
 
-    def decode_bytes(self, src, *flags, passphrase="correct horse"):
-        """What decode wrote to stdout, byte for byte"""
-        out = self.path("decoded.bin")
+    def extract_bytes(self, src, *flags, passphrase="correct horse"):
+        """What extract wrote to stdout, byte for byte"""
+        out = self.path("extracted.bin")
         open(out, "wb").close()
-        code, log = run(["decode", *flags, "-i", src], passphrases=[passphrase], stdout_path=out)
+        code, log = run(["extract", *flags, "-sf", src, "-xf", "-"], passphrases=[passphrase], stdout_path=out)
         self.assertEqual(code, 0, log)
         with open(out, "rb") as f:
             return f.read()
 
-    def encode_raw(self, message, out, passphrase="correct horse", src=None):
-        return run(["encode", "-r", "-i", src or self.cover, "-o", out], message, [passphrase, passphrase])
-
     def assertDecodes(self, src, message, passphrase="correct horse"):
-        code, out = self.decode(src, passphrase)
+        code, out = self.extract(src, passphrase)
         self.assertEqual(code, 0, out)
-        # decode prints the plaintext followed by a newline
-        self.assertIn(message + "\n", out)
+        # A message from standard input has no name: it goes to stdout, last
+        self.assertTrue(out.endswith(message), (out, message))
 
 
 
@@ -555,9 +591,9 @@ class CliTest(CliBase):
 
     def test_roundtrip(self):
         out = self.path("steg.png")
-        code, log = self.encode(b"meet at the old bridge\n", out)
+        code, log = self.embed(b"meet at the old bridge\n", out)
         self.assertEqual(code, 0, log)
-        self.assertDecodes(out, "meet at the old bridge")
+        self.assertDecodes(out, "meet at the old bridge\n")
 
     def test_warns_when_message_cannot_be_locked(self):
         # Past the locked memory limit, the message can reach swap: say so
@@ -569,77 +605,76 @@ class CliTest(CliBase):
         message = os.urandom(200_000)
         out = self.path("steg.png")
         limit = 64 << 10
-        code, log = run(["encode", "-r", "-i", cover, "-o", out], message, ["correct horse"] * 2,
+        code, log = run(["embed", "-cf", cover, "-sf", out], message, ["correct horse"] * 2,
                         memlock=limit)
         self.assertEqual(code, 0, log)
         self.assertIn("may be written to swap", log)
         decoded = self.path("decoded.bin")
         open(decoded, "wb").close()
-        code, log = run(["decode", "-r", "-i", out], passphrases=["correct horse"],
+        code, log = run(["extract", "-sf", out, "-xf", "-"], passphrases=["correct horse"],
                         stdout_path=decoded, memlock=limit)
         self.assertEqual(code, 0, log)
         self.assertIn("may be written to swap", log)
         with open(decoded, "rb") as f:
             self.assertEqual(f.read(), message)
         # A short message fits
-        code, log = run(["encode", "-i", self.cover, "-o", self.path("short.png")], b"short",
+        code, log = run(["embed", "-cf", self.cover, "-sf", self.path("short.png")], b"short",
                         ["correct horse"] * 2, memlock=limit)
         self.assertEqual(code, 0, log)
         self.assertNotIn("swap", log)
 
-    def test_raw_keeps_every_byte(self):
-        # -r: nothing is stripped on the way in or added on the way out
+    def test_every_byte_kept(self):
+        # Nothing is stripped on the way in or added on the way out
         for msg in (b"no newline", b"one newline\n", b"two newlines\n\n", b"\x00\xff\n\x00", b"\n"):
             with self.subTest(msg=msg):
                 out = self.path("raw.png")
-                code, log = self.encode_raw(msg, out)
+                code, log = self.embed(msg, out)
                 self.assertEqual(code, 0, log)
-                self.assertEqual(self.decode_bytes(out, "-r"), msg)
+                self.assertEqual(self.extract_bytes(out), msg)
 
-    def test_default_newline_handling_unchanged(self):
-        # without -r: one trailing newline is dropped on encode, one added on decode
-        out = self.path("plain.png")
-        self.assertEqual(self.encode(b"abc\n", out)[0], 0)
-        self.assertEqual(self.decode_bytes(out), b"abc\n")
-        self.assertEqual(self.decode_bytes(out, "-r"), b"abc")
-        self.assertEqual(self.encode(b"abc", out)[0], 0)
-        self.assertEqual(self.decode_bytes(out), b"abc\n")
-        # a message stored with -r reads back with the newline added, as before
-        self.assertEqual(self.encode_raw(b"abc\n", out)[0], 0)
-        self.assertEqual(self.decode_bytes(out), b"abc\n\n")
-
-    def test_raw_flag_forms(self):
-        # getopt clusters: -ri file, and -r after the other options
-        out = self.path("cluster.png")
-        code, log = run(["encode", "-i", self.cover, "-o", out, "-r"], b"x\n", ["correct horse"] * 2)
+    def test_option_forms(self):
+        # The short and long forms are the same options, in any order
+        out = self.path("forms.png")
+        code, log = run(["embed", "--embedfile", "-", "--stegofile", out, "--coverfile", self.cover,
+                         "--compress", "5", "--force", "--verbose"], b"long forms", ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.decode_bytes(out, "-r"), b"x\n")
-        code, log = run(["encode", "-ri", self.cover, "-o", out], b"y", ["correct horse"] * 2)
+        self.assertIn("compressed", log)
+        self.assertEqual(self.extract_bytes(out), b"long forms")
+        code, log = run(["--embed", "-sf", out, "-f", "-cf", self.cover, "-Z", "-v"], b"short forms",
+                        ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.decode_bytes(out, "-r"), b"y")
+        self.assertIn("not compressed", log)
+        decoded = self.path("decoded.bin")
+        open(decoded, "wb").close()
+        code, log = run(["--extract", "--stegofile", out, "--extractfile", "-"], passphrases=["correct horse"],
+                        stdout_path=decoded)
+        self.assertEqual(code, 0, log)
+        with open(decoded, "rb") as f:
+            self.assertEqual(f.read(), b"short forms")
 
-    def test_raw_message_too_long(self):
-        # raw keeps the final newline, so it counts against the capacity
+    def test_newline_counts_toward_capacity(self):
+        # A final newline is a byte like any other
         out = self.path("long.png")
-        msg = noise(capacity(64, 64)) + b"\n"
-        code, log = self.encode_raw(msg, out)
+        cap = capacity(64, 64)
+        code, log = self.embed(noise(cap) + b"\n", out)
         self.assertNotEqual(code, 0)
         self.assertIn("too long", log)
-        code, log = self.encode(msg, out)
+        code, log = self.embed(noise(cap - 1) + b"\n", out)
         self.assertEqual(code, 0, log)
+        self.assertEqual(self.extract_bytes(out), noise(cap - 1) + b"\n")
 
     def test_nul_in_passphrase(self):
         # A NUL typed or pasted would end the passphrase, as a C string does,
         # silently: both commands refuse it
         out = self.path("steg.png")
         pw = "correct horse\x00ignored"
-        code, log = self.encode(b"nul message", out, pw)
+        code, log = self.embed(b"nul message", out, pw)
         self.assertEqual(code, 1, log)
         self.assertIn("NUL byte", log)
         self.assertFalse(os.path.exists(out))
-        code, log = self.encode(b"nul message", out, "correct horse")
+        code, log = self.embed(b"nul message", out, "correct horse")
         self.assertEqual(code, 0, log)
-        code, log = self.decode(out, pw)
+        code, log = self.extract(out, pw)
         self.assertEqual(code, 1, log)
         self.assertIn("NUL byte", log)
         self.assertNotIn("nul message", log)
@@ -651,7 +686,7 @@ class CliTest(CliBase):
             src = self.path("big.png")
             write_png(src, 64, 64, cover_pixel, extra=_chunk(kind, bytes(80 << 20)))
             out = self.path("steg.png")
-            code, log = self.encode(b"big chunk", out, src=src)
+            code, log = self.embed(b"big chunk", out, src=src)
             self.assertEqual(code, 0, log)
             self.assertNotIn(kind, [k for k, _ in png_chunks(out)])
             self.assertDecodes(out, "big chunk")
@@ -665,7 +700,7 @@ class CliTest(CliBase):
             src = self.path("bad.png")
             write_png(src, 64, 64, cover_pixel, extra=_chunk(kind, data))
             out = self.path("steg.png")
-            code, log = self.encode(b"odd chunk", out, src=src)
+            code, log = self.embed(b"odd chunk", out, src=src)
             self.assertEqual(code, 0, (kind, log))
             self.assertDecodes(out, "odd chunk")
 
@@ -675,7 +710,7 @@ class CliTest(CliBase):
         for name in (b"te1t", b"a\xe9bc"):
             src = self.path("name.png")
             write_png(src, 64, 64, cover_pixel, extra=_chunk(name, b"xx"))
-            code, log = self.encode(b"x", self.path("steg.png"), src=src)
+            code, log = self.embed(b"x", self.path("steg.png"), src=src)
             self.assertEqual(code, 1, (name, log))
             self.assertIn("could not load", log)
 
@@ -687,7 +722,7 @@ class CliTest(CliBase):
         src = self.path("rsv.png")
         write_png(src, 64, 64, cover_pixel, extra=_chunk(b"abcd", b"xx"))
         out = self.path("steg.png")
-        code, log = self.encode(b"x", out, src=src)
+        code, log = self.embed(b"x", out, src=src)
         if code == 0:
             self.assertDecodes(out, "x")
         else:
@@ -698,7 +733,7 @@ class CliTest(CliBase):
         chunk = bytearray(_chunk(b"JECt", b"xx"))
         chunk[-1] ^= 1
         write_png(src, 64, 64, cover_pixel, extra=bytes(chunk))
-        code, log = self.encode(b"x", self.path("steg.png"), src=src)
+        code, log = self.embed(b"x", self.path("steg.png"), src=src)
         self.assertEqual(code, 1, log)
         self.assertIn("could not load", log)
 
@@ -714,87 +749,184 @@ class CliTest(CliBase):
             if src != "/dev/zero":
                 with open(src, "wb") as f:
                     f.write(b"not an image" * 1000)
-            code, log = run(["decode", "-i", src], passphrases=["correct horse"])
+            code, log = run(["extract", "-sf", src], passphrases=["correct horse"])
             self.assertEqual(code, 1, log)
             self.assertIn("could not load", log)
 
     def test_roundtrip_multiline_utf8(self):
         msg = "line one\nligne deux — été\n\tthird ✓"
         out = self.path("steg.png")
-        self.assertEqual(self.encode(msg.encode(), out)[0], 0)
+        self.assertEqual(self.embed(msg.encode(), out)[0], 0)
         self.assertDecodes(out, msg)
 
     def test_roundtrip_binary(self):
         # Every byte value, NUL included, goes in and comes back out
         msg = bytes(range(256)) + b"after the NULs"
         out = self.path("steg.png")
-        self.assertEqual(self.encode(msg, out)[0], 0)
-        code, log = self.decode(out)
-        self.assertEqual(code, 0, log)
-        # The pty turns "\n" into "\r\n" (undone by run) and keeps the rest
-        self.assertIn(msg.decode(errors="surrogateescape").replace("\r\n", "\n") + "\n", log)
+        self.assertEqual(self.embed(msg, out)[0], 0)
+        self.assertEqual(self.extract_bytes(out), msg)
 
     def test_in_place(self):
-        # -i and -o the same file: the atomic save must not clobber the input
+        # -cf and -sf the same file: the atomic save must not clobber the input
         target = self.path("same.png")
         write_png(target, 64, 64, cover_pixel)
-        self.assertEqual(self.encode(b"in place", target, src=target)[0], 0)
+        self.assertEqual(self.embed(b"in place", target, src=target)[0], 0)
         self.assertDecodes(target, "in place")
+        # No -sf: embed writes over the cover, with no -f needed
+        write_png(target, 64, 64, cover_pixel)
+        code, log = run(["embed", "-cf", target], b"no -sf", ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertIn("Wrote '%s'" % target, log)
+        self.assertDecodes(target, "no -sf")
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_file_name_restored(self):
+        # -ef's name is stored with it, encrypted; extract without -xf
+        # restores the file under that name, in the current directory
+        secret = self.path("secret.txt")
+        with open(secret, "wb") as f:
+            f.write(b"the file itself\n")
+        out = self.path("steg.png")
+        code, log = run(["embed", "-cf", self.cover, "-ef", secret, "-sf", out], passphrases=["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(reveal(out, "correct horse", name=True), (b"secret.txt", b"the file itself\n"))
+        here = self.path("restore")
+        os.mkdir(here)
+        restored = os.path.join(here, "secret.txt")
+        code, log = run(["extract", "-sf", out], passphrases=["correct horse"], cwd=here)
+        self.assertEqual(code, 0, log)
+        self.assertIn("Wrote 'secret.txt'", log)
+        with open(restored, "rb") as f:
+            self.assertEqual(f.read(), b"the file itself\n")
+        # Never over an existing file, unless -f
+        with open(restored, "wb") as f:
+            f.write(b"mine")
+        code, log = run(["extract", "-sf", out], passphrases=["correct horse"], cwd=here)
+        self.assertEqual(code, 1, log)
+        self.assertIn("'secret.txt' already exists; use -f", log)
+        with open(restored, "rb") as f:
+            self.assertEqual(f.read(), b"mine")
+        code, log = run(["extract", "-sf", out, "-f"], passphrases=["correct horse"], cwd=here)
+        self.assertEqual(code, 0, log)
+        with open(restored, "rb") as f:
+            self.assertEqual(f.read(), b"the file itself\n")
+        # -xf chooses the file, and -xf - standard output
+        code, log = run(["extract", "-sf", out, "-xf", "other.txt"], passphrases=["correct horse"], cwd=here)
+        self.assertEqual(code, 0, log)
+        with open(os.path.join(here, "other.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"the file itself\n")
+        self.assertEqual(self.extract_bytes(out), b"the file itself\n")
+        # -N stores no name, so extract prints the message
+        code, log = run(["embed", "-cf", self.cover, "-ef", secret, "-sf", out, "-f", "-N"],
+                        passphrases=["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(reveal(out, "correct horse", name=True), (b"", b"the file itself\n"))
+        code, log = run(["extract", "-sf", out], passphrases=["correct horse"], cwd=here)
+        self.assertEqual(code, 0, log)
+        self.assertTrue(log.endswith("the file itself\n"), log)
+        self.assertNotIn("Wrote", log)
+
+    def test_existing_output_needs_force(self):
+        # Refused before the passphrase is asked for, and left as it was
+        taken = self.path("taken.png")
+        with open(taken, "wb") as f:
+            f.write(b"precious")
+        for args in (["embed", "-cf", self.cover, "-sf", taken],
+                     ["extract", "-sf", self.cover, "-xf", taken]):
+            code, log = run(args, b"x", ["correct horse"] * 2)
+            self.assertEqual(code, 1, (args, log))
+            self.assertIn("already exists; use -f", log)
+            self.assertNotIn("Passphrase", log)
+            with open(taken, "rb") as f:
+                self.assertEqual(f.read(), b"precious")
+        code, log = run(["embed", "-cf", self.cover, "-sf", taken, "-f"], b"replaced", ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertDecodes(taken, "replaced")
+
+    def test_unstorable_file_name(self):
+        # A name extract couldn't print or create safely isn't stored: -N
+        odd = self.path("bad\nname.txt")
+        with open(odd, "wb") as f:
+            f.write(b"x")
+        out = self.path("steg.png")
+        code, log = run(["embed", "-cf", self.cover, "-ef", odd, "-sf", out], passphrases=["correct horse"] * 2)
+        self.assertEqual(code, 1, log)
+        self.assertIn("rename it, or use -N", log)
+        self.assertNotIn("Passphrase", log)
+        code, log = run(["embed", "-cf", self.cover, "-ef", odd, "-sf", out, "-N"], passphrases=["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+
+    @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_forged_file_names_refused(self):
+        # Only a sender with the passphrase can make these, but extract must
+        # never write outside the current directory or print control codes
+        here = self.path("restore")
+        os.mkdir(here)
+        out = self.path("forged.png")
+        for name in (b"../escaped", b"sub/dir", b"/etc/passwd", b".", b"..", b"esc\x1b[31m", b"line\nbreak"):
+            with self.subTest(name=name):
+                forge(self.cover, out, b"payload", "correct horse", name=name)
+                code, log = run(["extract", "-sf", out, "-f"], passphrases=["correct horse"], cwd=here)
+                self.assertEqual(code, 1, log)
+                self.assertIn("the message is malformed", log)
+                self.assertNotIn("payload", log)
+        self.assertEqual(os.listdir(here), [])
+        self.assertFalse(os.path.exists(self.path("escaped")))
 
     def test_near_capacity(self):
         # 64x64: 4096 - 256 salt-region pixels (1/16 of the image) = 3840
         # px * 3 bits; minus the 32-bit header -> 1436 payload bytes; minus
-        # nonce 24 + MAC 16 and the encoding byte = 1395
-        self.assertEqual(capacity(64, 64), 1395)
+        # nonce 24 + MAC 16, the encoding byte and the name length = 1394
+        self.assertEqual(capacity(64, 64), 1394)
         out = self.path("full.png")
-        msg = noise(1395)
-        code, log = self.encode_raw(msg, out)
+        msg = noise(1394)
+        code, log = self.embed(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.decode_bytes(out, "-r"), msg)
-        code, log = self.encode_raw(noise(1396), self.path("over.png"))
+        self.assertEqual(self.extract_bytes(out), msg)
+        code, log = self.embed(noise(1395), self.path("over.png"))
         self.assertEqual(code, 1, log)
-        self.assertIn("message too long for this image, which holds 1395 bytes", log)
+        self.assertIn("message too long for this image, which holds 1394 bytes", log)
 
     def test_info(self):
-        # The capacity, with no passphrase asked: exactly what encode takes
-        code, log = run(["info", "-i", self.cover])
+        # The capacity, with no passphrase asked: exactly what embed takes
+        code, log = run(["info", self.cover])
         self.assertEqual((code, log), (0, "Format:   PNG, 64x64, RGB\nCapacity: %d bytes (more if the message compresses)\n" % capacity(64, 64)))
         gray = self.path("gray.png")
         write_png(gray, 50, 40, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
-        code, log = run(["info", "-i", gray])
+        code, log = run(["info", gray])
         self.assertEqual((code, log), (0, "Format:   PNG, 50x40, gray\nCapacity: %d bytes (more if the message compresses)\n" % capacity(50, 40, 1)))
         # On stdout, for scripts
         out = self.path("info.txt")
         open(out, "w").close()
-        code, log = run(["info", "-i", self.cover], stdout_path=out)
+        code, log = run(["info", self.cover], stdout_path=out)
         self.assertEqual((code, log), (0, ""))
         with open(out) as f:
             self.assertIn("Capacity: %d bytes" % capacity(64, 64), f.read())
 
     def test_info_refuses_what_encode_refuses(self):
-        # The same checks and messages as encode, and no prompt
+        # The same checks and messages as embed, and no prompt
         gray_rgb = self.path("gray-rgb.png")
         write_png(gray_rgb, 64, 64, lambda x, y: (cover_pixel(x, y)[0],) * 3)
         # Past the salt and length, but no room for a byte of message:
-        # refused as too small, not left to fail as "too long" (encode too)
+        # refused as too small, not left to fail as "too long" (embed too)
         full = self.path("full.png")
         write_png(full, 13, 13, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
         self.assertLessEqual(capacity(13, 13, 1), 0)
         for src, why in [(gray_rgb, "has only gray pixels, stored as RGB"),
                          (full, "too small to hide a message"),
                          (self.path("missing.png"), "could not load")]:
-            code, log = run(["info", "-i", src])
+            code, log = run(["info", src])
             self.assertEqual(code, 1, log)
             self.assertIn(why, log)
             self.assertNotIn("assphrase", log)
             if os.path.exists(src):
-                code, log = self.encode(b"x", self.path("out.png"), src=src)
+                code, log = self.embed(b"x", self.path("out.png"), src=src)
                 self.assertEqual(code, 1, log)
                 self.assertIn(why, log)
-        for args, why in [(["info"], "info requires -i"),
-                          (["info", "-i", self.cover, "-r"], "info takes only -i"),
-                          (["info", "-i", self.cover, "-o", self.path("x.png")], "info takes only -i"),
-                          (["info", "-i", self.cover, "stray"], "unexpected argument 'stray'")]:
+        for args, why in [(["info"], "info needs an image"),
+                          (["info", self.cover, "-q"], "-q is not an option of info"),
+                          (["info", self.cover, "-sf", self.path("x.png")], "-sf is not an option of info"),
+                          (["info", self.cover, "stray"], "unexpected argument 'stray'")]:
             code, log = run(args)
             self.assertEqual(code, 1, (args, log))
             self.assertIn(why, log, args)
@@ -802,19 +934,21 @@ class CliTest(CliBase):
     def test_quiet(self):
         # -q leaves the passphrase prompts, warnings and errors, and nothing else
         out = self.path("steg.png")
-        code, log = run(["encode", "-q", "-i", self.cover, "-o", out], b"hush", ["correct horse"] * 2)
+        code, log = run(["embed", "-q", "-cf", self.cover, "-sf", out], b"hush", ["correct horse"] * 2)
         self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
         msg = self.path("msg.txt")
         open(msg, "w").close()
-        code, log = run(["decode", "-qr", "-i", out], passphrases=["correct horse"], stdout_path=msg)
+        code, log = run(["extract", "-q", "-sf", out, "-xf", "-"], passphrases=["correct horse"], stdout_path=msg)
         self.assertEqual((code, log), (0, "Passphrase: \n"))
         with open(msg, "rb") as f:
             self.assertEqual(f.read(), b"hush")
-        code, log = run(["decode", "-q", "-i", out], passphrases=["wrong horse!"])
+        code, log = run(["extract", "-q", "-sf", out, "-xf", self.path("hushed.txt")], passphrases=["correct horse"])
+        self.assertEqual((code, log), (0, "Passphrase: \n"))  # no "Wrote"
+        code, log = run(["extract", "-q", "-sf", out], passphrases=["wrong horse!"])
         self.assertEqual(code, 1, log)
         self.assertIn("decryption failed", log)
         self.assertNotIn("Deriving keys", log)
-        for args, why in [(["info", "-q", "-i", self.cover], "info takes only -i"),
+        for args, why in [(["info", "-q", self.cover], "-q is not an option of info"),
                           (["passphrase", "-q"], "passphrase takes no options")]:
             code, log = run(args)
             self.assertEqual(code, 1, (args, log))
@@ -835,19 +969,23 @@ class CliTest(CliBase):
                 got = f.read()
             if want == "Usage:":
                 self.assertTrue(got.startswith("Usage:"), got)
-                self.assertIn(" info -i ", got)
+                self.assertIn(" info <image", got)
             else:
                 self.assertEqual(got, want)
-        for args, why in [(["help", "-r"], "help takes no options"),
-                          (["version", "-i", self.cover], "version takes no options"),
-                          (["--version", "stray"], "unexpected argument 'stray'")]:
+        for cmd, want in (("encinfo", "XSalsa20-Poly1305"), ("--license", "GNU Affero General Public License")):
+            code, log = run([cmd])
+            self.assertEqual(code, 0, log)
+            self.assertIn(want, log)
+        for args, why in [(["help", "-q"], "help takes no options"),
+                          (["version", "-sf", self.cover], "version takes no options"),
+                          (["--version", "stray"], "version takes no options or arguments")]:
             code, log = run(args)
             self.assertEqual(code, 1, (args, log))
             self.assertIn(why, log, args)
 
     def test_samples_change_by_at_most_one(self):
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"some secret", out)[0], 0)
+        self.assertEqual(self.embed(b"some secret", out)[0], 0)
         w, h, before = read_png(self.cover)
         w2, h2, after = read_png(out)
         self.assertEqual((w, h), (w2, h2))
@@ -861,7 +999,7 @@ class CliTest(CliBase):
     def test_scattered_not_sequential(self):
         # Sequential LSB embedding would only touch the first rows
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"spread me out please", out)[0], 0)
+        self.assertEqual(self.embed(b"spread me out please", out)[0], 0)
         _, h, before = read_png(self.cover)
         _, _, after = read_png(out)
         touched_rows = [y for y in range(h) if before[y] != after[y]]
@@ -869,8 +1007,8 @@ class CliTest(CliBase):
 
     def test_random_nonce(self):
         a, b = self.path("a.png"), self.path("b.png")
-        self.assertEqual(self.encode(b"same message", a)[0], 0)
-        self.assertEqual(self.encode(b"same message", b)[0], 0)
+        self.assertEqual(self.embed(b"same message", a)[0], 0)
+        self.assertEqual(self.embed(b"same message", b)[0], 0)
         with open(a, "rb") as fa, open(b, "rb") as fb:
             self.assertNotEqual(fa.read(), fb.read())
         self.assertDecodes(a, "same message")
@@ -881,7 +1019,7 @@ class CliTest(CliBase):
         gray = self.path("gray.png")
         write_png(gray, 48, 48, lambda x, y: ((x * 4 + y) & 0xFF,), channels=1)
         out = self.path("steg.png")
-        code, log = self.encode(b"from gray", out, src=gray)
+        code, log = self.embed(b"from gray", out, src=gray)
         self.assertEqual(code, 0, log)
         ihdr = dict(png_chunks(out))[b"IHDR"]
         self.assertEqual(ihdr[8:10], bytes([8, 0]))  # 8-bit gray
@@ -893,12 +1031,12 @@ class CliTest(CliBase):
     def test_gray_capacity(self):
         gray = self.path("gray.png")
         write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)
-        cap = capacity(40, 40, 1)  # salt region 128 px: (1600 - 128 - 32) / 8 - 40 - 1 = 139
-        self.assertEqual(cap, 139)
+        cap = capacity(40, 40, 1)  # salt region 128 px: (1600 - 128 - 32) / 8 - 40 - 2 = 138
+        self.assertEqual(cap, 138)
         out = self.path("steg.png")
-        self.assertEqual(self.encode_raw(noise(cap), out, src=gray)[0], 0)
-        self.assertEqual(self.decode_bytes(out, "-r"), noise(cap))
-        code, log = self.encode_raw(noise(cap + 1), self.path("over.png"), src=gray)
+        self.assertEqual(self.embed(noise(cap), out, src=gray)[0], 0)
+        self.assertEqual(self.extract_bytes(out), noise(cap))
+        code, log = self.embed(noise(cap + 1), self.path("over.png"), src=gray)
         self.assertEqual(code, 1, log)
         self.assertIn("too long", log)
 
@@ -936,7 +1074,7 @@ class CliTest(CliBase):
                 src = self.path("cover-%s.png" % name.replace(" ", "_"))
                 raw_png(src, depth, ctype, rows, extra)
                 out = self.path("out.png")
-                code, log = self.encode(b"x", out, src=src)
+                code, log = self.embed(b"x", out, src=src)
                 self.assertEqual(code, 1, log)
                 self.assertIn(message, log)
                 self.assertFalse(os.path.exists(out))
@@ -969,7 +1107,7 @@ class CliTest(CliBase):
         write_png(src, 64, 64, cover_pixel,
                   extra=b"".join(_chunk(k, d) for k, d in keep + drop))
         out = self.path("steg.png")
-        code, log = self.encode(b"with metadata", out, src=src)
+        code, log = self.embed(b"with metadata", out, src=src)
         self.assertEqual(code, 0, log)
         chunks = png_chunks(out)
         def normalized(kind, data):
@@ -990,7 +1128,7 @@ class CliTest(CliBase):
         src = self.path("srgb.png")
         write_png(src, 32, 32, cover_pixel, extra=_chunk(b"sRGB", bytes([0])))
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"m", out, src=src)[0], 0)
+        self.assertEqual(self.embed(b"m", out, src=src)[0], 0)
         self.assertIn((b"sRGB", bytes([0])), png_chunks(out))
 
     def test_odd_text_chunk_copied_verbatim(self):
@@ -1001,7 +1139,7 @@ class CliTest(CliBase):
         write_png(src, 64, 64, cover_pixel,
                   extra=_chunk(b"tEXt", b"\x00no keyword") + _chunk(b"tEXt", b"Fine\x00kept"))
         out = self.path("steg.png")
-        code, log = self.encode(b"despite bad text", out, src=src)
+        code, log = self.embed(b"despite bad text", out, src=src)
         self.assertEqual(code, 0, log)
         chunks = png_chunks(out)
         self.assertIn((b"tEXt", b"Fine\x00kept"), chunks)
@@ -1032,7 +1170,7 @@ class CliTest(CliBase):
         with open(src, "wb") as f:
             f.write(data[:-12] + tail)  # in place of the IEND chunk
         out = self.path("steg.png")
-        code, log = self.encode(b"rich metadata", out, src=src)
+        code, log = self.embed(b"rich metadata", out, src=src)
         self.assertEqual(code, 0, log)
         chunks = [(k, d) for k, d in png_chunks(out) if k not in (b"IHDR", b"IDAT", b"IEND")]
         self.assertEqual(chunks, before + after)
@@ -1045,17 +1183,17 @@ class CliTest(CliBase):
         # Almost always a mistake (nothing piped in, an empty file): it fails,
         # so a script can't take it for a written output
         out = self.path("steg.png")
-        code, log = self.encode(b"", out)
+        code, log = self.embed(b"", out)
         self.assertEqual(code, 1, log)
         self.assertIn("the message is empty", log)
         self.assertFalse(os.path.exists(out))
-        # A lone newline is stripped, so it counts as empty too
-        self.assertEqual(self.encode(b"\n", out)[0], 1)
-        self.assertFalse(os.path.exists(out))
+        # Byte for byte: a lone newline is a one-byte message
+        self.assertEqual(self.embed(b"\n", out)[0], 0)
+        self.assertEqual(self.extract_bytes(out), b"\n")
 
     def test_one_byte_message(self):
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"x", out)[0], 0)
+        self.assertEqual(self.embed(b"x", out)[0], 0)
         self.assertDecodes(out, "x")
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
@@ -1069,7 +1207,7 @@ class CliTest(CliBase):
     def test_decode_empty_message_prints_nothing(self):
         out = self.path("empty.png")
         forge(self.cover, out, b"", "correct horse")
-        code, log = self.decode(out)
+        code, log = self.extract(out)
         self.assertEqual(code, 0, log)
         self.assertTrue(log.endswith("Deriving keys...\n"), repr(log))
 
@@ -1078,7 +1216,7 @@ class CliTest(CliBase):
         # The salt is readable by anyone from the public salt region, and the
         # encryption key derived from it opens the message
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"salted", out)[0], 0)
+        self.assertEqual(self.embed(b"salted", out)[0], 0)
         w, h, rows = read_png(out)
         salt_px, order, enc_key = layout(rows, w, h, b"correct horse")
         k = salt_region_pixels(w * h, 3)
@@ -1097,7 +1235,7 @@ class CliTest(CliBase):
         px = [noise.getrandbits(24) for _ in range(96 * 96)]
         write_png(self.cover, 96, 96, lambda x, y: tuple((px[y * 96 + x] >> s) & 0xFF for s in (0, 8, 16)))
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"m" * 20, out)[0], 0)
+        self.assertEqual(self.embed(b"m" * 20, out)[0], 0)
         _, _, before = read_png(self.cover)
         _, _, after = read_png(out)
         old = salt_region(96 * 96, 3)[0][:43]
@@ -1114,7 +1252,7 @@ class CliTest(CliBase):
         write_png(self.cover, 96, 96, lambda x, y: tuple((px[y * 96 + x] >> s) & 0xFF for s in (0, 8, 16)))
         out = self.path("steg.png")
         msg = b"m" * 150
-        self.assertEqual(self.encode(msg, out)[0], 0)
+        self.assertEqual(self.embed(msg, out)[0], 0)
         _, _, before = read_png(self.cover)
         _, _, after = read_png(out)
         changed = sum(a != b for ra, rb in zip(before, after) for a, b in zip(ra, rb))
@@ -1128,11 +1266,11 @@ class CliTest(CliBase):
         # and comes back byte for byte, read by the binary and by Python
         text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "THREAT_MODEL.md"), "rb").read()
         msg = b" ".join(text.split())[:capacity(64, 64) * 3 // 2]
-        self.assertLessEqual(len(pack(msg)), capacity(64, 64) + 1)
+        self.assertLessEqual(len(pack(msg)), capacity(64, 64) + 2)
         out = self.path("steg.png")
-        code, log = self.encode_raw(msg, out)
+        code, log = self.embed(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.decode_bytes(out, "-r"), msg)
+        self.assertEqual(self.extract_bytes(out), msg)
         self.assertEqual(reveal(out, "correct horse"), msg)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
@@ -1142,7 +1280,7 @@ class CliTest(CliBase):
         self.assertEqual(pack(msg)[0], 1)
         out = self.path("forged.png")
         forge(self.cover, out, msg, "correct horse")
-        self.assertEqual(self.decode_bytes(out, "-r"), msg)
+        self.assertEqual(self.extract_bytes(out), msg)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_malformed_message_refused(self):
@@ -1157,22 +1295,23 @@ class CliTest(CliBase):
             with self.subTest(name):
                 out = self.path("forged.png")
                 forge(self.cover, out, b"", "correct horse", plaintext=plaintext)
-                code, log = self.decode(out)
+                code, log = self.extract(out)
                 self.assertEqual(code, 1, log)
                 self.assertIn("the message is malformed", log)
                 self.assertNotIn("hello", log)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_decompression_bomb_refused(self):
-        # 64 MiB + 1 of zeros deflates to ~65 KB; decode stops inflating
-        # past 64 MiB rather than fill memory
+        # A record of 64 MiB + 257 zeros, one past the most a message and
+        # its name can be, deflates to ~65 KB; decode stops inflating there
+        # rather than fill memory
         c = zlib.compressobj(9, zlib.DEFLATED, -15)
-        bomb = b"\x01" + c.compress(bytes(MESSAGE_MAX + 1)) + c.flush()
+        bomb = b"\x01" + c.compress(bytes(RECORD_MAX + 1)) + c.flush()
         write_png(self.cover, 512, 512, cover_pixel)
         self.assertLess(len(bomb), capacity(512, 512))
         out = self.path("bomb.png")
         forge(self.cover, out, b"", "correct horse", plaintext=bomb)
-        code, log = self.decode(out)
+        code, log = self.extract(out)
         self.assertEqual(code, 1, log)
         self.assertIn("the message is malformed", log)
 
@@ -1181,40 +1320,40 @@ class CliTest(CliBase):
         # Still authenticated: a wrong passphrase must not "succeed" silently
         out = self.path("empty.png")
         forge(self.cover, out, b"", "correct horse")
-        code, log = self.decode(out, "wrong horse")
+        code, log = self.extract(out, "wrong horse")
         self.assertNotEqual(code, 0, log)
         self.assertIn("Error:", log)
 
     def test_large_image_full_capacity(self):
-        # 800x600: 1.44M bits -> 179,927 message bytes, through stdin and
+        # 800x600: 1.44M bits -> 179,926 message bytes, through stdin and
         # the 1 KiB-doubling read buffer
         write_png(self.cover, 800, 600, cover_pixel)
         cap = capacity(800, 600)
         msg = noise(cap)
         out = self.path("big.png")
-        code, log = self.encode_raw(msg, out)
+        code, log = self.embed(msg, out)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.decode_bytes(out, "-r"), msg)
-        self.assertEqual(self.encode_raw(noise(cap + 1), self.path("over.png"))[0], 1)
+        self.assertEqual(self.extract_bytes(out), msg)
+        self.assertEqual(self.embed(noise(cap + 1), self.path("over.png"))[0], 1)
 
     def test_extreme_aspect_ratios(self):
         for w, h in ((1, 400), (400, 1), (2, 199)):
             with self.subTest(size=(w, h)):
                 write_png(self.cover, w, h, cover_pixel)
                 out = self.path("steg.png")
-                self.assertEqual(self.encode(b"thin", out)[0], 0)
+                self.assertEqual(self.embed(b"thin", out)[0], 0)
                 self.assertDecodes(out, "thin")
 
     def test_long_passphrase_not_truncated(self):
         # Past the initial 256-byte buffer, the tail must still count
         out = self.path("steg.png")
         base = "a" * 255
-        code, log = self.encode(b"long pass", out, passphrase=base + "X")
+        code, log = self.embed(b"long pass", out, passphrase=base + "X")
         if code != 0:
             self.assertIn("Error:", log)
             self.assertFalse(os.path.exists(out))
             return
-        code, log = self.decode(out, base + "Y")
+        code, log = self.extract(out, base + "Y")
         self.assertNotEqual(code, 0, "passphrase beyond 255 bytes was ignored")
         self.assertNotIn("long pass", log)
 
@@ -1225,10 +1364,10 @@ class CliTest(CliBase):
             with self.subTest(length=n):
                 pw = "k" * (n - 1) + "1"
                 out = self.path("steg.png")
-                code, log = self.encode(b"long pass", out, passphrase=pw)
+                code, log = self.embed(b"long pass", out, passphrase=pw)
                 self.assertEqual(code, 0, log)
                 self.assertDecodes(out, "long pass", passphrase=pw)
-                code, log = self.decode(out, pw[:-1] + "2")
+                code, log = self.extract(out, pw[:-1] + "2")
                 self.assertNotEqual(code, 0, log)
                 self.assertNotIn("long pass", log)
 
@@ -1236,15 +1375,15 @@ class CliTest(CliBase):
         # The terminal drops input past 4095 bytes per line, so a passphrase
         # that long may be truncated: both commands must refuse it
         steg = self.path("steg.png")
-        self.assertEqual(self.encode(b"m", steg)[0], 0)
+        self.assertEqual(self.embed(b"m", steg)[0], 0)
         for n in (4095, 4096, 5000):
             with self.subTest(length=n):
                 out = self.path("long.png")
-                code, log = self.encode(b"m", out, passphrase="k" * n)
+                code, log = self.embed(b"m", out, passphrase="k" * n)
                 self.assertEqual(code, 1, log)
                 self.assertIn("passphrase too long (max 4094 bytes)", log)
                 self.assertFalse(os.path.exists(out))
-                code, log = self.decode(steg, "k" * n)
+                code, log = self.extract(steg, "k" * n)
                 self.assertEqual(code, 1, log)
                 self.assertIn("passphrase too long", log)
 
@@ -1252,12 +1391,12 @@ class CliTest(CliBase):
         for pw in ("with spaces  inside", "ünïcødé ✓ 秘密", "tab\there and more", "exactly12byt"):
             with self.subTest(passphrase=pw):
                 out = self.path("steg.png")
-                self.assertEqual(self.encode(b"charset", out, passphrase=pw)[0], 0)
+                self.assertEqual(self.embed(b"charset", out, passphrase=pw)[0], 0)
                 self.assertDecodes(out, "charset", passphrase=pw)
 
     def test_short_passphrase_refused(self):
         out = self.path("steg.png")
-        code, log = self.encode(b"m", out, passphrase="elevenbytes")
+        code, log = self.embed(b"m", out, passphrase="elevenbytes")
         self.assertEqual(code, 1, log)
         self.assertIn("passphrase too short (min 12 bytes)", log)
         self.assertNotIn("Confirm", log)  # refused before asking again
@@ -1274,7 +1413,7 @@ class CliTest(CliBase):
             seen.add(pw)
         self.assertEqual(len(seen), 3)
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"generated", out, passphrase=pw)[0], 0)
+        self.assertEqual(self.embed(b"generated", out, passphrase=pw)[0], 0)
         self.assertDecodes(out, "generated", passphrase=pw)
 
     def test_process_protected_while_holding_secrets(self):
@@ -1283,7 +1422,7 @@ class CliTest(CliBase):
         # stops same-user debuggers from attaching
         pid, master = pty.fork()
         if pid == 0:
-            os.execv(BINARY, [BINARY, "decode", "-i", self.cover])
+            exec_or_exit([BINARY, "extract", "-sf", self.cover])
         out, deadline = b"", time.monotonic() + TIMEOUT
         while b"Passphrase: " not in out and time.monotonic() < deadline:
             if select.select([master], [], [], 0.5)[0]:
@@ -1303,18 +1442,18 @@ class CliTest(CliBase):
 
     def test_message_typed_at_terminal(self):
         out = self.path("steg.png")
-        code, log = run(["encode", "-i", self.cover, "-o", out],
+        code, log = run(["embed", "-cf", self.cover, "-sf", out],
                         passphrases=["correct horse"] * 2, typed=b"typed by hand")
         self.assertEqual(code, 0, log)
         self.assertIn("Message (Ctrl+D when done)", log)
-        self.assertDecodes(out, "typed by hand")
+        self.assertDecodes(out, "typed by hand\n")  # with the Enter typed before Ctrl+D
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_tampered_ciphertext_fails_mac(self):
         # Flip one ciphertext bit, leaving the length header intact, so the
         # failure has to come from the MAC check and not the length check
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"authenticated", out)[0], 0)
+        self.assertEqual(self.embed(b"authenticated", out)[0], 0)
         w, h, rows = read_png(out)
         rows = [bytearray(r) for r in rows]
         _, order, _ = layout(rows, w, h, b"correct horse")
@@ -1322,7 +1461,7 @@ class CliTest(CliBase):
         p = order[pos // 3]
         rows[p // w][(p % w) * 3 + pos % 3] ^= 1
         write_png(out, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
-        code, log = self.decode(out)
+        code, log = self.extract(out)
         self.assertEqual(code, 1, log)
         self.assertIn("decryption failed", log)
         self.assertNotIn("authenticated", log)
@@ -1330,13 +1469,14 @@ class CliTest(CliBase):
     def test_decode_image_too_small_for_header(self):
         tiny = self.path("tiny.png")
         write_png(tiny, 3, 3, cover_pixel)  # 27 bits: not even the length header
-        code, log = self.decode(tiny)
+        code, log = self.extract(tiny)
         self.assertEqual(code, 1)
         self.assertIn("too small", log)
 
     def test_unknown_option(self):
-        code, log = run(["encode", "-x", "-i", self.cover])
+        code, log = run(["embed", "-x", "-cf", self.cover])
         self.assertEqual(code, 1)
+        self.assertIn("unknown option '-x'", log)
         self.assertIn("Usage:", log)
 
     def test_cover_with_transparency_refused(self):
@@ -1348,7 +1488,7 @@ class CliTest(CliBase):
                     + _chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 6, 0, 0, 0))
                     + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
         out = self.path("out.png")
-        code, log = self.encode(b"x", out, src=rgba)
+        code, log = self.embed(b"x", out, src=rgba)
         self.assertEqual(code, 1, log)
         self.assertIn("has transparency", log)
         self.assertFalse(os.path.exists(out))
@@ -1362,7 +1502,7 @@ class CliTest(CliBase):
                     + _chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 16, 2, 0, 0, 0))
                     + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
         out = self.path("out.png")
-        code, log = self.encode(b"x", out, src=rgb16)
+        code, log = self.embed(b"x", out, src=rgb16)
         self.assertEqual(code, 1, log)
         self.assertIn("has 16-bit color", log)
         self.assertFalse(os.path.exists(out))
@@ -1372,12 +1512,12 @@ class CliTest(CliBase):
         with open(out, "wb") as f:
             f.write(b"x")
         os.chmod(out, 0o600)
-        self.assertEqual(self.encode(b"private", out)[0], 0)
+        self.assertEqual(self.embed(b"private", out)[0], 0)
         self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o600)
 
         link = self.path("link.png")
         os.symlink(out, link)
-        self.assertEqual(self.encode(b"via link", link)[0], 0)
+        self.assertEqual(self.embed(b"via link", link)[0], 0)
         self.assertTrue(os.path.islink(link))
         self.assertDecodes(out, "via link")
 
@@ -1386,7 +1526,7 @@ class CliTest(CliBase):
         # written to nor replaced by a regular file
         fifo = self.path("out.png")
         os.mkfifo(fifo)
-        code, log = self.encode(b"x", fifo)
+        code, log = self.embed(b"x", fifo)
         self.assertEqual(code, 1, log)
         self.assertIn("is not a regular file", log)
         self.assertTrue(stat.S_ISFIFO(os.stat(fifo).st_mode))
@@ -1399,7 +1539,7 @@ class CliTest(CliBase):
             with self.subTest(signal=name):
                 pid, master = pty.fork()
                 if pid == 0:
-                    os.execv(BINARY, [BINARY, "decode", "-i", self.cover])
+                    exec_or_exit([BINARY, "extract", "-sf", self.cover])
                 out, deadline = b"", time.monotonic() + TIMEOUT
                 while b"Passphrase: " not in out and time.monotonic() < deadline:
                     if select.select([master], [], [], 0.5)[0]:
@@ -1419,7 +1559,7 @@ class CliTest(CliBase):
         pid, master = pty.fork()
         if pid == 0:
             signal.signal(signal.SIGHUP, signal.SIG_IGN)  # inherited across exec
-            os.execv(BINARY, [BINARY, "decode", "-i", self.cover])
+            exec_or_exit([BINARY, "extract", "-sf", self.cover])
         out, deadline = b"", time.monotonic() + TIMEOUT
         while b"Passphrase: " not in out and time.monotonic() < deadline:
             if select.select([master], [], [], 0.5)[0]:
@@ -1439,8 +1579,8 @@ class CliTest(CliBase):
 
     def test_wrong_passphrase(self):
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"top secret", out)[0], 0)
-        code, log = self.decode(out, "wrong horse")
+        self.assertEqual(self.embed(b"top secret", out)[0], 0)
+        code, log = self.extract(out, "wrong horse")
         self.assertNotEqual(code, 0)
         self.assertNotIn("top secret", log)
         self.assertIn("Error:", log)
@@ -1448,28 +1588,28 @@ class CliTest(CliBase):
     def test_tampered_image(self):
         # Flip every LSB: the MAC must catch it (or the length must be invalid)
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"integrity", out)[0], 0)
+        self.assertEqual(self.embed(b"integrity", out)[0], 0)
         w, h, rows = read_png(out)
         write_png(out, w, h, lambda x, y: tuple(c ^ 1 for c in rows[y][x * 3:x * 3 + 3]))
-        code, log = self.decode(out)
+        code, log = self.extract(out)
         self.assertNotEqual(code, 0)
         self.assertNotIn("integrity", log)
 
     def test_decode_plain_cover(self):
-        code, log = self.decode(self.cover)
+        code, log = self.extract(self.cover)
         self.assertNotEqual(code, 0)
         self.assertIn("Error:", log)
 
     def test_passphrase_mismatch(self):
         out = self.path("steg.png")
-        code, log = self.encode(b"x", out, confirm="different")
+        code, log = self.embed(b"x", out, confirm="different")
         self.assertEqual(code, 1)
         self.assertIn("do not match", log)
         self.assertFalse(os.path.exists(out))
 
     def test_message_too_long(self):
         out = self.path("steg.png")
-        code, log = self.encode(noise(1476), out)
+        code, log = self.embed(noise(1476), out)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         self.assertFalse(os.path.exists(out))
@@ -1479,7 +1619,7 @@ class CliTest(CliBase):
         # refused, rather than read until memory runs out (or, past 4 GiB,
         # its 32-bit length wrapping)
         out = self.path("steg.png")
-        code, log = run(["encode", "-i", self.cover, "-o", out],
+        code, log = run(["embed", "-cf", self.cover, "-sf", out],
                         passphrases=["correct horse"] * 2, stdin_path="/dev/zero")
         self.assertEqual(code, 1, log)
         self.assertIn("message too long (max 64 MiB)", log)
@@ -1488,18 +1628,18 @@ class CliTest(CliBase):
     def test_message_read_error(self):
         # A read error isn't the end of the message: nothing partial is hidden
         out = self.path("steg.png")
-        code, log = run(["encode", "-i", self.cover, "-o", out],
+        code, log = run(["embed", "-cf", self.cover, "-sf", out],
                         passphrases=["correct horse"] * 2, stdin_path=self.dir)
         self.assertEqual(code, 1, log)
-        self.assertIn("could not read message: Is a directory", log)
+        self.assertIn("could not read the message: Is a directory", log)
         self.assertFalse(os.path.exists(out))
 
     def test_output_write_error(self):
         # A message (or passphrase) that couldn't be written out is an error,
         # or the user might delete the image thinking it was saved
         out = self.path("steg.png")
-        self.assertEqual(self.encode(b"keep me", out)[0], 0)
-        code, log = run(["decode", "-i", out], passphrases=["correct horse"],
+        self.assertEqual(self.embed(b"keep me", out)[0], 0)
+        code, log = run(["extract", "-sf", out], passphrases=["correct horse"],
                         stdout_path="/dev/full")
         self.assertEqual(code, 1, log)
         self.assertIn("could not write the message: No space left on device", log)
@@ -1511,13 +1651,13 @@ class CliTest(CliBase):
         out = self.path("steg.png")
         with open(out, "wb") as f:
             f.write(b"precious")
-        self.assertEqual(self.encode(noise(5000), out)[0], 1)  # too long
+        self.assertEqual(self.embed(noise(5000), out)[0], 1)  # too long
         with open(out, "rb") as f:
             self.assertEqual(f.read(), b"precious")
         self.assertEqual(sorted(os.listdir(self.dir)), ["cover.png", "steg.png"])
 
     def test_unwritable_output(self):
-        code, log = self.encode(b"x", os.path.join(self.dir, "missing", "out.png"))
+        code, log = self.embed(b"x", os.path.join(self.dir, "missing", "out.png"))
         self.assertEqual(code, 1)
         self.assertIn("could not write", log)
         self.assertIn("No such file or directory", log)
@@ -1527,7 +1667,7 @@ class CliTest(CliBase):
         # .jpg used to be called a PNG by the output name check
         for name in ("nope.png", "nope.jpg"):
             out = self.path("out" + os.path.splitext(name)[1])
-            code, log = self.encode(b"x", out, src=self.path(name))
+            code, log = self.embed(b"x", out, src=self.path(name))
             self.assertEqual(code, 1, log)
             self.assertIn("could not load", log)
             self.assertIn("No such file or directory", log)
@@ -1537,14 +1677,14 @@ class CliTest(CliBase):
         bogus = self.path("bogus.png")
         with open(bogus, "wb") as f:
             f.write(b"definitely not a png")
-        code, log = self.decode(bogus)
+        code, log = self.extract(bogus)
         self.assertEqual(code, 1)
         self.assertIn("could not load", log)
 
     def test_image_too_small(self):
         tiny = self.path("tiny.png")
         write_png(tiny, 4, 4, cover_pixel)  # 16 px: not even room for the salt
-        code, log = self.encode(b"hi", self.path("out.png"), src=tiny)
+        code, log = self.embed(b"hi", self.path("out.png"), src=tiny)
         self.assertEqual(code, 1)
         self.assertIn("too small", log)
         # 81 px: salt + header, but 4 payload bytes, short of the 40 the
@@ -1552,38 +1692,46 @@ class CliTest(CliBase):
         small = self.path("small.png")
         write_png(small, 9, 9, cover_pixel)
         self.assertLessEqual(capacity(9, 9), 0)
-        code, log = self.encode(b"hi", self.path("out.png"), src=small)
+        code, log = self.embed(b"hi", self.path("out.png"), src=small)
         self.assertEqual(code, 1)
         self.assertIn("too small", log)
         roomy = self.path("roomy.png")
         write_png(roomy, 16, 16, cover_pixel)
-        self.assertEqual(capacity(16, 16), 34)
-        code, log = self.encode(noise(35), self.path("out.png"), src=roomy)
+        self.assertEqual(capacity(16, 16), 33)
+        code, log = self.embed(noise(34), self.path("out.png"), src=roomy)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
-        code, log = self.decode(tiny)
+        code, log = self.extract(tiny)
         self.assertEqual(code, 1)
 
     def test_usage_errors(self):
         self.assertEqual(run([])[0], 1)
-        code, log = run(["encode", "-i", self.cover])
+        code, log = run(["embed"])
         self.assertEqual(code, 1)
-        self.assertIn("requires -i and -o", log)
-        code, log = run(["decode"])
+        self.assertIn("embed needs a cover image", log)
+        code, log = run(["extract"])
         self.assertEqual(code, 1)
-        self.assertIn("requires -i", log)
-        code, log = run(["frobnicate", "-i", self.cover])
+        self.assertIn("extract needs an image", log)
+        code, log = run(["frobnicate", "-sf", self.cover])
         self.assertEqual(code, 1)
         self.assertIn("unknown command", log)
-        # Leftovers and options a command doesn't use are refused, not ignored
+        # Leftovers, options a command doesn't use, and ones ScatterSteg
+        # doesn't have are refused, not ignored, before any prompt
         out = self.path("out.png")
         for args, why in [
-            (["encode", "-i", self.cover, "-o", out, "stray"], "unexpected argument 'stray'"),
-            (["decode", "-i", self.cover, "stray"], "unexpected argument 'stray'"),
-            (["decode", "-i", self.cover, "--", "-r"], "unexpected argument '-r'"),
-            (["passphrase", "stray"], "unexpected argument 'stray'"),
-            (["passphrase", "-r"], "passphrase takes no options"),
-            (["decode", "-i", self.cover, "-o", out], "decode takes no -o"),
+            (["embed", "-cf", self.cover, "-sf", out, "stray"], "unexpected argument 'stray'"),
+            (["extract", "-sf", self.cover, "stray"], "unexpected argument 'stray'"),
+            (["extract", "-sf", self.cover, "-r"], "unknown option '-r'"),
+            (["extract", "-sf", self.cover, "-xf"], "-xf needs a value"),
+            (["passphrase", "stray"], "passphrase takes no options or arguments"),
+            (["passphrase", "-q"], "passphrase takes no options or arguments"),
+            (["extract", "-sf", self.cover, "-cf", out], "-cf is not an option of extract"),
+            (["embed", "-cf", self.cover, "-sf", out, "-xf", out], "-xf is not an option of embed"),
+            (["embed", "-cf", self.cover, "-sf", out, "-p", "correct horse"], "-p isn't supported"),
+            (["extract", "-sf", self.cover, "--passphrase", "correct horse"], "--passphrase isn't supported"),
+            (["info", self.cover, "-p", "correct horse"], "-p isn't supported"),
+            (["embed", "-cf", self.cover, "-sf", out, "-e", "none"], "-e isn't supported"),
+            (["embed", "-cf", self.cover, "-sf", out, "-K"], "-K isn't supported"),
         ]:
             code, log = run(args, passphrases=["correct horse"] * 2)
             self.assertEqual(code, 1, (args, log))
@@ -1592,8 +1740,8 @@ class CliTest(CliBase):
         self.assertFalse(os.path.exists(out))
 
     def test_no_passphrase_given(self):
-        # EOF at the prompt must fail cleanly, not encode with an empty key
-        code, log = run(["encode", "-i", self.cover, "-o", self.path("out.png")], b"x", [])
+        # EOF at the prompt must fail cleanly, not embed with an empty key
+        code, log = run(["embed", "-cf", self.cover, "-sf", self.path("out.png")], b"x", [])
         self.assertEqual(code, 1)
         self.assertIn("could not read passphrase", log)
 
@@ -1619,7 +1767,7 @@ class CrossCheckTest(CliBase):
         if rng.random() < 0.4:  # text that compresses, past the room stored as is
             words = [b"bridge", b"the", b"old", b"meet", b"at", b"noon", b"\xc3\xa9t\xc3\xa9"]
             msg = b" ".join(rng.choice(words) for _ in range(rng.randint(1, room)))[:3 * room]
-            while len(pack(msg)) > room + 1:  # the binaries' zlib compresses the same
+            while len(pack(msg)) > room + 2:  # the binaries' zlib compresses the same
                 msg = msg[:len(msg) * 3 // 4]
             msg = msg.strip() or b"z"
         msg = msg.rstrip(b"\n") or b"z"
@@ -1640,7 +1788,7 @@ class CrossCheckTest(CliBase):
             with self.subTest(case=case, size=(w, h), channels=ch, length=len(msg), seed=self.SEED):
                 self.cover_for(w, h, ch, rng)
                 out = self.path("steg.png")
-                code, log = self.encode(msg, out, passphrase=pw)
+                code, log = self.embed(msg, out, passphrase=pw)
                 self.assertEqual(code, 0, log)
                 self.assertEqual(reveal(out, pw), msg)
                 self.assertIsNone(reveal(out, pw + "!"))
@@ -1654,10 +1802,7 @@ class CrossCheckTest(CliBase):
                 self.cover_for(w, h, ch, rng)
                 out = self.path("forged.png")
                 forge(self.cover, out, msg, pw)
-                code, log = run(["decode", "-i", out], passphrases=[pw])
-                self.assertEqual(code, 0, log)
-                # Byte-exact: the output is the raw message plus "\n"
-                self.assertIn(msg + b"\n", log.encode(errors="surrogateescape"))
+                self.assertEqual(self.extract_bytes(out, passphrase=pw), msg)
 
 
 @unittest.skipUnless(os.access(JPEG_FIXTURE, os.X_OK), "jpeg_fixture not built")
@@ -1672,10 +1817,10 @@ class JpegTest(CliBase):
 
     def test_roundtrip(self):
         out = self.path("steg.jpg")
-        code, log = self.encode(b"in the coefficients", out, src=self.jpeg)
+        code, log = self.embed(b"in the coefficients", out, src=self.jpeg)
         self.assertEqual(code, 0, log)
         self.assertDecodes(out, "in the coefficients")
-        code, log = self.decode(out, "wrong horse!")
+        code, log = self.extract(out, "wrong horse!")
         self.assertEqual(code, 1, log)
         self.assertNotIn("in the coefficients", log)
 
@@ -1686,14 +1831,14 @@ class JpegTest(CliBase):
             msg = bytes(rng.choice(range(32, 127)) for _ in range(rng.randint(1, 300)))
             with self.subTest(case=case, length=len(msg)):
                 out = self.path("steg.jpg")
-                self.assertEqual(self.encode(msg, out, src=self.jpeg)[0], 0)
+                self.assertEqual(self.embed(msg, out, src=self.jpeg)[0], 0)
                 self.assertDecodes(out, msg.decode())
 
     def test_format_and_markers_kept(self):
         src = self.path("fancy.jpg")
         make_jpeg(src, 200, 150, 3, 80, "progressive", "markers", "restart")
         out = self.path("steg.jpg")
-        self.assertEqual(self.encode(b"keep it all", out, src=src)[0], 0)
+        self.assertEqual(self.embed(b"keep it all", out, src=src)[0], 0)
         before, after = jpeg_segments(src), jpeg_segments(out)
         app_and_com = lambda segs: [s for s in segs if 0xE0 <= s[0] <= 0xEF or s[0] == 0xFE]
         self.assertEqual(app_and_com(before), app_and_com(after))
@@ -1708,7 +1853,7 @@ class JpegTest(CliBase):
         src = self.path("camera.jpg")
         make_jpeg(src, 200, 150, 3, 90, "nojfif", "markers")
         out = self.path("steg.jpg")
-        self.assertEqual(self.encode(b"no jfif", out, src=src)[0], 0)
+        self.assertEqual(self.embed(b"no jfif", out, src=src)[0], 0)
         markers = [m for m, _ in jpeg_segments(out)]
         self.assertEqual(markers[0], 0xE1)
         self.assertNotIn(0xE0, markers)
@@ -1722,7 +1867,7 @@ class JpegTest(CliBase):
         with open(src, "ab") as f, open(self.jpeg, "rb") as second:
             f.write(second.read())  # a second image
         out = self.path("steg.jpg")
-        code, log = self.encode(b"x", out, src=src)
+        code, log = self.embed(b"x", out, src=src)
         self.assertEqual(code, 1, log)
         self.assertIn("data after the end of the image", log)
         self.assertFalse(os.path.exists(out))
@@ -1731,48 +1876,48 @@ class JpegTest(CliBase):
         src = self.path("gray.jpg")
         make_jpeg(src, 200, 150, 1)
         out = self.path("steg.jpg")
-        self.assertEqual(self.encode(b"gray jpeg", out, src=src)[0], 0)
+        self.assertEqual(self.embed(b"gray jpeg", out, src=src)[0], 0)
         sof = dict(jpeg_segments(out))[0xC0]
         self.assertEqual(sof[5], 1)  # one component
         self.assertDecodes(out, "gray jpeg")
 
     def test_too_long_and_too_small(self):
         out = self.path("steg.jpg")
-        code, log = self.encode(noise(100000), out, src=self.jpeg)
+        code, log = self.embed(noise(100000), out, src=self.jpeg)
         self.assertEqual(code, 1, log)
         self.assertIn("too long", log)
         self.assertFalse(os.path.exists(out))
         tiny = self.path("tiny.jpg")
         make_jpeg(tiny, 8, 8, 1, 50)  # one block: nowhere near 160 carriers
-        code, log = self.encode(b"x", out, src=tiny)
+        code, log = self.embed(b"x", out, src=tiny)
         self.assertEqual(code, 1, log)
         self.assertIn("too small", log)
 
     def test_info(self):
-        # The capacity info gives is exactly what encode takes
-        code, log = run(["info", "-i", self.jpeg])
+        # The capacity info gives is exactly what embed takes
+        code, log = run(["info", self.jpeg])
         self.assertEqual(code, 0, log)
         m = re.fullmatch(r"Format:   JPEG, 256x192\nCapacity: (\d+) bytes \(more if the message compresses\)\n", log)
         self.assertTrue(m, log)
         n = int(m.group(1))
         out = self.path("steg.jpg")
-        code, log = self.encode_raw(noise(n + 1), out, src=self.jpeg)
+        code, log = self.embed(noise(n + 1), out, src=self.jpeg)
         self.assertEqual(code, 1, log)
         self.assertIn("too long", log)
-        code, log = self.encode_raw(noise(n), out, src=self.jpeg)
+        code, log = self.embed(noise(n), out, src=self.jpeg)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.decode_bytes(out, "-r"), noise(n))
+        self.assertEqual(self.extract_bytes(out), noise(n))
         tiny = self.path("tiny.jpg")
         make_jpeg(tiny, 8, 8, 1, 50)
-        code, log = run(["info", "-i", tiny])
+        code, log = run(["info", tiny])
         self.assertEqual(code, 1, log)
         self.assertIn("too small", log)
 
     def test_output_name_must_match_format(self):
-        code, log = self.encode(b"x", self.path("out.png"), src=self.jpeg)
+        code, log = self.embed(b"x", self.path("out.png"), src=self.jpeg)
         self.assertEqual(code, 1, log)
         self.assertIn("give it a .jpg name", log)
-        code, log = self.encode(b"x", self.path("out.jpeg"))  # PNG cover
+        code, log = self.embed(b"x", self.path("out.jpeg"))  # PNG cover
         self.assertEqual(code, 1, log)
         self.assertIn("give it a .png name", log)
         self.assertEqual(sorted(os.listdir(self.dir)), ["cover.jpg", "cover.png"])
@@ -1785,7 +1930,7 @@ class JpegTest(CliBase):
         src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "fuzz", "regressions", "jpeg_load", "oversampled-progressive.jpg")
         out = self.path("steg.jpg")
-        code, log = self.encode(b"x", out, src=src)
+        code, log = self.embed(b"x", out, src=src)
         self.assertEqual(code, 1, log)
         self.assertIn("image too small to hide a message", log)
         self.assertNotIn("Deriving keys", log)
@@ -1793,8 +1938,8 @@ class JpegTest(CliBase):
 
     def test_decode_cover_without_message(self):
         out = self.path("steg.jpg")
-        self.assertEqual(self.encode(b"m", out, src=self.jpeg)[0], 0)
-        code, log = self.decode(self.jpeg)  # the cover holds nothing
+        self.assertEqual(self.embed(b"m", out, src=self.jpeg)[0], 0)
+        code, log = self.extract(self.jpeg)  # the cover holds nothing
         self.assertEqual(code, 1, log)
         self.assertIn("Error:", log)
 
@@ -1858,7 +2003,7 @@ class FaultSweepTest(CliBase):
 
         with open(out, "wb") as f:
             f.write(b"precious")
-        faults = self.sweep(["encode", "-i", self.cover, "-o", out], message,
+        faults = self.sweep(["embed", "-cf", self.cover, "-sf", out, "-f"], message,
                             ["correct horse"] * 2, check)
         self.assertEqual(len(verified), 1)
         return faults
@@ -1873,7 +2018,7 @@ class FaultSweepTest(CliBase):
 
     def test_decode_sweep(self):
         steg = self.path("steg.png")
-        self.assertEqual(self.encode(b"fault sweep", steg)[0], 0)
+        self.assertEqual(self.embed(b"fault sweep", steg)[0], 0)
 
         def check(code, log):
             if code == 0:
@@ -1881,7 +2026,7 @@ class FaultSweepTest(CliBase):
             else:
                 self.assertNotIn("fault sweep", log)
 
-        faults = self.sweep(["decode", "-i", steg], b"", ["correct horse"], check)
+        faults = self.sweep(["extract", "-sf", steg], b"", ["correct horse"], check)
         self.assertGreater(faults, 5)
 
     def test_encode_sweep_long_passphrase(self):
@@ -1900,7 +2045,7 @@ class FaultSweepTest(CliBase):
             with open(out, "wb") as f:
                 f.write(b"precious")
 
-        self.sweep(["encode", "-i", self.cover, "-o", out], b"grow", [pw, pw], check)
+        self.sweep(["embed", "-cf", self.cover, "-sf", out, "-f"], b"grow", [pw, pw], check)
 
     @unittest.skipUnless(os.access(JPEG_FIXTURE, os.X_OK), "jpeg_fixture not built")
     def test_encode_and_decode_sweep_jpeg(self):
@@ -1922,25 +2067,25 @@ class FaultSweepTest(CliBase):
             with open(out, "wb") as f:
                 f.write(b"precious")
 
-        faults = self.sweep(["encode", "-i", src, "-o", out], b"jpeg sweep",
+        faults = self.sweep(["embed", "-cf", src, "-sf", out, "-f"], b"jpeg sweep",
                             ["correct horse"] * 2, check_encode)
         self.assertGreater(faults, 10)
         self.assertEqual(len(verified), 1)
 
-        self.assertEqual(self.encode(b"jpeg sweep", out, src=src)[0], 0)
+        self.assertEqual(self.embed(b"jpeg sweep", out, src=src)[0], 0)
 
         def check_decode(code, log):
             if code == 0:
                 self.assertIn("jpeg sweep\n", log)
 
-        self.assertGreater(self.sweep(["decode", "-i", out], b"", ["correct horse"], check_decode), 5)
+        self.assertGreater(self.sweep(["extract", "-sf", out], b"", ["correct horse"], check_decode), 5)
 
     def test_sweep_reaches_key_derivation(self):
         # Argon2id's 256 MiB allocation happens inside libsodium; the sweep
         # fails crypto_pwhash as a whole to cover running out of memory there
         code, log = None, ""
         for n in range(1, 500):
-            code, log = run(["encode", "-i", self.cover, "-o", self.path("o.png")], b"m",
+            code, log = run(["embed", "-cf", self.cover, "-sf", self.path("o.png"), "-f"], b"m",
                             ["p" * 12] * 2, env={**self.ENV, "FAULT_AT": str(n)}, binary=FAULT_BINARY)
             if "FAULT_FIRED crypto_pwhash" in log or "FAULT_NOT_REACHED" in log:
                 break

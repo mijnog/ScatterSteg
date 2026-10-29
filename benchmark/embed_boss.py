@@ -31,7 +31,7 @@ def job(pgm):
         if not os.path.exists(out):
             m = base64.b64encode(os.urandom(n // 8))[: n // 8]
             tmp = out + ".tmp.png"
-            rc, log = T.run(["encode", "-i", cov, "-o", tmp], message=m, passphrases=[PW, PW], binary=SS)
+            rc, log = T.run(["embed", "-cf", cov, "-sf", tmp, "-Z", "-f"], message=m, passphrases=[PW, PW], binary=SS)  # -Z: the payload exactly as sized (compression would shrink it)
             if rc == 0 and os.path.exists(tmp): os.rename(tmp, out)
             else: print("FAIL", TOOL, p, b, log.strip().splitlines()[-1][:80], flush=True)
         out = f"boss/stego/lsbm_{p}/{b}.png"

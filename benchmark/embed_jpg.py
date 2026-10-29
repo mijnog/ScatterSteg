@@ -17,7 +17,7 @@ def main():
         os.makedirs(os.path.dirname(out), exist_ok=True)
         if os.path.exists(out): return True
         tmp = out + ".tmp.jpg"
-        rc, log = E.T.run(["encode", "-i", f"cover/{base}.jpg", "-o", tmp],
+        rc, log = E.T.run(["embed", "-cf", f"cover/{base}.jpg", "-sf", tmp, "-Z", "-f"],  # -Z: the payload exactly as sized (compression would shrink it)
                           message=E.msg(int(bp * nz[base] / 8)), passphrases=[E.PW, E.PW], binary=E.SS)
         if rc != 0: print("FAIL", base, bp, log.strip().splitlines()[-1][:100], flush=True); return False
         os.rename(tmp, out); return True

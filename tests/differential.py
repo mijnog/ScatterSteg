@@ -218,18 +218,18 @@ def png_fuzz_regressions():
 
 
 def loads(binary, path):
-    code, log = T.run(["decode", "-i", path], passphrases=["wrong-passphrase-12"], binary=binary)
+    code, log = T.run(["extract", "-sf", path], passphrases=["wrong-passphrase-12"], binary=binary)
     return "could not load" not in log, code
 
 
 def encoded(binary, path):
-    """What `encode` makes of the cover: why it refuses it (transparency, gray
+    """What `embed` makes of the cover: why it refuses it (transparency, gray
     pixels stored as RGB, ...), or the chunks it writes other than the image
     data, which is compressed differently by each"""
     out = path + ".out"
     if os.path.exists(out):
         os.remove(out)
-    code, log = T.run(["encode", "-i", path, "-o", out], message=b"x",
+    code, log = T.run(["embed", "-cf", path, "-sf", out], message=b"x",
                       passphrases=["correct horse"] * 2, binary=binary)
     m = re.search(r"has (.*?), which the output can't keep", log)
     if m:

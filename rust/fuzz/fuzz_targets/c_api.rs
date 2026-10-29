@@ -84,10 +84,11 @@ impl Drop for CJpeg { fn drop(&mut self) { unsafe { jpeg_free(self.0) } } }
 // The C file format (codec.h), on a carrier that borrows Rust's samples
 unsafe extern "C" {
     fn codec_decode(c: *const CCarrier, passphrase: *const c_char, plaintext: *mut *mut u8,
-                    pt_len: *mut u32) -> c_int;
+                    pt_len: *mut u32, name: *mut c_char) -> c_int;
     fn codec_prepare(c: *const CCarrier, passphrase: *const c_char) -> *mut c_void;
     fn codec_max_message(p: *const c_void) -> usize;
-    fn codec_embed(p: *mut c_void, c: *const CCarrier, message: *const u8, msg_len: u32) -> c_int;
+    fn codec_embed(p: *mut c_void, c: *const CCarrier, name: *const c_char, message: *const u8,
+                   msg_len: u32, level: c_int, info: *mut c_void) -> c_int;
     fn codec_prepared_free(p: *mut c_void);
     fn sodium_free(p: *mut c_void);
 }
@@ -123,15 +124,15 @@ impl<'a> CCodecCover<'a> {
         CCodecCover { _img: None, _rows: Vec::new(), _coefs: coefs, carrier, _samples: Default::default() }
     }
 
-    /// Ok(None) if nothing is found, Err if C's decode failed
-    pub fn decode(&mut self, passphrase: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    /// (name, message); Ok(None) if nothing is found, Err if C's decode failed
+    pub fn decode(&mut self, passphrase: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, ()> {
         let pass = CString::new(passphrase).unwrap();
-        let (mut pt, mut len) = (std::ptr::null_mut(), 0u32);
-        match unsafe { codec_decode(&self.carrier, pass.as_ptr(), &mut pt, &mut len) } {
+        let (mut pt, mut len, mut name) = (std::ptr::null_mut(), 0u32, [0 as c_char; 256]);
+        match unsafe { codec_decode(&self.carrier, pass.as_ptr(), &mut pt, &mut len, name.as_mut_ptr()) } {
             DECODED => {
                 let msg = unsafe { std::slice::from_raw_parts(pt, len as usize) }.to_vec();
                 unsafe { sodium_free(pt.cast()) };
-                Ok(Some(msg))
+                Ok(Some((unsafe { CStr::from_ptr(name.as_ptr()) }.to_bytes().to_vec(), msg)))
             }
             NO_MATCH => Ok(None),
             _ => Err(()),
@@ -148,9 +149,15 @@ impl<'a> CCodecCover<'a> {
         Some(max)
     }
 
-    pub fn embed(&mut self, passphrase: &[u8], message: &[u8]) -> bool {
+    /// With the file name `name` (empty for none), compressed at `level`
+    pub fn embed(&mut self, passphrase: &[u8], name: &[u8], message: &[u8], level: u32) -> bool {
         let pass = CString::new(passphrase).unwrap();
+        let name = CString::new(name).unwrap();
+        let name_ptr = if name.is_empty() { std::ptr::null() } else { name.as_ptr() };
         let p = unsafe { codec_prepare(&self.carrier, pass.as_ptr()) };
-        !p.is_null() && unsafe { codec_embed(p, &self.carrier, message.as_ptr(), message.len() as u32) } == 0
+        !p.is_null() && unsafe {
+            codec_embed(p, &self.carrier, name_ptr, message.as_ptr(), message.len() as u32, level as c_int,
+                        std::ptr::null_mut())
+        } == 0
     }
 }

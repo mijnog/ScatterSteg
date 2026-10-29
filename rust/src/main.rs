@@ -3,11 +3,12 @@
 
 use scattersteg::codec::{self, EmbedError};
 use scattersteg::compress;
+use scattersteg::atomic_write::atomic_write;
 use scattersteg::cover::{Cover, SaveError};
 use scattersteg::sodium::{self, Secret};
 use scattersteg::jpeg_io;
 use std::ffi::{CStr, OsString};
-use std::io;
+use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
@@ -156,13 +157,12 @@ enum ReadError {
     Io(io::Error),
 }
 
-/// Read the entire contents of stdin into a Secret. Prints a prompt first if
-/// stdin is a terminal, unless quiet. The message may hold any bytes, NUL included: its
-/// length (less a final newline, unless raw) is the Secret's. Stops reading once that is
-/// longer than max_len, so a huge stdin can't exhaust memory or overflow the
-/// payload length.
-fn read_message(max_len: usize, raw: bool, quiet: bool) -> Result<Secret, ReadError> {
-    if !quiet && unsafe { libc::isatty(0) } == 1 { scattersteg::errln!("Message (Ctrl+D when done):"); }
+/// Read all of `fd` into a Secret, byte for byte (NUL included). Prints a
+/// prompt first if `prompt` is set and fd is a terminal. Stops reading once
+/// that is longer than max_len, so a huge input can't exhaust memory or
+/// overflow the payload length.
+fn read_message(fd: RawFd, max_len: usize, prompt: bool) -> Result<Secret, ReadError> {
+    if prompt && unsafe { libc::isatty(fd) } == 1 { scattersteg::errln!("Message (Ctrl+D when done):"); }
 
     let oom = || ReadError::Io(io::Error::from_raw_os_error(libc::ENOMEM));
     let mut cap = 1024;
@@ -172,15 +172,15 @@ fn read_message(max_len: usize, raw: bool, quiet: bool) -> Result<Secret, ReadEr
     // read(), not stdio: a buffer would keep a copy of the message in
     // ordinary heap memory, unlocked and never wiped
     loop {
-        if len + 1 >= cap {
+        if len == cap {
             let mut bigger = Secret::new(cap * 2).ok_or_else(oom)?;
             bigger[..len].copy_from_slice(&buf[..len]);
             buf = bigger;
             cap *= 2;
         }
-        // max_len + 2 bytes in all tell a message that is too long
-        let want = (cap - 1 - len).min(max_len + 2 - len);
-        let n = unsafe { libc::read(0, buf[len..].as_mut_ptr().cast(), want) };
+        // max_len + 1 bytes in all tell a message that is too long
+        let want = (cap - len).min(max_len + 1 - len);
+        let n = unsafe { libc::read(fd, buf[len..].as_mut_ptr().cast(), want) };
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted { continue; }
@@ -188,11 +188,8 @@ fn read_message(max_len: usize, raw: bool, quiet: bool) -> Result<Secret, ReadEr
         }
         if n == 0 { break; }
         len += n as usize;
-        if len > max_len + 1 { return Err(ReadError::TooLong); } // max_len + 1 is fine if the last is '\n'
+        if len > max_len { return Err(ReadError::TooLong); }
     }
-
-    if !raw && len > 0 && buf[len - 1] == b'\n' { len -= 1; }
-    if len > max_len { return Err(ReadError::TooLong); }
     let mut msg = Secret::new(len).ok_or_else(oom)?;
     msg.copy_from_slice(&buf[..len]);
     Ok(msg)
@@ -247,18 +244,38 @@ fn protect_process() {
     }
 }
 
-/// To stderr after a mistake, to stdout when asked for (help)
+// The command line has steghide's syntax (its commands and option names, for
+// the features ScatterSteg has), so its users find what they know; the
+// wording is ScatterSteg's own. See CLAUDE.md.
+
+/// The synopsis, to stderr after a mistake; with the options too, to stdout,
+/// when asked for (help)
 fn usage(prog: &str, to_stdout: bool) -> io::Result<()> {
-    let text = format!(
-        "Usage: {prog} encode [-r] [-q] -i <cover.png|jpg> -o <output.png|jpg>\n\
-         \x20      {prog} decode [-r] [-q] -i <image.png|jpg>\n\
-         \x20      {prog} info -i <cover.png|jpg>\n\
-         \x20      {prog} passphrase | help | version\n\
-         Message is read from stdin. `passphrase` prints a strong random passphrase.\n\
-         `info` says whether an image can be a cover, and the longest message it holds.\n\
-         Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n\
-         -q prints only prompts for the passphrase, warnings and errors.\n");
-    if to_stdout { write_fd(1, text.as_bytes()) } else { let _ = write_fd(2, text.as_bytes()); Ok(()) }
+    let mut text = format!(
+        "Usage: {prog} embed -cf <cover.png|jpg> [-ef <file>] [-sf <output.png|jpg>] [options]\n\
+         \x20      {prog} extract -sf <image.png|jpg> [-xf <file>] [options]\n\
+         \x20      {prog} info <image.png|jpg>\n\
+         \x20      {prog} passphrase | encinfo | license | version | help\n");
+    if !to_stdout {
+        let _ = write_fd(2, text.as_bytes());
+        return Ok(());
+    }
+    text.push_str("\n\
+        embed hides a file (-ef, or standard input) in a cover image, writing\n\
+        the result to -sf, or over the cover if there's no -sf. extract gets it\n\
+        back: into -xf, else into the file name stored with it, else onto\n\
+        standard output (-xf - for that always). The passphrase is always typed\n\
+        at the prompt. info says whether an image can be a cover, and how much\n\
+        it holds; passphrase prints a strong random passphrase.\n\
+        \n\
+        \x20 -z, --compress [1-9]   compression level, 9 (the default) smallest\n\
+        \x20 -Z, --dontcompress     store the file as is\n\
+        \x20 -N, --dontembedname    don't store the file's name\n\
+        \x20 -f, --force            replace files that already exist\n\
+        \x20 -q, --quiet            print only prompts, warnings and errors\n\
+        \x20 -v, --verbose          say what was stored, and how\n\
+        Long forms of the others: --embedfile, --coverfile, --stegofile, --extractfile.\n");
+    write_fd(1, text.as_bytes())
 }
 
 /// Whether the cover can carry a message: the output would keep its format
@@ -328,46 +345,146 @@ fn output_name_matches(input: &Path, output: &Path) -> bool {
     true
 }
 
-struct Args {
-    input: Option<OsString>,
-    output: Option<OsString>,
-    raw: bool, // -r: no newline stripped from the message or added to it
-    quiet: bool, // -q: no progress messages
-    extra: Vec<OsString>, // non-option arguments, which no command takes
+const CMD_EMBED: u8 = 1;
+const CMD_EXTRACT: u8 = 2;
+const CMD_INFO: u8 = 4;
+
+struct OptionSpec {
+    short: &'static str,
+    long: &'static str,
+    /// The CMD_* it belongs to
+    commands: u8,
+    /// 0: nothing, 1: a value, 2: a level, if one follows
+    takes: u8,
+    /// Why ScatterSteg doesn't take it
+    refused: Option<&'static str>,
 }
 
-/// getopt "i:o:rq" over the arguments after the command; None on a bad option
-fn parse_options(args: &[OsString]) -> Option<Args> {
-    let mut out = Args { input: None, output: None, raw: false, quiet: false, extra: Vec::new() };
+const OPTION_SPECS: [OptionSpec; 13] = [
+    OptionSpec { short: "-ef", long: "--embedfile", commands: CMD_EMBED, takes: 1, refused: None },
+    OptionSpec { short: "-cf", long: "--coverfile", commands: CMD_EMBED, takes: 1, refused: None },
+    OptionSpec { short: "-sf", long: "--stegofile", commands: CMD_EMBED | CMD_EXTRACT, takes: 1, refused: None },
+    OptionSpec { short: "-xf", long: "--extractfile", commands: CMD_EXTRACT, takes: 1, refused: None },
+    OptionSpec { short: "-z", long: "--compress", commands: CMD_EMBED, takes: 2, refused: None },
+    OptionSpec { short: "-Z", long: "--dontcompress", commands: CMD_EMBED, takes: 0, refused: None },
+    OptionSpec { short: "-N", long: "--dontembedname", commands: CMD_EMBED, takes: 0, refused: None },
+    OptionSpec { short: "-f", long: "--force", commands: CMD_EMBED | CMD_EXTRACT, takes: 0, refused: None },
+    OptionSpec { short: "-q", long: "--quiet", commands: CMD_EMBED | CMD_EXTRACT, takes: 0, refused: None },
+    OptionSpec { short: "-v", long: "--verbose", commands: CMD_EMBED | CMD_EXTRACT, takes: 0, refused: None },
+    OptionSpec { short: "-p", long: "--passphrase", commands: 0, takes: 1, refused: Some(
+        "the passphrase is never taken on the command line, where other users (ps) and the shell \
+         history could read it; type it at the prompt") },
+    OptionSpec { short: "-e", long: "--encryption", commands: 0, takes: 1, refused: Some(
+        "the encryption is fixed (XSalsa20-Poly1305) and always on (see encinfo)") },
+    OptionSpec { short: "-K", long: "--nochecksum", commands: 0, takes: 0, refused: Some(
+        "the message is always authenticated (Poly1305), which checks its integrity; there is no \
+         separate checksum") },
+];
+
+struct Options {
+    embed_file: Option<OsString>,
+    cover_file: Option<OsString>,
+    stego_file: Option<OsString>,
+    extract_file: Option<OsString>,
+    /// info's image
+    operand: Option<OsString>,
+    /// Compression level 1-9, or 0 for -Z
+    level: u32,
+    no_name: bool,
+    force: bool,
+    quiet: bool,
+    verbose: bool,
+}
+
+/// The options after the command; None, having said why, if they don't make
+/// sense for it
+fn parse_options(cmd: u8, cmd_name: &str, args: &[OsString]) -> Option<Options> {
+    let mut o = Options { embed_file: None, cover_file: None, stego_file: None, extract_file: None,
+                          operand: None, level: 9, no_name: false, force: false, quiet: false, verbose: false };
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_bytes();
+        let shown = args[i].to_string_lossy();
         i += 1;
-        if a == b"--" { out.extra.extend_from_slice(&args[i..]); break; }
-        if a.len() < 2 || a[0] != b'-' { out.extra.push(args[i - 1].clone()); continue; } // as getopt permutes it past
-        let mut k = 1; // a cluster such as -ri file: flags, then an option that takes a value
-        while k < a.len() {
-            let slot = match a[k] {
-                b'r' => { out.raw = true; k += 1; continue; }
-                b'q' => { out.quiet = true; k += 1; continue; }
-                b'i' => &mut out.input,
-                b'o' => &mut out.output,
-                _ => return None,
+        let Some(spec) = OPTION_SPECS.iter().find(|s| a == s.short.as_bytes() || a == s.long.as_bytes()) else {
+            if a.len() > 1 && a[0] == b'-' {
+                scattersteg::errln!("Error: unknown option '{shown}'");
+                return None;
+            }
+            if cmd == CMD_INFO && o.operand.is_none() {
+                o.operand = Some(args[i - 1].clone());
+                continue;
+            }
+            scattersteg::errln!("Error: unexpected argument '{shown}'");
+            return None;
+        };
+        if let Some(why) = spec.refused {
+            scattersteg::errln!("Error: {shown} isn't supported: {why}");
+            return None;
+        }
+        if spec.commands & cmd == 0 {
+            scattersteg::errln!("Error: {shown} is not an option of {cmd_name}");
+            return None;
+        }
+        let mut value = None;
+        if spec.takes == 1 {
+            let Some(v) = args.get(i) else {
+                scattersteg::errln!("Error: {shown} needs a value");
+                return None;
             };
-            *slot = Some(if a.len() > k + 1 {
-                OsString::from(<OsString as std::os::unix::ffi::OsStringExt>::from_vec(a[k + 1..].to_vec()))
-            } else {
-                let v = args.get(i)?.clone();
-                i += 1;
-                v
-            });
-            break;
+            value = Some(v.clone());
+            i += 1;
+        }
+        match spec.short {
+            "-ef" => o.embed_file = value,
+            "-cf" => o.cover_file = value,
+            "-sf" => o.stego_file = value,
+            "-xf" => o.extract_file = value,
+            "-z" => {
+                o.level = 9;
+                if let Some(&[d]) = args.get(i).map(|v| v.as_bytes()) && (b'1'..=b'9').contains(&d) {
+                    o.level = (d - b'0') as u32;
+                    i += 1;
+                }
+            }
+            "-Z" => o.level = 0,
+            "-N" => o.no_name = true,
+            "-f" => o.force = true,
+            "-q" => o.quiet = true,
+            _ => o.verbose = true,
         }
     }
-    Some(out)
+    Some(o)
 }
 
-fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
+/// Whether a and b name the same existing file
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+/// Says so and returns true if path exists (a dangling link too) and force
+/// isn't set: only -f replaces a file
+fn refuse_existing(path: &Path, force: bool, hint: &str) -> bool {
+    if force || std::fs::symlink_metadata(path).is_err() { return false; }
+    scattersteg::errln!("Error: '{}' already exists; use -f to replace it{hint}", path.display());
+    true
+}
+
+fn embed(o: &Options) -> ExitCode {
+    let Some(cover_file) = &o.cover_file else {
+        scattersteg::errln!("Error: embed needs a cover image: -cf <cover.png|jpg>");
+        return ExitCode::FAILURE;
+    };
+    let output = o.stego_file.as_ref().unwrap_or(cover_file);
+    if cover_file == "-" || output == "-" {
+        scattersteg::errln!("Error: the cover and the output must be files, not standard input or output");
+        return ExitCode::FAILURE;
+    }
+    let (input, output) = (Path::new(cover_file), Path::new(output));
     // Before the name check, which reads the input's first bytes: a missing
     // file would otherwise be called a PNG
     let opened = if scattersteg::fault::should_fail("fopen") { Err(io::Error::from_raw_os_error(libc::EMFILE)) }
@@ -378,12 +495,34 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
     }
     if !output_name_matches(input, output) { return ExitCode::FAILURE; }
     // Checked again when writing; here, before the passphrase prompt
-    if let Ok(m) = std::fs::metadata(output) {
-        if !m.is_file() {
-            scattersteg::errln!("Error: '{}' exists and is not a regular file", output.display());
+    if let Ok(m) = std::fs::metadata(output) && !m.is_file() {
+        scattersteg::errln!("Error: '{}' exists and is not a regular file", output.display());
+        return ExitCode::FAILURE;
+    }
+    // Writing over the cover is what embed without -sf is for
+    if !same_file(input, output) && refuse_existing(output, o.force, "") { return ExitCode::FAILURE; }
+
+    // The message: -ef's file, with its name unless -N, or standard input
+    let from_stdin = o.embed_file.as_ref().is_none_or(|f| f == "-");
+    let mut file = None;
+    let mut name: &[u8] = &[];
+    if let Some(ef) = o.embed_file.as_ref().filter(|_| !from_stdin) {
+        match std::fs::File::open(ef) {
+            Ok(f) => file = Some(f),
+            Err(e) => {
+                scattersteg::errln!("Error: could not read '{}': {}", Path::new(ef).display(), errno_message(&e));
+                return ExitCode::FAILURE;
+            }
+        }
+        let path = ef.as_bytes();
+        name = if o.no_name { &[] } else { &path[path.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1)..] };
+        if !o.no_name && !compress::name_ok(name) {
+            scattersteg::errln!("Error: the file's name can't be stored with it (at most {} bytes, no control \
+                       characters); rename it, or use -N", compress::NAME_MAX);
             return ExitCode::FAILURE;
         }
     }
+    let fd = file.as_ref().map_or(0, std::os::fd::AsRawFd::as_raw_fd);
 
     let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
     if passphrase.len() < PASSPHRASE_MIN_LEN {
@@ -402,10 +541,8 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
         scattersteg::errln!("Error: could not load '{}'", input.display());
         return ExitCode::FAILURE;
     };
-
     if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
-
-    if !quiet { scattersteg::errln!("Deriving keys..."); }
+    if !o.quiet { scattersteg::errln!("Deriving keys..."); }
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,
         Err(None) => {
@@ -420,17 +557,20 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
     drop(passphrase);
 
     let holds = prepared.max_message();
-    let mut message = match read_message(compress::MESSAGE_MAX, raw, quiet) {
+    let mut message = match read_message(fd, compress::MESSAGE_MAX, from_stdin && !o.quiet) {
         Ok(m) => m,
         Err(ReadError::TooLong) => {
             scattersteg::errln!("Error: message too long (max {} MiB)", compress::MESSAGE_MAX >> 20);
             return ExitCode::FAILURE;
         }
         Err(ReadError::Io(e)) => {
-            scattersteg::errln!("Error: could not read message: {}", errno_message(&e));
+            scattersteg::errln!("Error: could not read the message: {}", errno_message(&e));
             return ExitCode::FAILURE;
         }
     };
+    drop(file);
+    let len = message.len();
+    warn_if_swappable(&mut message, len);
     // Empty message: almost always a mistake (nothing piped in, an empty
     // file, Ctrl+D too soon), and a script must not take it for a written
     // output: fail, and write nothing
@@ -438,17 +578,19 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
         scattersteg::errln!("Error: the message is empty; nothing written");
         return ExitCode::FAILURE;
     }
-    let len = message.len();
-    warn_if_swappable(&mut message, len);
 
-    if let Err(e) = prepared.embed(&mut cover.carrier(), &message) {
-        match e {
-            EmbedError::TooLong => scattersteg::errln!("Error: message too long for this image, which holds {holds} \
-                                                        bytes (more if the message compresses well)"),
-            EmbedError::Alloc => scattersteg::errln!("Error: allocation failed"),
+    let stored = match prepared.embed(&mut cover.carrier(), name, &message, o.level) {
+        Ok(s) => s,
+        Err(EmbedError::TooLong) => {
+            scattersteg::errln!("Error: message too long for this image, which holds {holds} bytes (more if the \
+                       message compresses well{})", if name.is_empty() { "" } else { ", less the file name's length" });
+            return ExitCode::FAILURE;
         }
-        return ExitCode::FAILURE;
-    }
+        Err(EmbedError::Alloc) => {
+            scattersteg::errln!("Error: allocation failed");
+            return ExitCode::FAILURE;
+        }
+    };
     drop(message);
 
     let is_jpeg = cover.is_jpeg();
@@ -472,10 +614,29 @@ fn encode(input: &Path, output: &Path, raw: bool, quiet: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    if o.verbose {
+        let from = if name.is_empty() { String::new() } else { format!(" from '{}'", String::from_utf8_lossy(name)) };
+        scattersteg::errln!("Stored {len} bytes{from} as {} ({}), in an image that holds {holds} as is",
+                  stored.hidden, if stored.compressed { "compressed" } else { "not compressed" });
+    }
+    if !o.quiet { scattersteg::errln!("Wrote '{}'", output.display()); }
     ExitCode::SUCCESS
 }
 
-fn decode(input: &Path, raw: bool, quiet: bool) -> ExitCode {
+fn extract(o: &Options) -> ExitCode {
+    let Some(stego_file) = &o.stego_file else {
+        scattersteg::errln!("Error: extract needs an image: -sf <image.png|jpg>");
+        return ExitCode::FAILURE;
+    };
+    if stego_file == "-" {
+        scattersteg::errln!("Error: the image must be a file, not standard input");
+        return ExitCode::FAILURE;
+    }
+    let to_stdout = o.extract_file.as_ref().is_some_and(|f| f == "-");
+    if let Some(xf) = o.extract_file.as_ref().filter(|_| !to_stdout)
+        && refuse_existing(Path::new(xf), o.force, "") { return ExitCode::FAILURE; }
+
+    let input = Path::new(stego_file);
     let Some(passphrase) = read_passphrase("Passphrase: ") else { return ExitCode::FAILURE };
     let Some(mut cover) = Cover::load(input) else {
         scattersteg::errln!("Error: could not load '{}'", input.display());
@@ -487,7 +648,7 @@ fn decode(input: &Path, raw: bool, quiet: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if !quiet { scattersteg::errln!("Deriving keys..."); }
+    if !o.quiet { scattersteg::errln!("Deriving keys..."); }
     let result = codec::decode(&carrier, &passphrase);
     drop(passphrase);
     drop(cover);
@@ -502,17 +663,36 @@ fn decode(input: &Path, raw: bool, quiet: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    warn_if_swappable(&mut found.plaintext, found.len);
-    if found.len > 0 { // empty message: print nothing
-        // All of it, NULs too. The newline goes in the same write, so the
-        // plaintext buffer has room: it has a spare byte.
-        if !raw { found.plaintext[found.len] = b'\n'; }
-        if let Err(e) = write_fd(1, &found.plaintext[..found.len + usize::from(!raw)]) {
-            // e.g. a full disk: the message was not saved
+
+    // Where it goes: -xf, else the name stored with it, else stdout
+    let stored_name = std::ffi::OsStr::from_bytes(&found.name);
+    let dest = if to_stdout { None }
+               else if let Some(xf) = &o.extract_file { Some(Path::new(xf)) }
+               else if !found.name.is_empty() { Some(Path::new(stored_name)) }
+               else { None };
+    let len = found.plaintext.len();
+    warn_if_swappable(&mut found.plaintext, len);
+    if o.verbose {
+        let stored = if found.name.is_empty() { String::new() }
+                     else { format!(", stored as '{}'", String::from_utf8_lossy(&found.name)) };
+        scattersteg::errln!("Found {len} bytes{stored}");
+    }
+    let Some(dest) = dest else {
+        // All of it, NULs too, unbuffered (write_fd)
+        if let Err(e) = write_fd(1, &found.plaintext) {
             scattersteg::errln!("Error: could not write the message: {}", errno_message(&e));
             return ExitCode::FAILURE;
         }
+        return ExitCode::SUCCESS;
+    };
+    if o.extract_file.is_none() && refuse_existing(dest, o.force, ", or -xf to choose another name") {
+        return ExitCode::FAILURE;
     }
+    if let Err(e) = atomic_write(dest, |f| f.write_all(&found.plaintext)) {
+        scattersteg::errln!("Error: could not write '{}': {}", dest.display(), errno_message(&e));
+        return ExitCode::FAILURE;
+    }
+    if !o.quiet { scattersteg::errln!("Wrote '{}'", dest.display()); }
     ExitCode::SUCCESS
 }
 
@@ -530,89 +710,66 @@ fn main() -> ExitCode {
         let _ = usage(&prog, false);
         return ExitCode::FAILURE;
     }
-    // The usual spellings of help and version, as their commands
-    let cmd: &[u8] = match args[1].as_bytes() {
-        b"-h" | b"--help" => b"help",
-        b"--version" => b"version",
-        other => other,
-    };
-    let Some(opts) = parse_options(&args[2..]) else {
-        let _ = usage(&prog, false);
-        return ExitCode::FAILURE;
-    };
 
-    // Anything left over, or an option the command doesn't use, is a typo or
-    // a misunderstanding: say so rather than ignore it
-    let bare = matches!(cmd, b"passphrase" | b"help" | b"version");
-    let known = bare || matches!(cmd, b"encode" | b"decode" | b"info");
-    if let (true, Some(a)) = (known, opts.extra.first()) {
-        scattersteg::errln!("Error: unexpected argument '{}'", a.to_string_lossy());
+    // Each command also as --command, and help as -h
+    let first = args[1].as_bytes();
+    let cmd: &[u8] = if first.starts_with(b"--") && first != b"--passphrase" { &first[2..] }
+                     else if first == b"-h" { b"help" }
+                     else { first };
+    let which = match cmd { b"embed" => CMD_EMBED, b"extract" => CMD_EXTRACT, b"info" => CMD_INFO, _ => 0 };
+    if which != 0 {
+        let cmd_name = String::from_utf8_lossy(cmd);
+        let Some(o) = parse_options(which, &cmd_name, &args[2..]) else {
+            let _ = usage(&prog, false);
+            return ExitCode::FAILURE;
+        };
+        return match which {
+            CMD_EMBED => embed(&o),
+            CMD_EXTRACT => extract(&o),
+            _ => match &o.operand {
+                Some(f) => info(Path::new(f)),
+                None => {
+                    scattersteg::errln!("Error: info needs an image: info <image.png|jpg>");
+                    let _ = usage(&prog, false);
+                    ExitCode::FAILURE
+                }
+            },
+        };
+    }
+
+    if !matches!(cmd, b"passphrase" | b"encinfo" | b"license" | b"version" | b"help") {
+        scattersteg::errln!("Error: unknown command '{}'", args[1].to_string_lossy());
         let _ = usage(&prog, false);
         return ExitCode::FAILURE;
     }
-
-    match cmd {
-        _ if bare && (opts.input.is_some() || opts.output.is_some() || opts.raw || opts.quiet) => {
-            scattersteg::errln!("Error: {} takes no options", String::from_utf8_lossy(cmd));
-            let _ = usage(&prog, false);
-            ExitCode::FAILURE
-        }
-        b"decode" if opts.input.is_some() && opts.output.is_some() => {
-            scattersteg::errln!("Error: decode takes no -o; the message goes to stdout (redirect it with >)");
-            let _ = usage(&prog, false);
-            ExitCode::FAILURE
-        }
-        b"passphrase" => match generate_passphrase() {
+    if args.len() > 2 {
+        scattersteg::errln!("Error: {} takes no options or arguments", String::from_utf8_lossy(cmd));
+        let _ = usage(&prog, false);
+        return ExitCode::FAILURE;
+    }
+    let version = env!("CARGO_PKG_VERSION");
+    let text = match cmd {
+        b"passphrase" => return match generate_passphrase() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 scattersteg::errln!("Error: could not write the passphrase: {}", errno_message(&e));
                 ExitCode::FAILURE
             }
         },
-        b"help" => match usage(&prog, true) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::FAILURE,
-        },
-        b"version" => match write_fd(1, concat!("scattersteg ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                scattersteg::errln!("Error: could not write the version: {}", errno_message(&e));
-                ExitCode::FAILURE
-            }
-        },
-        b"info" => match (&opts.input, &opts.output, opts.raw || opts.quiet) {
-            (Some(i), None, false) => info(Path::new(i)),
-            (None, _, _) => {
-                scattersteg::errln!("Error: info requires -i");
-                let _ = usage(&prog, false);
-                ExitCode::FAILURE
-            }
-            _ => {
-                scattersteg::errln!("Error: info takes only -i");
-                let _ = usage(&prog, false);
-                ExitCode::FAILURE
-            }
-        },
-        b"encode" => match (&opts.input, &opts.output) {
-            (Some(i), Some(o)) => encode(Path::new(i), Path::new(o), opts.raw, opts.quiet),
-            _ => {
-                scattersteg::errln!("Error: encode requires -i and -o");
-                let _ = usage(&prog, false);
-                ExitCode::FAILURE
-            }
-        },
-        b"decode" => match &opts.input {
-            Some(i) => decode(Path::new(i), opts.raw, opts.quiet),
-            None => {
-                scattersteg::errln!("Error: decode requires -i");
-                let _ = usage(&prog, false);
-                ExitCode::FAILURE
-            }
-        },
-        other => {
-            scattersteg::errln!("Error: unknown command '{}'", String::from_utf8_lossy(other));
-            let _ = usage(&prog, false);
-            ExitCode::FAILURE
-        }
+        b"help" => return if usage(&prog, true).is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE },
+        b"version" => format!("scattersteg {version}\n"),
+        b"encinfo" => "ScatterSteg always encrypts and authenticates the message with XSalsa20-Poly1305\n\
+                       (libsodium's secretbox), keyed by Argon2id from the passphrase: there is no\n\
+                       algorithm or mode to choose.\n".to_string(),
+        _ => format!("ScatterSteg {version}\n\
+                      Copyright (C) 2026 Maxime de Montbron\n\
+                      Free software under the GNU Affero General Public License v3.0 or later: you may\n\
+                      use, change and share it on its terms. It comes with NO WARRANTY. See the\n\
+                      LICENSE file, or <https://www.gnu.org/licenses/agpl-3.0.html>.\n"),
+    };
+    if let Err(e) = write_fd(1, text.as_bytes()) {
+        scattersteg::errln!("Error: could not write: {}", errno_message(&e));
+        return ExitCode::FAILURE;
     }
+    ExitCode::SUCCESS
 }

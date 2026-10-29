@@ -27,8 +27,9 @@
               the first 32 samples in that order, then its bits as the STC
               syndrome of the samples after them (see payload_carriers)
      message  the secretbox's plaintext: [encoding 1 | body], the body raw
-              DEFLATE (encoding 1) if that made the message shorter, else
-              the message as is (0); see pack_message
+              DEFLATE (encoding 1) of the record if that made it shorter,
+              else the record as is (0); the record is [name length 1 |
+              file name | message] (see pack_message, name_ok)
 
    Every pixel carries one bit per sample (R, G, B, or gray LSBs); a JPEG,
    one per carrier coefficient. There is no header or version marker,
@@ -264,39 +265,72 @@ static void secret_free(voidpf opaque, voidpf p) {
     sodium_free(p);
 }
 
+/* Most bytes a record inflates to: a decompression bomb stops there */
+#define RECORD_MAX ((size_t)CODEC_MESSAGE_MAX + 1 + CODEC_NAME_MAX)
+
+/* A file name a record may carry: a bare name, which extract can create in
+   the current directory and print safely. 1 to CODEC_NAME_MAX bytes, no
+   '/' or control characters, not "." or "..". */
+static int name_ok(const uint8_t *s, size_t n) {
+    if (n == 0 || n > CODEC_NAME_MAX) return 0;
+    if ((n == 1 && s[0] == '.') || (n == 2 && s[0] == '.' && s[1] == '.')) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (s[i] == '/' || s[i] < 0x20 || s[i] == 0x7f) return 0;
+    return 1;
+}
+
+int codec_name_ok(const char *name) {
+    return name_ok((const uint8_t *)name, strlen(name));
+}
+
 /* The secretbox's plaintext for a message: [encoding | body] (see the top
-   of this file), in sodium_malloc memory. NULL if out of memory. */
-static uint8_t *pack_message(const uint8_t *msg, uint32_t len, uint32_t *packed_len) {
+   of this file), in sodium_malloc memory. level 1-9 compresses at that
+   level if that makes it shorter; 0 never does. NULL if out of memory. */
+static uint8_t *pack_message(const char *name, const uint8_t *msg, uint32_t len, int level,
+                             uint32_t *packed_len) {
+    uint8_t head[1 + CODEC_NAME_MAX];  /* the record's name length and name */
+    size_t name_len = name ? strlen(name) : 0, head_len = 1 + name_len;
+    size_t record = head_len + len;
+    head[0] = (uint8_t)name_len;
+    if (name_len) memcpy(head + 1, name, name_len);
+
     z_stream z = {.zalloc = secret_alloc, .zfree = secret_free};
-    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 9, Z_DEFAULT_STRATEGY) != Z_OK)
+    if (level > 0 && deflateInit2(&z, level, Z_DEFLATED, -MAX_WBITS, 9, Z_DEFAULT_STRATEGY) != Z_OK)
         return NULL;
-    uLong bound = deflateBound(&z, len);
-    size_t cap = 1 + (bound > len ? bound : len);
+    uLong bound = level > 0 ? deflateBound(&z, record) : 0;
+    size_t cap = 1 + (bound > record ? bound : record);
     uint8_t *packed = sodium_malloc(cap);
-    if (packed) {
-        z.next_in = (Bytef *)msg;
-        z.avail_in = len;
+    int deflated = 0;
+    if (packed && level > 0) {
+        z.next_in = head;
+        z.avail_in = (uInt)head_len;
         z.next_out = packed + 1;
         z.avail_out = (uInt)(cap - 1);
-        if (deflate(&z, Z_FINISH) == Z_STREAM_END && z.total_out < len) {
-            packed[0] = DEFLATED;
-            *packed_len = 1 + (uint32_t)z.total_out;
-        } else {
-            packed[0] = STORED;
-            memcpy(packed + 1, msg, len);
-            *packed_len = 1 + len;
-        }
+        int r = deflate(&z, Z_NO_FLUSH);
+        z.next_in = (Bytef *)msg;
+        z.avail_in = len;
+        deflated = r == Z_OK && deflate(&z, Z_FINISH) == Z_STREAM_END && z.total_out < record;
     }
-    deflateEnd(&z);
+    if (packed && deflated) {
+        packed[0] = DEFLATED;
+        *packed_len = 1 + (uint32_t)z.total_out;
+    } else if (packed) {
+        packed[0] = STORED;
+        memcpy(packed + 1, head, head_len);
+        memcpy(packed + 1 + head_len, msg, len);
+        *packed_len = (uint32_t)(1 + record);
+    }
+    if (level > 0) deflateEnd(&z);
+    sodium_memzero(head, sizeof(head));
     return packed;
 }
 
 /* Inflates src, which must be exactly one raw DEFLATE stream, into out
    (out_cap bytes); or, if out is NULL, only measures it into *total.
-   Returns 0, -1 if it is malformed or inflates past CODEC_MESSAGE_MAX
-   (a sender could make it a decompression bomb), or -2 if out of memory. */
-static int inflate_message(const uint8_t *src, size_t src_len, uint8_t *out, size_t out_cap,
-                           size_t *total) {
+   Returns 0, -1 if it is malformed or inflates past RECORD_MAX (a sender
+   could make it a decompression bomb), or -2 if out of memory. */
+static int inflate_record(const uint8_t *src, size_t src_len, uint8_t *out, size_t out_cap,
+                          size_t *total) {
     z_stream z = {.zalloc = secret_alloc, .zfree = secret_free};
     if (inflateInit2(&z, -MAX_WBITS) != Z_OK) return -2;
     uint8_t *scratch = out ? NULL : sodium_malloc(65536);
@@ -317,42 +351,51 @@ static int inflate_message(const uint8_t *src, size_t src_len, uint8_t *out, siz
             z.avail_out = 65536;
         }
         r = inflate(&z, Z_NO_FLUSH);
-    } while (r == Z_OK && z.total_out <= CODEC_MESSAGE_MAX);
+    } while (r == Z_OK && z.total_out <= RECORD_MAX);
     *total = z.total_out;
-    int ok = r == Z_STREAM_END && z.avail_in == 0 && z.total_out <= CODEC_MESSAGE_MAX;
+    int ok = r == Z_STREAM_END && z.avail_in == 0 && z.total_out <= RECORD_MAX;
     inflateEnd(&z);
     sodium_free(scratch);
     return ok ? 0 : r == Z_MEM_ERROR ? -2 : -1;
 }
 
-/* Replaces the secretbox's plaintext (*pt, *len bytes and one to spare)
-   with the message it holds, also with one byte to spare. FAILED, with a
-   message, if it is malformed: only a faulty encoder, or a sender who knows
-   the passphrase, could make one that authenticates. */
-static int unpack_message(uint8_t **pt, uint32_t *len) {
+/* Replaces the secretbox's plaintext (*pt, *len bytes) with the message
+   it holds, and copies out the file name stored with it ("" if none).
+   FAILED, with a message, if it is malformed: only a faulty encoder, or a
+   sender who knows the passphrase, could make one that authenticates. */
+static int unpack_message(uint8_t **pt, uint32_t *len, char name[CODEC_NAME_MAX + 1]) {
     const uint8_t *body = *pt + 1;
-    size_t body_len = *len ? *len - 1 : 0, size;
-    int r = *len == 0 ? -1 : 0;
+    size_t body_len = *len ? *len - 1 : 0, size = 0;
+    uint8_t *rec = NULL;  /* the record, in *pt or a buffer of its own */
+    int r = *len == 0 || (**pt != STORED && **pt != DEFLATED) ? -1 : 0;
     if (r == 0 && **pt == STORED) {
-        memmove(*pt, body, body_len);
-        *len = (uint32_t)body_len;
-        return DECODED;
+        rec = *pt;
+        size = body_len;
+        memmove(rec, body, size);
+    } else if (r == 0) {
+        r = inflate_record(body, body_len, NULL, 0, &size);
+        rec = r == 0 ? sodium_malloc(size + 1) : NULL;
+        if (r == 0 && !rec) r = -2;
+        if (r == 0) r = inflate_record(body, body_len, rec, size + 1, &size);
     }
-    if (r == 0 && **pt != DEFLATED) r = -1;
-    if (r == 0) r = inflate_message(body, body_len, NULL, 0, &size);
-    uint8_t *msg = r == 0 ? sodium_malloc(size + 1) : NULL;
-    if (r == 0 && !msg) r = -2;
-    if (r == 0) r = inflate_message(body, body_len, msg, size + 1, &size);
+    size_t name_len = r == 0 && size ? rec[0] : 0;
+    if (r == 0 && (size == 0 || 1 + name_len > size || (name_len && !name_ok(rec + 1, name_len))))
+        r = -1;
     if (r != 0) {
-        sodium_free(msg);
+        if (rec != *pt) sodium_free(rec);
         fprintf(stderr, r == -2 ? "Error: allocation failed\n"
                                 : "Error: the message is malformed; it authenticated, so "
                                   "whoever made the image knew the passphrase\n");
         return FAILED;
     }
-    sodium_free(*pt);
-    *pt = msg;
-    *len = (uint32_t)size;
+    memcpy(name, rec + 1, name_len);
+    name[name_len] = '\0';
+    memmove(rec, rec + 1 + name_len, size - 1 - name_len);
+    if (rec != *pt) {
+        sodium_free(*pt);
+        *pt = rec;
+    }
+    *len = (uint32_t)(size - 1 - name_len);
     return DECODED;
 }
 
@@ -381,7 +424,7 @@ uint32_t codec_header_pixels(uint32_t channels) {
 }
 
 int codec_decode(const Carrier *c, const char *passphrase,
-                 uint8_t **plaintext, uint32_t *pt_len) {
+                 uint8_t **plaintext, uint32_t *pt_len, char name[CODEC_NAME_MAX + 1]) {
     uint32_t count = carrier_positions(c), ch = carrier_channels(c);
     uint32_t k = salt_region_pixels(count, ch);
     if (count < k + header_pixels(ch)) return NO_MATCH;
@@ -408,7 +451,7 @@ int codec_decode(const Carrier *c, const char *passphrase,
     int r = read_payload(c, order, count - k, &payload, &len);
     if (r == DECODED)
         r = open_box(payload, len, keys->enc, plaintext, pt_len);
-    if (r == DECODED && (r = unpack_message(plaintext, pt_len)) != DECODED) {
+    if (r == DECODED && (r = unpack_message(plaintext, pt_len, name)) != DECODED) {
         sodium_free(*plaintext);
         *plaintext = NULL;
     }
@@ -433,13 +476,13 @@ int codec_too_small(const Carrier *c) {
     return count < salt_region_pixels(count, ch) + header_pixels(ch);
 }
 
-/* The longest message that fits stored as is after the k salt pixels: one
-   payload bit per sample after the 32-bit header, less the box and the
-   encoding byte. Under 2^32, as positions are 32-bit and 3 samples each at
-   most. */
+/* The longest message that fits stored as is, with no file name, after the
+   k salt pixels: one payload bit per sample after the 32-bit header, less
+   the box, the encoding byte and the name length. Under 2^32, as
+   positions are 32-bit and 3 samples each at most. */
 static size_t max_message(uint32_t count, uint32_t k, uint32_t ch) {
     size_t samples = payload_samples(count - k, ch);
-    return samples / 8 > BOX_OVERHEAD + 1 ? samples / 8 - BOX_OVERHEAD - 1 : 0;
+    return samples / 8 > BOX_OVERHEAD + 2 ? samples / 8 - BOX_OVERHEAD - 2 : 0;
 }
 
 size_t codec_capacity(const Carrier *c) {
@@ -494,14 +537,19 @@ void codec_prepared_free(CodecPrepared *p) {
     free(p);
 }
 
-int codec_embed(CodecPrepared *p, const Carrier *c, const uint8_t *message, uint32_t msg_len) {
+int codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
+                const uint8_t *message, uint32_t msg_len, int level, CodecEmbedded *info) {
     /* payload = [nonce | secretbox([encoding | body])] */
     uint32_t packed_len = 0;
-    uint8_t *packed = pack_message(message, msg_len, &packed_len);
+    uint8_t *packed = pack_message(name, message, msg_len, level, &packed_len);
+    if (packed && info) {
+        info->hidden = packed_len - 1;
+        info->compressed = packed[0] == DEFLATED;
+    }
     uint32_t payload_len = BOX_OVERHEAD + packed_len;
-    uint8_t *payload = packed && packed_len <= p->max_msg + 1 ? malloc(payload_len) : NULL;
+    uint8_t *payload = packed && packed_len <= p->max_msg + 2 ? malloc(payload_len) : NULL;
     if (!payload) {
-        int too_long = packed && packed_len > p->max_msg + 1;
+        int too_long = packed && packed_len > p->max_msg + 2;
         sodium_free(packed);
         codec_prepared_free(p);
         return too_long ? -1 : -2;

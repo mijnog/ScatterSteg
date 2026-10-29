@@ -2,6 +2,7 @@
    Copyright (C) 2026 Maxime de Montbron */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -302,16 +303,15 @@ static int output_name_matches(const char *input, const char *output) {
     return 1;
 }
 
-/* Read the entire contents of stdin into a sodium_malloc buffer.
-   Prints a prompt first if stdin is a terminal, unless quiet. Caller must sodium_free.
-   The message may hold any bytes, NUL included: its length (less a final
-   newline, unless raw) goes in *out_len. Stops reading once that is longer than
-   max_len, so a huge stdin can't exhaust memory or overflow the payload
-   length: then sets *too_long and returns NULL. Also NULL on a read error
-   or out of memory, with errno set. */
-static char *read_message(size_t max_len, size_t *out_len, int *too_long, int raw, int quiet) {
+/* Read all of fd into a sodium_malloc buffer, byte for byte (NUL
+   included); its length goes in *out_len. Caller must sodium_free.
+   Prints a prompt first if prompt is set and fd is a terminal. Stops
+   reading once that is longer than max_len, so a huge input can't exhaust
+   memory or overflow the payload length: then sets *too_long and returns
+   NULL. Also NULL on a read error or out of memory, with errno set. */
+static char *read_message(int fd, size_t max_len, size_t *out_len, int *too_long, int prompt) {
     *too_long = 0;
-    if (isatty(STDIN_FILENO) && !quiet)
+    if (prompt && isatty(fd))
         fprintf(stderr, "Message (Ctrl+D when done):\n");
 
     size_t cap = 1024;
@@ -322,7 +322,7 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long, int ra
     /* read(), not stdio: a FILE buffer would keep a copy of the message
        in ordinary heap memory, unlocked and never wiped */
     for (;;) {
-        if (len + 1 >= cap) {
+        if (len == cap) {
             /* Grow by copying; sodium_free wipes the old buffer */
             char *bigger = sodium_malloc(cap * 2);
             if (!bigger) { sodium_free(buf); return NULL; }
@@ -331,10 +331,10 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long, int ra
             buf = bigger;
             cap *= 2;
         }
-        /* max_len + 2 bytes in all tell a message that is too long */
-        size_t want = cap - 1 - len;
-        if (want > max_len + 2 - len) want = max_len + 2 - len;
-        ssize_t n = read(STDIN_FILENO, buf + len, want);
+        /* max_len + 1 bytes in all tell a message that is too long */
+        size_t want = cap - len;
+        if (want > max_len + 1 - len) want = max_len + 1 - len;
+        ssize_t n = read(fd, buf + len, want);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) {  /* not the end: don't hide a partial message */
             int err = errno;
@@ -344,21 +344,12 @@ static char *read_message(size_t max_len, size_t *out_len, int *too_long, int ra
         }
         if (n == 0) break;
         len += (size_t)n;
-        if (len > max_len + 1) {  /* max_len + 1 is fine if the last is '\n' */
+        if (len > max_len) {
             sodium_free(buf);
             *too_long = 1;
             return NULL;
         }
     }
-
-    if (!raw && len > 0 && buf[len - 1] == '\n')
-        len--;
-    if (len > max_len) {
-        sodium_free(buf);
-        *too_long = 1;
-        return NULL;
-    }
-    buf[len] = '\0';
     *out_len = len;
     return buf;
 }
@@ -428,16 +419,363 @@ static void protect_process(void) {
 #endif
 }
 
-/* To stderr after a mistake, to stdout when asked for (help) */
+/* The command line has steghide's syntax (its commands and option names,
+   for the features ScatterSteg has), so its users find what they know; the
+   wording is ScatterSteg's own. See CLAUDE.md. */
+
+/* The synopsis, to stderr after a mistake; with the options too, to
+   stdout, when asked for (help) */
 static void usage(FILE *out, const char *prog) {
-    fprintf(out, "Usage: %s encode [-r] [-q] -i <cover.png|jpg> -o <output.png|jpg>\n", prog);
-    fprintf(out, "       %s decode [-r] [-q] -i <image.png|jpg>\n", prog);
-    fprintf(out, "       %s info -i <cover.png|jpg>\n", prog);
-    fprintf(out, "       %s passphrase | help | version\n", prog);
-    fprintf(out, "Message is read from stdin. `passphrase` prints a strong random passphrase.\n");
-    fprintf(out, "`info` says whether an image can be a cover, and the longest message it holds.\n");
-    fprintf(out, "Without -r, encode drops one trailing newline and decode adds one; -r keeps the bytes exactly.\n");
-    fprintf(out, "-q prints only prompts for the passphrase, warnings and errors.\n");
+    fprintf(out, "Usage: %s embed -cf <cover.png|jpg> [-ef <file>] [-sf <output.png|jpg>] [options]\n", prog);
+    fprintf(out, "       %s extract -sf <image.png|jpg> [-xf <file>] [options]\n", prog);
+    fprintf(out, "       %s info <image.png|jpg>\n", prog);
+    fprintf(out, "       %s passphrase | encinfo | license | version | help\n", prog);
+    if (out != stdout) return;
+    fprintf(out, "\n"
+                 "embed hides a file (-ef, or standard input) in a cover image, writing\n"
+                 "the result to -sf, or over the cover if there's no -sf. extract gets it\n"
+                 "back: into -xf, else into the file name stored with it, else onto\n"
+                 "standard output (-xf - for that always). The passphrase is always typed\n"
+                 "at the prompt. info says whether an image can be a cover, and how much\n"
+                 "it holds; passphrase prints a strong random passphrase.\n"
+                 "\n"
+                 "  -z, --compress [1-9]   compression level, 9 (the default) smallest\n"
+                 "  -Z, --dontcompress     store the file as is\n"
+                 "  -N, --dontembedname    don't store the file's name\n"
+                 "  -f, --force            replace files that already exist\n"
+                 "  -q, --quiet            print only prompts, warnings and errors\n"
+                 "  -v, --verbose          say what was stored, and how\n"
+                 "Long forms of the others: --embedfile, --coverfile, --stegofile, --extractfile.\n");
+}
+
+enum { CMD_EMBED = 1, CMD_EXTRACT = 2, CMD_INFO = 4 };
+
+typedef struct {
+    const char *short_name, *long_name;
+    int commands;          /* the CMD_* it belongs to */
+    int takes;             /* 0: nothing, 1: a value, 2: a level, if one follows */
+    const char *refused;   /* why ScatterSteg doesn't take it, or NULL */
+} OptionSpec;
+
+static const OptionSpec option_specs[] = {
+    {"-ef", "--embedfile",     CMD_EMBED,               1, NULL},
+    {"-cf", "--coverfile",     CMD_EMBED,               1, NULL},
+    {"-sf", "--stegofile",     CMD_EMBED | CMD_EXTRACT, 1, NULL},
+    {"-xf", "--extractfile",   CMD_EXTRACT,             1, NULL},
+    {"-z",  "--compress",      CMD_EMBED,               2, NULL},
+    {"-Z",  "--dontcompress",  CMD_EMBED,               0, NULL},
+    {"-N",  "--dontembedname", CMD_EMBED,               0, NULL},
+    {"-f",  "--force",         CMD_EMBED | CMD_EXTRACT, 0, NULL},
+    {"-q",  "--quiet",         CMD_EMBED | CMD_EXTRACT, 0, NULL},
+    {"-v",  "--verbose",       CMD_EMBED | CMD_EXTRACT, 0, NULL},
+    {"-p",  "--passphrase",    0, 1, "the passphrase is never taken on the command line, where "
+                                     "other users (ps) and the shell history could read it; "
+                                     "type it at the prompt"},
+    {"-e",  "--encryption",    0, 1, "the encryption is fixed (XSalsa20-Poly1305) and always on "
+                                     "(see encinfo)"},
+    {"-K",  "--nochecksum",    0, 0, "the message is always authenticated (Poly1305), which "
+                                     "checks its integrity; there is no separate checksum"},
+};
+
+typedef struct {
+    const char *embed_file, *cover_file, *stego_file, *extract_file;
+    const char *operand;  /* info's image */
+    int level;            /* compression level 1-9, or 0 for -Z */
+    int no_name, force, quiet, verbose;
+} Options;
+
+/* The options after the command. Prints why and returns -1 if they don't
+   make sense for it. */
+static int parse_options(int cmd, const char *cmd_name, int argc, char *argv[], Options *o) {
+    memset(o, 0, sizeof(*o));
+    o->level = 9;
+    for (int i = 2; i < argc; i++) {
+        const char *a = argv[i];
+        const OptionSpec *spec = NULL;
+        for (size_t k = 0; k < sizeof(option_specs) / sizeof(option_specs[0]); k++)
+            if (!strcmp(a, option_specs[k].short_name) || !strcmp(a, option_specs[k].long_name))
+                spec = &option_specs[k];
+        if (!spec) {
+            if (a[0] == '-' && a[1]) {
+                fprintf(stderr, "Error: unknown option '%s'\n", a);
+                return -1;
+            }
+            if (cmd == CMD_INFO && !o->operand) {
+                o->operand = a;
+                continue;
+            }
+            fprintf(stderr, "Error: unexpected argument '%s'\n", a);
+            return -1;
+        }
+        if (spec->refused) {
+            fprintf(stderr, "Error: %s isn't supported: %s\n", a, spec->refused);
+            return -1;
+        }
+        if (!(spec->commands & cmd)) {
+            fprintf(stderr, "Error: %s is not an option of %s\n", a, cmd_name);
+            return -1;
+        }
+        const char *value = NULL;
+        if (spec->takes == 1) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: %s needs a value\n", a);
+                return -1;
+            }
+            value = argv[++i];
+        }
+        switch (spec->short_name[1]) {
+            case 'e': o->embed_file = value; break;
+            case 'c': o->cover_file = value; break;
+            case 's': o->stego_file = value; break;
+            case 'x': o->extract_file = value; break;
+            case 'z':
+                o->level = 9;
+                if (i + 1 < argc && argv[i + 1][0] >= '1' && argv[i + 1][0] <= '9' && !argv[i + 1][1])
+                    o->level = argv[++i][0] - '0';
+                break;
+            case 'Z': o->level = 0; break;
+            case 'N': o->no_name = 1; break;
+            case 'f': o->force = 1; break;
+            case 'q': o->quiet = 1; break;
+            case 'v': o->verbose = 1; break;
+        }
+    }
+    return 0;
+}
+
+/* Whether a and b name the same existing file */
+static int same_file(const char *a, const char *b) {
+    struct stat sa, sb;
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
+/* Says so and returns 1 if path exists (a dangling link too) and force
+   isn't set: only -f replaces a file */
+static int refuse_existing(const char *path, int force, const char *hint) {
+    struct stat st;
+    if (force || lstat(path, &st) != 0) return 0;
+    fprintf(stderr, "Error: '%s' already exists; use -f to replace it%s\n", path, hint);
+    return 1;
+}
+
+/* atomic_write's writer for a secret: unbuffered, so stdio keeps no copy of
+   it in ordinary heap memory */
+static int write_secret(FILE *fp, const void *ctx) {
+    const Bytes *b = ctx;
+    if (setvbuf(fp, NULL, _IONBF, 0) != 0) return -1;
+    return fwrite(b->buf, 1, b->len, fp) == b->len ? 0 : -1;
+}
+
+static int do_embed(const Options *o) {
+    if (!o->cover_file) {
+        fprintf(stderr, "Error: embed needs a cover image: -cf <cover.png|jpg>\n");
+        return 1;
+    }
+    const char *output = o->stego_file ? o->stego_file : o->cover_file;
+    if (!strcmp(o->cover_file, "-") || !strcmp(output, "-")) {
+        fprintf(stderr, "Error: the cover and the output must be files, not standard "
+                        "input or output\n");
+        return 1;
+    }
+    /* Before the name check, which reads the cover's first bytes: a
+       missing file would otherwise be called a PNG */
+    FILE *in = fopen(o->cover_file, "rb");
+    if (!in) {
+        fprintf(stderr, "Error: could not load '%s': %s\n", o->cover_file, strerror(errno));
+        return 1;
+    }
+    fclose(in);
+    if (!output_name_matches(o->cover_file, output)) return 1;
+    /* Checked again when writing; here, before the passphrase prompt */
+    struct stat out_st;
+    if (stat(output, &out_st) == 0 && !S_ISREG(out_st.st_mode)) {
+        fprintf(stderr, "Error: '%s' exists and is not a regular file\n", output);
+        return 1;
+    }
+    /* Writing over the cover is what embed without -sf is for */
+    if (!same_file(o->cover_file, output) && refuse_existing(output, o->force, "")) return 1;
+
+    /* The message: -ef's file, with its name unless -N, or standard input */
+    int from_stdin = !o->embed_file || !strcmp(o->embed_file, "-");
+    const char *name = NULL;
+    int fd = STDIN_FILENO;
+    if (!from_stdin) {
+        fd = open(o->embed_file, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            fprintf(stderr, "Error: could not read '%s': %s\n", o->embed_file, strerror(errno));
+            return 1;
+        }
+        const char *slash = strrchr(o->embed_file, '/');
+        name = o->no_name ? NULL : slash ? slash + 1 : o->embed_file;
+        if (name && !codec_name_ok(name)) {
+            fprintf(stderr, "Error: the file's name can't be stored with it (at most %d bytes, "
+                            "no control characters); rename it, or use -N\n", CODEC_NAME_MAX);
+            close(fd);
+            return 1;
+        }
+    }
+
+    int status = 1;
+    char *passphrase = NULL, *message = NULL;
+    Cover cover = {0};
+    CodecPrepared *prep = NULL;
+    size_t holds = 0, message_len = 0;
+    int too_long = 0, read_err = 0;
+    CodecEmbedded stored;
+
+    passphrase = read_passphrase("Passphrase: ");
+    if (!passphrase) goto done;
+    if (strlen(passphrase) < PASSPHRASE_MIN_LEN) {
+        fprintf(stderr, "Error: passphrase too short (min %d bytes); "
+                        "`scattersteg passphrase` generates a strong one\n", PASSPHRASE_MIN_LEN);
+        goto done;
+    }
+    char *confirm = read_passphrase("Confirm passphrase: ");
+    if (!confirm) goto done;
+    int match = strcmp(passphrase, confirm) == 0;
+    free_passphrase(confirm);
+    if (!match) {
+        fprintf(stderr, "Error: passphrases do not match\n");
+        goto done;
+    }
+
+    if (cover_load(o->cover_file, &cover) != 0 || cover_check(&cover, o->cover_file) != 0)
+        goto done;
+    if (!o->quiet) fprintf(stderr, "Deriving keys...\n");
+    prep = codec_prepare(&cover.carrier, passphrase);
+    free_passphrase(passphrase);
+    passphrase = NULL;
+    if (!prep) goto done;
+    holds = codec_max_message(prep);
+
+    message = read_message(fd, CODEC_MESSAGE_MAX, &message_len, &too_long, from_stdin && !o->quiet);
+    read_err = errno;  /* before the cleanup below changes it */
+    if (!message) {
+        if (too_long) fprintf(stderr, "Error: message too long (max %u MiB)\n", CODEC_MESSAGE_MAX >> 20);
+        else fprintf(stderr, "Error: could not read the message: %s\n", strerror(read_err));
+        goto done;
+    }
+    warn_if_swappable(message, message_len);
+    /* Empty message: almost always a mistake (nothing piped in, an empty
+       file, Ctrl+D too soon), and a script must not take it for a written
+       output: fail, and write nothing */
+    if (message_len == 0) {
+        fprintf(stderr, "Error: the message is empty; nothing written\n");
+        goto done;
+    }
+
+    int embedded = codec_embed(prep, &cover.carrier, name, (const uint8_t *)message,
+                               (uint32_t)message_len, o->level, &stored);
+    prep = NULL;  /* codec_embed freed it */
+    sodium_free(message);
+    message = NULL;
+    if (embedded == -1) {
+        fprintf(stderr, "Error: message too long for this image, which holds %zu bytes "
+                        "(more if the message compresses well%s)\n",
+                holds, name ? ", less the file name's length" : "");
+        goto done;
+    } else if (embedded != 0) {
+        fprintf(stderr, "Error: allocation failed\n");
+        goto done;
+    }
+    int is_png = cover.png != NULL;
+    int saved = cover_save(&cover, output);  /* frees the cover */
+    cover = (Cover){0};
+    if (saved == SAVE_FAILED) {
+        fprintf(stderr, "Error: could not write '%s': %s\n", output,
+                errno ? strerror(errno) : is_png ? "PNG encoding failed" : "JPEG encoding failed");
+        goto done;
+    }
+    if (saved != 0) {
+        fprintf(stderr, saved == SAVE_UNREADABLE
+                    ? "Error: could not read the output back to check it (out of memory?); "
+                      "nothing written\n"
+                    : "Error: the output didn't read back as written, so the message would be "
+                      "lost; nothing written. Please report this, with the cover if you can\n");
+        goto done;
+    }
+    if (o->verbose)
+        fprintf(stderr, "Stored %zu bytes%s%s%s as %u (%s), in an image that holds %zu as is\n",
+                message_len, name ? " from '" : "", name ? name : "", name ? "'" : "",
+                stored.hidden, stored.compressed ? "compressed" : "not compressed", holds);
+    if (!o->quiet) fprintf(stderr, "Wrote '%s'\n", output);
+    status = 0;
+
+done:
+    if (fd != STDIN_FILENO) close(fd);
+    free_passphrase(passphrase);
+    sodium_free(message);
+    codec_prepared_free(prep);
+    cover_free(&cover);
+    return status;
+}
+
+static int do_extract(const Options *o) {
+    if (!o->stego_file) {
+        fprintf(stderr, "Error: extract needs an image: -sf <image.png|jpg>\n");
+        return 1;
+    }
+    if (!strcmp(o->stego_file, "-")) {
+        fprintf(stderr, "Error: the image must be a file, not standard input\n");
+        return 1;
+    }
+    int to_stdout = o->extract_file && !strcmp(o->extract_file, "-");
+    if (o->extract_file && !to_stdout && refuse_existing(o->extract_file, o->force, ""))
+        return 1;
+
+    char *passphrase = read_passphrase("Passphrase: ");
+    if (!passphrase) return 1;
+    Cover cover;
+    if (cover_load(o->stego_file, &cover) != 0) {
+        free_passphrase(passphrase);
+        return 1;
+    }
+    if (carrier_positions(&cover.carrier) < codec_header_pixels(carrier_channels(&cover.carrier))) {
+        free_passphrase(passphrase);
+        cover_free(&cover);
+        fprintf(stderr, "Error: image too small to contain a message\n");
+        return 1;
+    }
+
+    uint8_t *plaintext = NULL;
+    uint32_t pt_len = 0;
+    char name[CODEC_NAME_MAX + 1] = "";
+    if (!o->quiet) fprintf(stderr, "Deriving keys...\n");
+    int r = codec_decode(&cover.carrier, passphrase, &plaintext, &pt_len, name);
+    free_passphrase(passphrase);
+    cover_free(&cover);
+    if (r == NO_MATCH)
+        fprintf(stderr, "Error: decryption failed — wrong passphrase, "
+                        "or no message in this image\n");
+    if (r != DECODED) return 1;
+
+    /* Where it goes: -xf, else the name stored with it, else stdout */
+    const char *dest = to_stdout ? NULL : o->extract_file ? o->extract_file : name[0] ? name : NULL;
+    int status = 1;
+    warn_if_swappable(plaintext, pt_len);
+    if (o->verbose)
+        fprintf(stderr, "Found %u bytes%s%s%s\n", pt_len, name[0] ? ", stored as '" : "",
+                name, name[0] ? "'" : "");
+    if (!dest) {
+        /* All of it, NULs too, unbuffered (write_all) */
+        if (write_all(STDOUT_FILENO, plaintext, pt_len) != 0)
+            fprintf(stderr, "Error: could not write the message: %s\n", strerror(errno));
+        else
+            status = 0;
+    } else if (dest == name && refuse_existing(name, o->force, ", or -xf to choose another name")) {
+        /* nothing written */
+    } else {
+        Bytes bytes = {(const char *)plaintext, pt_len};
+        if (atomic_write(dest, write_secret, &bytes) != 0) {
+            fprintf(stderr, "Error: could not write '%s': %s\n", dest,
+                    errno ? strerror(errno) : "write failed");
+        } else {
+            if (!o->quiet) fprintf(stderr, "Wrote '%s'\n", dest);
+            status = 0;
+        }
+    }
+    sodium_free(plaintext);
+    return status;
 }
 
 /* info: the cover's format and size, and the longest message it holds,
@@ -485,247 +823,61 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* The usual spellings of help and version, as their commands */
+    /* Each command also as --command, and help as -h */
     const char *cmd = argv[1];
-    if (!strcmp(cmd, "-h") || !strcmp(cmd, "--help")) cmd = "help";
-    else if (!strcmp(cmd, "--version")) cmd = "version";
+    if (!strncmp(cmd, "--", 2) && strcmp(cmd, "--passphrase") != 0) cmd += 2;
+    else if (!strcmp(cmd, "-h")) cmd = "help";
 
-    const char *input  = NULL;
-    const char *output = NULL;
-    int raw = 0;  /* -r: no newline stripped from the message or added to it */
-    int quiet = 0;  /* -q: no progress messages */
-
-    int opt;
-    while ((opt = getopt(argc - 1, argv + 1, "i:o:rq")) != -1) {
-        switch (opt) {
-            case 'i': input  = optarg; break;
-            case 'o': output = optarg; break;
-            case 'r': raw = 1; break;
-            case 'q': quiet = 1; break;
-            default:
-                usage(stderr, argv[0]);
-                return 1;
+    int which = !strcmp(cmd, "embed") ? CMD_EMBED : !strcmp(cmd, "extract") ? CMD_EXTRACT
+              : !strcmp(cmd, "info") ? CMD_INFO : 0;
+    if (which) {
+        Options o;
+        if (parse_options(which, cmd, argc, argv, &o) != 0) {
+            usage(stderr, argv[0]);
+            return 1;
         }
+        if (which == CMD_EMBED) return do_embed(&o);
+        if (which == CMD_EXTRACT) return do_extract(&o);
+        if (!o.operand) {
+            fprintf(stderr, "Error: info needs an image: info <image.png|jpg>\n");
+            usage(stderr, argv[0]);
+            return 1;
+        }
+        return show_info(o.operand);
     }
 
-    /* Anything left over, or an option the command doesn't use, is a typo
-       or a misunderstanding: say so rather than ignore it */
-    int bare = !strcmp(cmd, "passphrase") || !strcmp(cmd, "help") || !strcmp(cmd, "version");
-    int known = bare || !strcmp(cmd, "encode") || !strcmp(cmd, "decode") || !strcmp(cmd, "info");
-    if (known && optind < argc - 1) {
-        fprintf(stderr, "Error: unexpected argument '%s'\n", argv[1 + optind]);
-        usage(stderr, argv[0]);
-        return 1;
-    }
-
-    if (bare && (input || output || raw || quiet)) {
-        fprintf(stderr, "Error: %s takes no options\n", cmd);
-        usage(stderr, argv[0]);
-        return 1;
-    }
-
-    if (strcmp(cmd, "passphrase") == 0) {
-        if (generate_passphrase() != 0) return 1;
-
-    } else if (strcmp(cmd, "help") == 0) {
-        usage(stdout, argv[0]);
-        if (fflush(stdout) != 0) return 1;
-
-    } else if (strcmp(cmd, "version") == 0) {
-        static const char version[] = "scattersteg " SCATTERSTEG_VERSION "\n";
-        if (write_all(STDOUT_FILENO, version, sizeof(version) - 1) != 0) {
-            fprintf(stderr, "Error: could not write the version: %s\n", strerror(errno));
-            return 1;
-        }
-
-    } else if (strcmp(cmd, "info") == 0) {
-        if (!input) {
-            fprintf(stderr, "Error: info requires -i\n");
-            usage(stderr, argv[0]);
-            return 1;
-        }
-        if (output || raw || quiet) {
-            fprintf(stderr, "Error: info takes only -i\n");
-            usage(stderr, argv[0]);
-            return 1;
-        }
-        return show_info(input);
-
-    } else if (strcmp(cmd, "encode") == 0) {
-        if (!input || !output) {
-            fprintf(stderr, "Error: encode requires -i and -o\n");
-            usage(stderr, argv[0]);
-            return 1;
-        }
-        /* Before the name check, which reads the input's first bytes: a
-           missing file would otherwise be called a PNG */
-        FILE *in = fopen(input, "rb");
-        if (!in) {
-            fprintf(stderr, "Error: could not load '%s': %s\n", input, strerror(errno));
-            return 1;
-        }
-        fclose(in);
-        if (!output_name_matches(input, output)) return 1;
-        /* Checked again when writing; here, before the passphrase prompt */
-        struct stat out_st;
-        if (stat(output, &out_st) == 0 && !S_ISREG(out_st.st_mode)) {
-            fprintf(stderr, "Error: '%s' exists and is not a regular file\n", output);
-            return 1;
-        }
-
-        char *passphrase = read_passphrase("Passphrase: ");
-        if (!passphrase) return 1;
-        if (strlen(passphrase) < PASSPHRASE_MIN_LEN) {
-            free_passphrase(passphrase);
-            fprintf(stderr, "Error: passphrase too short (min %d bytes); "
-                            "`scattersteg passphrase` generates a strong one\n", PASSPHRASE_MIN_LEN);
-            return 1;
-        }
-        char *confirm = read_passphrase("Confirm passphrase: ");
-        if (!confirm) {
-            free_passphrase(passphrase);
-            return 1;
-        }
-        if (strcmp(passphrase, confirm) != 0) {
-            free_passphrase(passphrase);
-            free_passphrase(confirm);
-            fprintf(stderr, "Error: passphrases do not match\n");
-            return 1;
-        }
-        free_passphrase(confirm);
-
-        Cover cover;
-        if (cover_load(input, &cover) != 0) {
-            free_passphrase(passphrase);
-            return 1;
-        }
-
-        if (cover_check(&cover, input) != 0) {
-            free_passphrase(passphrase);
-            cover_free(&cover);
-            return 1;
-        }
-
-        Carrier carrier = cover.carrier;
-        if (!quiet) fprintf(stderr, "Deriving keys...\n");
-        CodecPrepared *prep = codec_prepare(&carrier, passphrase);
-        free_passphrase(passphrase);
-        if (!prep) {
-            cover_free(&cover);
-            return 1;
-        }
-
-        int too_long;
-        size_t message_len;
-        size_t holds = codec_max_message(prep);
-        char *message = read_message(CODEC_MESSAGE_MAX, &message_len, &too_long, raw, quiet);
-        int read_err = errno;  /* before the cleanup below changes it */
-        if (!message) {
-            codec_prepared_free(prep);
-            cover_free(&cover);
-            if (too_long) fprintf(stderr, "Error: message too long (max %u MiB)\n", CODEC_MESSAGE_MAX >> 20);
-            else fprintf(stderr, "Error: could not read message: %s\n", strerror(read_err));
-            return 1;
-        }
-        uint32_t msg_len = (uint32_t)message_len;  /* at most CODEC_MESSAGE_MAX */
-        warn_if_swappable(message, msg_len);
-        /* Empty message: almost always a mistake (nothing piped in, an
-           empty file, Ctrl+D too soon), and a script must not take it for
-           a written output: fail, and write nothing */
-        if (msg_len == 0) {
-            codec_prepared_free(prep);
-            sodium_free(message);
-            cover_free(&cover);
-            fprintf(stderr, "Error: the message is empty; nothing written\n");
-            return 1;
-        }
-
-        int embedded = codec_embed(prep, &carrier, (const uint8_t *)message, msg_len);
-        sodium_free(message);
-        if (embedded != 0) {
-            cover_free(&cover);
-            if (embedded == -1)
-                fprintf(stderr, "Error: message too long for this image, which holds %zu bytes "
-                                "(more if the message compresses well)\n", holds);
-            else
-                fprintf(stderr, "Error: allocation failed\n");
-            return 1;
-        }
-        int is_png = cover.png != NULL;
-        int saved = cover_save(&cover, output);  /* frees the cover */
-        if (saved == SAVE_FAILED) {
-            fprintf(stderr, "Error: could not write '%s': %s\n", output,
-                    errno ? strerror(errno) : is_png ? "PNG encoding failed" : "JPEG encoding failed");
-            return 1;
-        }
-        if (saved != 0) {
-            fprintf(stderr, saved == SAVE_UNREADABLE
-                        ? "Error: could not read the output back to check it (out of memory?); "
-                          "nothing written\n"
-                        : "Error: the output didn't read back as written, so the message would be "
-                          "lost; nothing written. Please report this, with the cover if you can\n");
-            return 1;
-        }
-
-    } else if (strcmp(cmd, "decode") == 0) {
-        if (!input) {
-            fprintf(stderr, "Error: decode requires -i\n");
-            usage(stderr, argv[0]);
-            return 1;
-        }
-        if (output) {
-            fprintf(stderr, "Error: decode takes no -o; the message goes to stdout "
-                            "(redirect it with >)\n");
-            usage(stderr, argv[0]);
-            return 1;
-        }
-
-        char *passphrase = read_passphrase("Passphrase: ");
-        if (!passphrase) return 1;
-
-        Cover cover;
-        if (cover_load(input, &cover) != 0) {
-            free_passphrase(passphrase);
-            return 1;
-        }
-        Carrier carrier = cover.carrier;
-        if (carrier_positions(&carrier) < codec_header_pixels(carrier_channels(&carrier))) {
-            free_passphrase(passphrase);
-            cover_free(&cover);
-            fprintf(stderr, "Error: image too small to contain a message\n");
-            return 1;
-        }
-
-        uint8_t *plaintext = NULL;
-        uint32_t pt_len = 0;
-        if (!quiet) fprintf(stderr, "Deriving keys...\n");
-        int r = codec_decode(&carrier, passphrase, &plaintext, &pt_len);
-        free_passphrase(passphrase);
-        cover_free(&cover);
-        if (r == NO_MATCH)
-            fprintf(stderr, "Error: decryption failed — wrong passphrase, "
-                            "or no message in this image\n");
-        if (r != DECODED) return 1;
-
-        warn_if_swappable(plaintext, pt_len);
-        if (pt_len > 0) {  /* empty message: print nothing */
-            /* All of it, NULs too. The newline goes in the same write, so
-               the plaintext buffer has room: open_box allocates pt_len + 1. */
-            if (!raw) plaintext[pt_len] = '\n';
-            if (write_all(STDOUT_FILENO, plaintext, pt_len + !raw) != 0) {
-                /* e.g. a full disk: the message was not saved */
-                fprintf(stderr, "Error: could not write the message: %s\n", strerror(errno));
-                sodium_free(plaintext);
-                return 1;
-            }
-        }
-        sodium_free(plaintext);
-
-    } else {
+    int bare = !strcmp(cmd, "passphrase") || !strcmp(cmd, "encinfo") || !strcmp(cmd, "license") ||
+               !strcmp(cmd, "version") || !strcmp(cmd, "help");
+    if (!bare) {
         fprintf(stderr, "Error: unknown command '%s'\n", argv[1]);
         usage(stderr, argv[0]);
         return 1;
     }
+    if (argc > 2) {
+        fprintf(stderr, "Error: %s takes no options or arguments\n", cmd);
+        usage(stderr, argv[0]);
+        return 1;
+    }
 
+    if (!strcmp(cmd, "passphrase")) return generate_passphrase() == 0 ? 0 : 1;
+    if (!strcmp(cmd, "help")) {
+        usage(stdout, argv[0]);
+        return fflush(stdout) == 0 ? 0 : 1;
+    }
+    const char *text = !strcmp(cmd, "version")
+        ? "scattersteg " SCATTERSTEG_VERSION "\n"
+        : !strcmp(cmd, "encinfo")
+        ? "ScatterSteg always encrypts and authenticates the message with XSalsa20-Poly1305\n"
+          "(libsodium's secretbox), keyed by Argon2id from the passphrase: there is no\n"
+          "algorithm or mode to choose.\n"
+        : "ScatterSteg " SCATTERSTEG_VERSION "\n"
+          "Copyright (C) 2026 Maxime de Montbron\n"
+          "Free software under the GNU Affero General Public License v3.0 or later: you may\n"
+          "use, change and share it on its terms. It comes with NO WARRANTY. See the\n"
+          "LICENSE file, or <https://www.gnu.org/licenses/agpl-3.0.html>.\n";
+    if (write_all(STDOUT_FILENO, text, strlen(text)) != 0) {
+        fprintf(stderr, "Error: could not write: %s\n", strerror(errno));
+        return 1;
+    }
     return 0;
 }

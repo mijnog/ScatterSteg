@@ -80,7 +80,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     /* Hostile decode: never FAILED, and no crash or overread */
     uint8_t *plaintext = NULL;
     uint32_t pt_len = 0;
-    int r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len);
+    char name[CODEC_NAME_MAX + 1];
+    int r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len, name);
     if (r == FAILED) abort();
     if (r == DECODED) sodium_free(plaintext);
 
@@ -92,12 +93,19 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (len == 0) {
             codec_prepared_free(prep);
         } else {
-            if (codec_embed(prep, &cover.carrier, data, len) != 0) abort();
-            r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len);
-            if (r != DECODED || pt_len != len || memcmp(plaintext, data, len) != 0) abort();
-            sodium_free(plaintext);
-            if (codec_decode(&cover.carrier, "wrong horse battery", &plaintext, &pt_len) != NO_MATCH)
-                abort();
+            /* With or without a name, at every compression level */
+            const char *stored = size & 1 ? "fuzz.txt" : NULL;
+            if (codec_embed(prep, &cover.carrier, stored, data, len, (int)(size % 10), NULL) != 0) {
+                if (!stored) abort();  /* with no name, within the limit, it fits */
+            } else {
+                r = codec_decode(&cover.carrier, PASSPHRASE, &plaintext, &pt_len, name);
+                if (r != DECODED || pt_len != len || memcmp(plaintext, data, len) != 0 ||
+                    strcmp(name, stored ? stored : "") != 0)
+                    abort();
+                sodium_free(plaintext);
+                if (codec_decode(&cover.carrier, "wrong horse battery", &plaintext, &pt_len, name) != NO_MATCH)
+                    abort();
+            }
         }
     }
     cover_free(&cover);

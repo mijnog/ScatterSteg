@@ -54,12 +54,12 @@ impl Samples {
         }
     }
 
-    fn decode_rust(&mut self, passphrase: &[u8]) -> Option<Vec<u8>> {
+    fn decode_rust(&mut self, passphrase: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         let d: Option<Decrypted> = codec::decode(&self.carrier(), passphrase).expect("Rust decode failed");
-        d.map(|d| d.plaintext[..d.len].to_vec())
+        d.map(|d| (d.name, d.plaintext.to_vec()))
     }
 
-    fn decode_c(&mut self, passphrase: &[u8]) -> Option<Vec<u8>> {
+    fn decode_c(&mut self, passphrase: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         self.c_cover().decode(passphrase).expect("C decode failed")
     }
 }
@@ -79,19 +79,31 @@ fuzz_target!(init: scattersteg::sodium::init().expect("sodium_init failed"), |da
     let Ok(prepared) = codec::prepare_encode(&s.carrier(), PASSPHRASE) else { return };
     let max = prepared.max_message();
     assert_eq!(s.c_cover().max_message(PASSPHRASE), Some(max), "C and Rust differ on the message limit");
+    // With no name, within the limit, it fits at every compression level
     let message = &data[..data.len().min(max)];
     if message.is_empty() { return; }
-    if prepared.embed(&mut s.carrier(), message).is_err() { panic!("Rust embed failed within the limit"); }
+    let level = data.len() as u32 % 10;
+    if prepared.embed(&mut s.carrier(), b"", message, level).is_err() { panic!("Rust embed failed within the limit"); }
     for decoded in [s.decode_rust(PASSPHRASE), s.decode_c(PASSPHRASE)] {
-        assert_eq!(decoded, Some(message.to_vec()), "a Rust-encoded message didn't decode");
+        assert_eq!(decoded, Some((Vec::new(), message.to_vec())), "a Rust-encoded message didn't decode");
     }
     assert_eq!(s.decode_rust(WRONG), None);
     assert_eq!(s.decode_c(WRONG), None);
 
     // C encodes, both decode
     let mut s = cover.clone();
-    assert!(s.c_cover().embed(PASSPHRASE, message), "C embed failed within the limit");
+    assert!(s.c_cover().embed(PASSPHRASE, b"", message, level), "C embed failed within the limit");
     for decoded in [s.decode_c(PASSPHRASE), s.decode_rust(PASSPHRASE)] {
-        assert_eq!(decoded, Some(message.to_vec()), "a C-encoded message didn't decode");
+        assert_eq!(decoded, Some((Vec::new(), message.to_vec())), "a C-encoded message didn't decode");
+    }
+
+    // And with a name, when it fits: the same name back from both
+    let message = &message[..message.len().saturating_sub(8)];
+    if message.is_empty() { return; }
+    let mut s = cover.clone();
+    if s.c_cover().embed(PASSPHRASE, b"fuzz.txt", message, level) {
+        for decoded in [s.decode_c(PASSPHRASE), s.decode_rust(PASSPHRASE)] {
+            assert_eq!(decoded, Some((b"fuzz.txt".to_vec(), message.to_vec())), "a named message didn't decode");
+        }
     }
 });

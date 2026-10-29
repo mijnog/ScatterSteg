@@ -12,7 +12,7 @@ def job(a):
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if os.path.exists(out): return True
     tmp = out + ".tmp.png"
-    rc, log = E.T.run(["encode", "-i", f"cover/{base}.png", "-o", tmp],
+    rc, log = E.T.run(["embed", "-cf", f"cover/{base}.png", "-sf", tmp, "-Z", "-f"],  # -Z: the payload exactly as sized (compression would shrink it)
                       message=E.msg(int(bpp * E.PIX / 8)), passphrases=[E.PW, E.PW], binary=E.SS)
     if rc != 0: print("FAIL", base, bpp, log.strip().splitlines()[-1][:100], flush=True); return False
     os.rename(tmp, out); return True

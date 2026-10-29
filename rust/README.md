@@ -23,7 +23,7 @@ On purpose:
 - **Files are read whole.** The input is buffered, after its first bytes match
   a PNG or JPEG signature and up to 1 GiB + 64 MiB, where C streamed it. A
   JPEG's coefficients are held twice (libjpeg's and a copy), so its working
-  memory is up to about double the 1 GiB cap. Checking the output, encode
+  memory is up to about double the 1 GiB cap. Checking the output, embed
   holds its bytes twice while it reads them back (C holds them once).
 - **SIGPIPE is ignored** (the Rust runtime does it): a closed stdout is an
   error message and exit 1, not death by signal.
@@ -49,8 +49,8 @@ Needed for compatibility:
   every JPEG Rust writes can be read by C.
 - `check_writable` reads the encoded JPEG back and requires identical
   coefficients, as the C version now does.
-- A passphrase ends at its first NUL, as the C string does: encode refuses
-  one with a NUL, and decode cuts it there, so images made that way still open.
+- A passphrase with a NUL is refused, by embed and extract alike, as the C
+  version would end it there.
 - libjpeg's `error_exit` unwinds through its C frames instead of `longjmp`.
   That needs libjpeg built with unwind tables (the default on x86-64 and
   aarch64 Linux); without them the process aborts.

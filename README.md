@@ -5,9 +5,11 @@
 ScatterSteg hides an encrypted message inside a PNG or JPEG photo. Only someone with the passphrase can read the message, and the photo is changed as little as possible, in the places where changes are hardest to notice, so that it is hard to tell from an ordinary photo.
 
 ```bash
-echo "meet at the old bridge" | ./scattersteg encode -i photo.jpg -o holiday.jpg
-./scattersteg decode -i holiday.jpg
+./scattersteg embed -cf photo.jpg -ef plans.txt -sf holiday.jpg
+./scattersteg extract -sf holiday.jpg        # writes plans.txt
 ```
+
+The commands and options are steghide's, for everything ScatterSteg does, so steghide users already know them (see [Coming from steghide](#coming-from-steghide)).
 
 ## How safe is it?
 
@@ -24,23 +26,27 @@ sudo apt install libsodium-dev libpng-dev libjpeg-dev   # Ubuntu/Debian
 make
 ```
 
-This builds `./scattersteg`. There is also a Rust version in [`rust/`](rust/README.md) with the same commands and file format (an image written by one decodes with the other): `cd rust && cargo build --release`, which also needs pkg-config and libclang.
+This builds `./scattersteg`. There is also a Rust version in [`rust/`](rust/README.md) with the same commands and file format (an image written by one extracts with the other): `cd rust && cargo build --release`, which also needs pkg-config and libclang.
 
 ## Use
 
 ```bash
-./scattersteg passphrase                                  # print a strong random passphrase
-./scattersteg info -i cover.png                           # can it be a cover, and how much does it hold?
-echo "your message" | ./scattersteg encode -i cover.png -o secret.png
-./scattersteg decode -i secret.png
+./scattersteg passphrase                                 # print a strong random passphrase
+./scattersteg info cover.png                             # can it be a cover, and how much does it hold?
+./scattersteg embed -cf cover.png -ef secret.txt -sf out.png
+./scattersteg extract -sf out.png                        # restores secret.txt
+echo "a short note" | ./scattersteg embed -cf cover.png -sf note.png
+./scattersteg extract -sf note.png                       # prints it
 ```
 
-- **The passphrase** is always typed at the terminal, with echo off, so it never appears in the process list or your shell history. A new image needs one of at least 12 bytes; `scattersteg passphrase` prints a random one of about 124 bits.
-- **The message** is read from standard input: pipe it in, or type it and press Ctrl+D. An empty message is an error.
-- **Files, byte for byte:** use `-r` on both commands, as in `encode -r -i cover.jpg -o out.jpg < secret.txt` and `decode -r -i out.jpg > secret.txt`. Without `-r`, encode drops one trailing newline and decode adds one, which suits typed text.
-- **Quiet:** `-q` on encode or decode drops the progress messages ("Deriving keys..." and the prompt to type a message), for scripts. The passphrase prompts, warnings and errors remain.
+- **The passphrase** is always typed at the terminal, with echo off, so it never appears in the process list or your shell history; `-p` is refused for that reason. A new image needs one of at least 12 bytes; `scattersteg passphrase` prints a random one of about 124 bits.
+- **The message** is the file given with `-ef`, or standard input without it (pipe it in, or type it and press Ctrl+D). It is kept byte for byte. An empty message is an error.
+- **The file's name** is stored with it, encrypted, and `extract` restores the file under that name in the current directory; `-N` leaves the name out. `extract -xf <file>` chooses where it goes, and `-xf -` prints it. A message from standard input, or one stored with `-N`, is printed.
+- **Existing files** are never replaced unless you add `-f`. `embed` without `-sf` writes over the cover itself, which is what it's asked to do.
+- **Compression:** `-z 1`…`-z 9` sets the level (9, the default, is smallest); `-Z` stores the message as it is.
+- **Quiet and verbose:** `-q` drops the progress messages ("Deriving keys...", "Wrote ...", and the prompt to type a message); the passphrase prompts, warnings and errors remain. `-v` also says how much was stored, and whether it was compressed.
 - **The output** has the cover's format and metadata: a progressive JPEG stays progressive, a grayscale PNG stays grayscale, and EXIF, ICC profiles and text are kept.
-- **Nothing is written unless it will decode.** The output is built in memory and read back first; if a decoder wouldn't see exactly what was embedded, encode fails and writes nothing. An existing file is replaced in one step, so a failed or interrupted encode never destroys it.
+- **Nothing is written unless it will decode.** The output is built in memory and read back first; if a decoder wouldn't see exactly what was embedded, `embed` fails and writes nothing. An existing file is replaced in one step, so a failed or interrupted `embed` never destroys it.
 
 ### Choosing a cover
 
@@ -62,16 +68,18 @@ ScatterSteg refuses a cover rather than produce an output that would give it awa
 
 ### Coming from steghide
 
-| steghide | ScatterSteg |
-|---|---|
-| `steghide embed -cf cover.jpg -ef secret.txt -sf out.jpg` | `./scattersteg encode -r -i cover.jpg -o out.jpg < secret.txt` |
-| `steghide extract -sf out.jpg -xf secret.txt` | `./scattersteg decode -r -i out.jpg > secret.txt` |
-| `-p passphrase` | not accepted: typed at the terminal instead |
-| `steghide info cover.jpg` | `./scattersteg info -i cover.jpg`: whether it can be a cover, and its capacity. It can't say whether an image holds a message: nothing can, without the passphrase. |
-| `-z`, `-Z` | none needed: the message is always compressed when that makes it shorter |
-| `-e`, `-N`, `-K` | none: the encryption is fixed, and no filename is stored |
+The commands are the same: `embed`, `extract`, `info`, `encinfo`, `version`, `license` and `help` (each also as `--embed` and so on), with the same option names: `-ef`, `-cf`, `-sf`, `-xf`, `-z`, `-Z`, `-N`, `-f`, `-q`, `-v` and their long forms. A steghide command line works by changing `steghide` to `scattersteg`, except where ScatterSteg deliberately differs:
 
-ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read the other's images. Every encode and decode takes about 0.2 s, on purpose: that is the cost that slows down passphrase guessing.
+| | ScatterSteg |
+|---|---|
+| `-p <passphrase>` | refused: the passphrase is always typed at the prompt, never visible to other users or saved in shell history |
+| `-e` (choose or turn off encryption), `-K` (no checksum) | refused: the encryption is fixed (XSalsa20-Poly1305, see `encinfo`), and every message is authenticated |
+| `-cf -` or `-sf -` (cover from standard input, output to standard output) | not supported: the cover and the output are files |
+| an existing output file | refused unless `-f`; there is no yes/no question |
+| `info` | says whether the image can be a cover, and its capacity. It doesn't offer to look for a message: without the passphrase, nothing can tell. |
+| `passphrase` | an extra command: prints a strong random passphrase |
+
+ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read the other's images. Every `embed` and `extract` takes about 0.2 s, on purpose: that is the cost that slows down passphrase guessing.
 
 ## How it works
 

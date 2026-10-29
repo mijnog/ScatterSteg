@@ -49,7 +49,7 @@ def job(args):
     m = msg(nbytes)
     if tool == "ss":
         tmp = out + ".tmp." + ext
-        rc, log = T.run(["encode", "-i", cover, "-o", tmp], message=m, passphrases=[PW, PW], binary=SS)
+        rc, log = T.run(["embed", "-cf", cover, "-sf", tmp, "-Z", "-f"], message=m, passphrases=[PW, PW], binary=SS)  # -Z: the payload exactly as sized (compression would shrink it)
         if rc != 0 or not os.path.exists(tmp):
             print("FAIL", tool, kind, tag, base, log.strip().splitlines()[-1][:80], flush=True); return False
         os.rename(tmp, out); return True

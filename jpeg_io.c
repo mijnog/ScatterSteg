@@ -135,7 +135,8 @@ static JUniward *juniward_component(JpegImage *j, int ci) {
         quant[k] = comp->quant_table && comp->quant_table->quantval[k] ? comp->quant_table->quantval[k] : 1;
     }
     size_t pw = (size_t)w * 8;
-    float *pixels = pw && h <= SIZE_MAX / sizeof(float) / 64 / pw ? malloc(pw * h * 8 * sizeof(float)) : NULL;
+    if ((uint64_t)w * h * 64 > JUNIWARD_MAX_PIXELS) return NULL;
+    float *pixels = pw ? malloc(pw * h * 8 * sizeof(float)) : NULL;
     if (!pixels) return NULL;
     for (JDIMENSION by = 0; by < h; by++) {
         JBLOCKARRAY row = s->mem->access_virt_barray((j_common_ptr)s, j->coefs[ci], by, 1, FALSE);

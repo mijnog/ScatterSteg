@@ -66,6 +66,11 @@ float *distortion_suniward(const Image *img);
    conversion and upsampling. quant is in natural (row-major) order. NULL
    if out of memory. */
 typedef struct JUniward JUniward;
+/* Its planes take about 28 bytes per pixel of the component, so J-UNIWARD
+   builds refuse a component larger than this (about 1.9 GB): the JPEG
+   loader's own limits allow far more, which is fine for UERD's one value
+   per block but not here */
+#define JUNIWARD_MAX_PIXELS ((uint64_t)1 << 26)
 JUniward *juniward_new(const float *pixels, uint32_t w, uint32_t h, const uint16_t quant[64]);
 /* The cost of changing coefficient k (natural order, 1-63) of block
    (bx, by) by 1 */

@@ -465,6 +465,17 @@ static void check_juniward(const char *path) {
     jpeg_free(j);
 }
 
+/* J-UNIWARD builds refuse a component past JUNIWARD_MAX_PIXELS, whose
+   planes would take gigabytes; other builds load it */
+static void test_juniward_size_cap(void) {
+    const char *p = path_in_dir("huge.jpg");
+    CHECK(make_fixture(p, "8200 8200 1 50") == 0);  /* just over 2^26 pixels */
+    JpegImage *j = jpeg_load(p);
+    CHECK((j == NULL) == (SCATTERSTEG_JPEG_COSTS == COSTS_JUNIWARD));
+    jpeg_free(j);
+    remove(p);
+}
+
 /* The build's JPEG costs: UERD, or J-UNIWARD (see distortion.h) */
 static void test_uerd_costs(void) {
     const char *gray = path_in_dir("uerd-gray.jpg"), *color = path_in_dir("uerd-color.jpg");
@@ -530,6 +541,7 @@ int main(void) {
     RUN(test_hollow_frame_refused);
     RUN(test_unrewritable_refused);
     RUN(test_uerd_costs);
+    RUN(test_juniward_size_cap);
     RUN(test_fuzz_regressions);
 
     char cmd[300];

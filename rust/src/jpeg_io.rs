@@ -314,6 +314,7 @@ impl JpegImage {
             // and, at a quarter weight, its 8 neighbours: cheap in busy
             // blocks and low frequencies, dear in smooth ones
             // Or J-UNIWARD, in builds with it (see distortion)
+            if cfg!(jpeg_costs = "juniward") && wb * hb * 64 > crate::distortion::JUNIWARD_MAX_PIXELS { return false; }
             let juniward = cfg!(jpeg_costs = "juniward").then(|| {
                 let quant: [u16; 64] = std::array::from_fn(|k| quant.map_or(1, |t| if t.quantval[k] > 0 { t.quantval[k] } else { 1 }));
                 let pw = wb * 8;

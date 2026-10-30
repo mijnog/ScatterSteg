@@ -146,6 +146,10 @@ pub fn suniward(px: &[u8], w: usize, h: usize, ch: usize) -> Vec<f32> {
     wavelet_costs(px, w, h, ch, true)
 }
 
+/// J-UNIWARD's planes take about 28 bytes per pixel of the component, so
+/// builds with it refuse a component larger than this (see distortion.h)
+pub const JUNIWARD_MAX_PIXELS: usize = 1 << 26;
+
 /// The 23 x 23 window of sub-band coefficients a block's change reaches
 const REACH: usize = 8 + TAPS - 1;
 

@@ -29,11 +29,18 @@ const PASSPHRASE_MIN_LEN: usize = 12;
 // wiped when dropped. They are read and written with read() and write(),
 // never through a stdio buffer, which would keep a copy outside it.
 
-/// Terminal settings to put back if a signal kills us while echo is off
+/// Terminal settings to put back if a signal stops or kills us while echo
+/// is off
 static TTY_RESTORE_FD: AtomicI32 = AtomicI32::new(-1);
 static mut TTY_RESTORE: MaybeUninit<libc::termios> = MaybeUninit::uninit();
 
 const RESTORE_SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP];
+
+/// Ctrl+Z, or touching the terminal from the background. While we're
+/// stopped the shell turns echo back on, and fg doesn't turn it off again:
+/// so we put the terminal back ourselves, stop, and prompt again on resume.
+const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU];
+static TTY_STOP_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 /// Restore echo, then die from the same signal. SA_RESETHAND has already
 /// reinstated the default action, which runs once this handler returns.
@@ -44,6 +51,12 @@ extern "C" fn restore_tty_and_die(sig: libc::c_int) {
         let _ = libc::write(fd, b"\n".as_ptr().cast(), 1);
         libc::raise(sig);
     }
+}
+
+/// Installed without SA_RESTART, so the read() waiting at the prompt returns
+/// EINTR and the reading loop sees this
+extern "C" fn note_stop_signal(sig: libc::c_int) {
+    TTY_STOP_SIGNAL.store(sig, Ordering::Relaxed);
 }
 
 fn write_fd(fd: RawFd, mut data: &[u8]) -> io::Result<()> {
@@ -66,6 +79,102 @@ fn errno_message(e: &io::Error) -> String {
     }
 }
 
+enum Prompt {
+    Ok(Secret),
+    Failed,
+    TooLong,
+    Stopped,
+}
+
+/// One go at the prompt: echo off, read up to Enter, echo back on. Ok holds
+/// the line without its newline. On Stopped, TTY_STOP_SIGNAL says which signal.
+fn prompt_once(fd: RawFd, prompt: &str) -> Prompt {
+    let mut old = MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, old.as_mut_ptr()) } != 0 { return Prompt::Failed; }
+    let old = unsafe { old.assume_init() };
+
+    // Ctrl+C and friends would otherwise leave the terminal without echo.
+    // A signal we were started ignoring (nohup, a script) stays ignored: it
+    // can't kill or stop us, so there's nothing to restore.
+    TTY_RESTORE_FD.store(fd, Ordering::Relaxed);
+    unsafe { (&raw mut TTY_RESTORE).cast::<libc::termios>().write(old) };
+    TTY_STOP_SIGNAL.store(0, Ordering::Relaxed);
+    let mut saved_kill = [unsafe { std::mem::zeroed::<libc::sigaction>() }; 4];
+    let mut saved_stop = [unsafe { std::mem::zeroed::<libc::sigaction>() }; 3];
+    let mut on_kill: libc::sigaction = unsafe { std::mem::zeroed() };
+    on_kill.sa_sigaction = restore_tty_and_die as *const () as usize;
+    on_kill.sa_flags = libc::SA_RESETHAND;
+    let mut on_stop: libc::sigaction = unsafe { std::mem::zeroed() };
+    on_stop.sa_sigaction = note_stop_signal as *const () as usize;
+    unsafe {
+        libc::sigemptyset(&mut on_kill.sa_mask);
+        libc::sigemptyset(&mut on_stop.sa_mask);
+    }
+    for (i, &sig) in RESTORE_SIGNALS.iter().enumerate() {
+        unsafe {
+            libc::sigaction(sig, std::ptr::null(), &mut saved_kill[i]);
+            if saved_kill[i].sa_sigaction != libc::SIG_IGN { libc::sigaction(sig, &on_kill, std::ptr::null_mut()); }
+        }
+    }
+    for (i, &sig) in STOP_SIGNALS.iter().enumerate() {
+        unsafe {
+            libc::sigaction(sig, std::ptr::null(), &mut saved_stop[i]);
+            if saved_stop[i].sa_sigaction != libc::SIG_IGN { libc::sigaction(sig, &on_stop, std::ptr::null_mut()); }
+        }
+    }
+
+    let stopped = || TTY_STOP_SIGNAL.load(Ordering::Relaxed) != 0;
+    let mut status = Prompt::Failed;
+    let mut silent = old;
+    silent.c_lflag &= !libc::ECHO;
+    // If echo can't be turned off, don't ask: what's typed would show
+    if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &silent) } != 0 {
+        if stopped() { status = Prompt::Stopped; } // in the background
+    } else {
+        let _ = write_fd(fd, prompt.as_bytes());
+        // One byte at a time with read(), straight into locked memory, so no
+        // copy of the passphrase is left in a buffer of ours. Grows by
+        // copying; Secret wipes the old buffer.
+        let mut buf = Secret::new(256);
+        let mut len = 0;
+        while let Some(b) = buf.as_mut() {
+            if stopped() {
+                status = Prompt::Stopped;
+                break;
+            }
+            if len + 1 >= b.len() {
+                let mut bigger = Secret::new(b.len() + 256);
+                if let Some(bg) = bigger.as_mut() { bg[..len].copy_from_slice(&b[..len]); }
+                buf = bigger;
+                continue;
+            }
+            let n = unsafe { libc::read(fd, b[len..].as_mut_ptr().cast(), 1) };
+            if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted { continue; }
+            if n <= 0 { break; } // error, hangup, or Ctrl+D before Enter
+            if b[len] == b'\n' {
+                status = if len > PASSPHRASE_MAX_LEN {
+                    Prompt::TooLong
+                } else {
+                    Secret::from_slice(&b[..len]).map_or(Prompt::Failed, Prompt::Ok)
+                };
+                break;
+            }
+            // Past the limit, read on to the newline without storing more
+            if len <= PASSPHRASE_MAX_LEN { len += 1; }
+        }
+    }
+
+    unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &old) };
+    for (i, &sig) in RESTORE_SIGNALS.iter().enumerate() {
+        unsafe { libc::sigaction(sig, &saved_kill[i], std::ptr::null_mut()) };
+    }
+    for (i, &sig) in STOP_SIGNALS.iter().enumerate() {
+        unsafe { libc::sigaction(sig, &saved_stop[i], std::ptr::null_mut()) };
+    }
+    let _ = write_fd(fd, b"\n");
+    status
+}
+
 /// Read a passphrase from the terminal with echo off. On EOF or error,
 /// prints why and returns None. One with a NUL byte (typed as Ctrl+@, or
 /// pasted) is refused: the C version would end it there, silently cutting it
@@ -75,81 +184,28 @@ fn read_passphrase(prompt: &str) -> Option<Secret> {
     if scattersteg::fault::should_fail("fopen") { return fail(); }
     let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
     if fd < 0 { return fail(); }
-    let mut old = MaybeUninit::<libc::termios>::uninit();
-    if unsafe { libc::tcgetattr(fd, old.as_mut_ptr()) } != 0 {
-        unsafe { libc::close(fd) };
-        return fail();
-    }
-    let old = unsafe { old.assume_init() };
-
-    // Ctrl+C and friends would otherwise leave the terminal without echo.
-    // A signal we were started ignoring (nohup, a script) stays ignored: it
-    // can't kill us, so there's nothing to restore.
-    TTY_RESTORE_FD.store(fd, Ordering::Relaxed);
-    unsafe { (&raw mut TTY_RESTORE).cast::<libc::termios>().write(old) };
-    let mut saved = [unsafe { std::mem::zeroed::<libc::sigaction>() }; 4];
-    let mut on_signal: libc::sigaction = unsafe { std::mem::zeroed() };
-    on_signal.sa_sigaction = restore_tty_and_die as *const () as usize;
-    on_signal.sa_flags = libc::SA_RESETHAND;
-    unsafe { libc::sigemptyset(&mut on_signal.sa_mask) };
-    for (i, &sig) in RESTORE_SIGNALS.iter().enumerate() {
-        unsafe {
-            libc::sigaction(sig, std::ptr::null(), &mut saved[i]);
-            if saved[i].sa_sigaction != libc::SIG_IGN { libc::sigaction(sig, &on_signal, std::ptr::null_mut()); }
+    let status = loop {
+        match prompt_once(fd, prompt) {
+            // Stop for real; on resume, ask again
+            Prompt::Stopped => unsafe { libc::raise(TTY_STOP_SIGNAL.load(Ordering::Relaxed)); },
+            other => break other,
         }
-    }
-
-    let mut silent = old;
-    silent.c_lflag &= !libc::ECHO;
-    unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &silent) };
-    let _ = write_fd(fd, prompt.as_bytes());
-
-    // One byte at a time, unbuffered, so no copy of the passphrase is left
-    // in a buffer of ours. Grows by copying; Secret wipes the old buffer.
-    let mut buf = Secret::new(256);
-    let mut c = 0u8;
-    let mut len = 0;
-    let mut hit_eof = false;
-    while let Some(b) = buf.as_mut() {
-        let n = unsafe { libc::read(fd, (&raw mut c).cast(), 1) };
-        if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted { continue; }
-        if n <= 0 {
-            hit_eof = true;
-            break;
-        }
-        if c == b'\n' { break; }
-        if len + 1 >= b.len() {
-            let mut bigger = Secret::new(b.len() + 256);
-            if let Some(bg) = bigger.as_mut() { bg[..len].copy_from_slice(&b[..len]); }
-            buf = bigger;
-            if buf.is_none() { break; }
-        }
-        buf.as_mut().unwrap()[len] = c;
-        len += 1;
-    }
-    sodium::memzero(std::slice::from_mut(&mut c)); // the last byte read
-
-    unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &old) };
-    for (i, &sig) in RESTORE_SIGNALS.iter().enumerate() {
-        unsafe { libc::sigaction(sig, &saved[i], std::ptr::null_mut()) };
-    }
-    let _ = write_fd(fd, b"\n");
+    };
     unsafe { libc::close(fd) };
 
-    let Some(buf) = buf else { return fail() }; // out of memory
-    if hit_eof && len == 0 { return fail(); } // Ctrl+D
-    if len > PASSPHRASE_MAX_LEN {
-        scattersteg::errln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
-        return None;
-    }
-    if buf[..len].contains(&0) {
+    let buf = match status {
+        Prompt::Ok(buf) => buf,
+        Prompt::Failed | Prompt::Stopped => return fail(), // out of memory, Ctrl+D, or no echo control
+        Prompt::TooLong => {
+            scattersteg::errln!("Error: passphrase too long (max {PASSPHRASE_MAX_LEN} bytes)");
+            return None;
+        }
+    };
+    if buf.contains(&0) {
         scattersteg::errln!("Error: the passphrase contains a NUL byte (Ctrl+@), which would cut it short");
         return None;
     }
-    match Secret::from_slice(&buf[..len]) {
-        Some(p) => Some(p),
-        None => fail(),
-    }
+    Some(buf)
 }
 
 enum ReadError {

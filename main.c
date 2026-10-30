@@ -43,12 +43,20 @@ static void free_passphrase(char *passphrase) {
     sodium_free(passphrase);
 }
 
-/* Terminal settings to put back if a signal kills us while echo is off */
+/* Terminal settings to put back if a signal stops or kills us while echo
+   is off */
 static int tty_restore_fd = -1;
 static struct termios tty_restore;
 
 static const int restore_signals[] = {SIGINT, SIGQUIT, SIGTERM, SIGHUP};
 #define N_RESTORE_SIGNALS (sizeof(restore_signals) / sizeof(restore_signals[0]))
+
+/* Ctrl+Z, or touching the terminal from the background. While we're
+   stopped the shell turns echo back on, and fg doesn't turn it off again:
+   so we put the terminal back ourselves, stop, and prompt again on resume. */
+static const int stop_signals[] = {SIGTSTP, SIGTTIN, SIGTTOU};
+#define N_STOP_SIGNALS (sizeof(stop_signals) / sizeof(stop_signals[0]))
+static volatile sig_atomic_t tty_stop_signal;
 
 /* Restore echo, then die from the same signal. SA_RESETHAND has already
    reinstated the default action, which runs once this handler returns. */
@@ -56,6 +64,106 @@ static void restore_tty_and_die(int sig) {
     tcsetattr(tty_restore_fd, TCSANOW, &tty_restore);
     if (write(tty_restore_fd, "\n", 1) < 0) { /* nothing to do */ }
     raise(sig);
+}
+
+/* Installed without SA_RESTART, so the read() waiting at the prompt returns
+   EINTR and the reading loop sees this */
+static void note_stop_signal(int sig) {
+    tty_stop_signal = sig;
+}
+
+enum { PROMPT_OK, PROMPT_FAILED, PROMPT_TOO_LONG, PROMPT_STOPPED };
+
+/* One go at the prompt: echo off, read up to Enter, echo back on. On
+   PROMPT_OK the line, without its newline and NUL-terminated, is in *out
+   for sodium_free. On PROMPT_STOPPED, tty_stop_signal says which signal. */
+static int prompt_once(FILE *tty, const char *prompt, char **out, size_t *out_len) {
+    int fd = fileno(tty);
+    struct termios old, silent;
+    if (tcgetattr(fd, &old) != 0) return PROMPT_FAILED;
+
+    /* Ctrl+C and friends would otherwise leave the terminal without echo.
+       A signal we were started ignoring (nohup, a script) stays ignored:
+       it can't kill or stop us, so there's nothing to restore. */
+    tty_restore_fd = fd;
+    tty_restore = old;
+    tty_stop_signal = 0;
+    struct sigaction on_kill = {.sa_handler = restore_tty_and_die, .sa_flags = SA_RESETHAND};
+    struct sigaction on_stop = {.sa_handler = note_stop_signal};
+    struct sigaction saved_kill[N_RESTORE_SIGNALS], saved_stop[N_STOP_SIGNALS];
+    sigemptyset(&on_kill.sa_mask);
+    sigemptyset(&on_stop.sa_mask);
+    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++) {
+        sigaction(restore_signals[i], NULL, &saved_kill[i]);
+        if (saved_kill[i].sa_handler != SIG_IGN)
+            sigaction(restore_signals[i], &on_kill, NULL);
+    }
+    for (size_t i = 0; i < N_STOP_SIGNALS; i++) {
+        sigaction(stop_signals[i], NULL, &saved_stop[i]);
+        if (saved_stop[i].sa_handler != SIG_IGN)
+            sigaction(stop_signals[i], &on_stop, NULL);
+    }
+
+    int status = PROMPT_FAILED;
+    size_t cap = PASSPHRASE_CHUNK;
+    size_t len = 0;
+    char *buf = NULL;
+    silent = old;
+    silent.c_lflag &= ~ECHO;
+    /* If echo can't be turned off, don't ask: what's typed would show */
+    if (tcsetattr(fd, TCSAFLUSH, &silent) != 0) {
+        if (tty_stop_signal) status = PROMPT_STOPPED;  /* in the background */
+        goto restore;
+    }
+    fputs(prompt, tty);
+    fflush(tty);
+
+    /* One byte at a time with read(), straight into locked memory: stdio,
+       even unbuffered, passes each byte through a buffer of its own, which
+       nothing wipes */
+    buf = sodium_malloc(cap);
+    while (buf) {
+        if (tty_stop_signal) {
+            status = PROMPT_STOPPED;
+            break;
+        }
+        if (len + 1 >= cap) {
+            /* Grow by copying; sodium_free wipes the old buffer */
+            char *bigger = sodium_malloc(cap + PASSPHRASE_CHUNK);
+            if (bigger) memcpy(bigger, buf, len);
+            sodium_free(buf);
+            buf = bigger;
+            cap += PASSPHRASE_CHUNK;
+            continue;
+        }
+        ssize_t n = read(fd, buf + len, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;  /* error, hangup, or Ctrl+D before Enter */
+        if (buf[len] == '\n') {
+            status = len > PASSPHRASE_MAX_LEN ? PROMPT_TOO_LONG : PROMPT_OK;
+            break;
+        }
+        /* Past the limit, read on to the newline without storing more */
+        if (len <= PASSPHRASE_MAX_LEN) len++;
+    }
+
+restore:
+    tcsetattr(fd, TCSAFLUSH, &old);
+    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++)
+        sigaction(restore_signals[i], &saved_kill[i], NULL);
+    for (size_t i = 0; i < N_STOP_SIGNALS; i++)
+        sigaction(stop_signals[i], &saved_stop[i], NULL);
+    fputs("\n", tty);
+    fflush(tty);
+
+    if (status != PROMPT_OK) {
+        sodium_free(buf);
+        return status;
+    }
+    buf[len] = '\0';
+    *out = buf;
+    *out_len = len;
+    return PROMPT_OK;
 }
 
 /* Read a passphrase from the terminal with echo off. Returns it in a heap
@@ -68,79 +176,21 @@ static char *read_passphrase(const char *prompt) {
         fprintf(stderr, "Error: could not read passphrase\n");
         return NULL;
     }
-    /* Unbuffered, so no copy of the passphrase is left in stdio's buffer */
+    /* Unbuffered, so the prompt shows as soon as it's written, flushed or
+       not (the passphrase itself never goes through stdio) */
     setvbuf(tty, NULL, _IONBF, 0);
-
-    int fd = fileno(tty);
-    struct termios old, silent;
-    if (tcgetattr(fd, &old) != 0) {
-        fclose(tty);
-        fprintf(stderr, "Error: could not read passphrase\n");
-        return NULL;
-    }
-
-    /* Ctrl+C and friends would otherwise leave the terminal without echo.
-       A signal we were started ignoring (nohup, a script) stays ignored:
-       it can't kill us, so there's nothing to restore. */
-    tty_restore_fd = fd;
-    tty_restore = old;
-    struct sigaction on_signal = {.sa_handler = restore_tty_and_die, .sa_flags = SA_RESETHAND};
-    struct sigaction saved[N_RESTORE_SIGNALS];
-    sigemptyset(&on_signal.sa_mask);
-    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++) {
-        sigaction(restore_signals[i], NULL, &saved[i]);
-        if (saved[i].sa_handler != SIG_IGN)
-            sigaction(restore_signals[i], &on_signal, NULL);
-    }
-
-    silent = old;
-    silent.c_lflag &= ~ECHO;
-    tcsetattr(fd, TCSAFLUSH, &silent);
-
-    fputs(prompt, tty);
-    fflush(tty);
-
-    /* One byte at a time with read(): even unbuffered, stdio passes each
-       byte through a buffer of its own, which nothing wipes */
-    size_t cap = PASSPHRASE_CHUNK;
+    char *buf = NULL;
     size_t len = 0;
-    char *buf = sodium_malloc(cap);
-    unsigned char c = 0;
-    int hit_eof = 0;
-    while (buf) {
-        ssize_t n = read(fd, &c, 1);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            hit_eof = 1;
-            break;
-        }
-        if (c == '\n') break;
-        if (len + 1 >= cap) {
-            /* Grow by copying; sodium_free wipes the old buffer */
-            char *bigger = sodium_malloc(cap + PASSPHRASE_CHUNK);
-            if (bigger) memcpy(bigger, buf, len);
-            sodium_free(buf);
-            buf = bigger;
-            cap += PASSPHRASE_CHUNK;
-            if (!buf) break;
-        }
-        buf[len++] = (char)c;
-    }
-    sodium_memzero(&c, sizeof c);  /* the last byte read */
-
-    tcsetattr(fd, TCSAFLUSH, &old);
-    for (size_t i = 0; i < N_RESTORE_SIGNALS; i++)
-        sigaction(restore_signals[i], &saved[i], NULL);
-    fputs("\n", tty);
+    int status;
+    while ((status = prompt_once(tty, prompt, &buf, &len)) == PROMPT_STOPPED)
+        raise(tty_stop_signal);  /* stop for real; on resume, ask again */
     fclose(tty);
 
-    if (!buf || (hit_eof && len == 0)) {  /* out of memory, or Ctrl+D */
-        sodium_free(buf);
+    if (status == PROMPT_FAILED) {  /* out of memory, Ctrl+D, or no echo control */
         fprintf(stderr, "Error: could not read passphrase\n");
         return NULL;
     }
-    if (len > PASSPHRASE_MAX_LEN) {
-        sodium_free(buf);
+    if (status == PROMPT_TOO_LONG) {
         fprintf(stderr, "Error: passphrase too long (max %d bytes)\n", PASSPHRASE_MAX_LEN);
         return NULL;
     }
@@ -150,7 +200,6 @@ static char *read_passphrase(const char *prompt) {
                         "which would cut it short\n");
         return NULL;
     }
-    buf[len] = '\0';
     return buf;
 }
 

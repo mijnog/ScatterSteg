@@ -1590,6 +1590,113 @@ class CliTest(CliBase):
                 self.assertTrue(os.WIFSIGNALED(status))
                 os.close(master)
 
+    def _read_until(self, master, out, want):
+        deadline = time.monotonic() + TIMEOUT
+        while want not in out and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.5)[0]:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+        return out
+
+    def _drain_and_wait(self, master, pid, out=b""):
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+        _, status = os.waitpid(pid, 0)
+        os.close(master)
+        return status, out.decode(errors="replace")
+
+    def test_ctrl_z_at_prompt_keeps_echo_off(self):
+        # Stopped at the prompt, it must give echo back; the shell turns echo
+        # on while it's stopped and fg doesn't undo that, so on resume it
+        # must turn echo off and ask again, or the passphrase would show.
+        # Run as a shell would: in a process group of its own with a parent
+        # in the session, or the kernel ignores Ctrl+Z (orphaned group).
+        rfd, wfd = os.pipe()
+        pid, master = pty.fork()
+        if pid == 0:
+            try:
+                child = os.fork()
+                if child == 0:
+                    os.setpgid(0, 0)
+                    exec_or_exit([BINARY, "extract", "-sf", self.cover])
+                os.setpgid(child, child)
+                os.tcsetpgrp(0, child)
+                os.write(wfd, str(child).encode())
+                os.close(wfd)
+                os._exit(os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]))
+            finally:
+                os._exit(127)
+        os.close(wfd)
+        steg_pid = int(os.read(rfd, 32))
+        os.close(rfd)
+
+        def state():
+            with open("/proc/%d/stat" % steg_pid) as f:
+                return f.read().rsplit(")", 1)[1].split()[0]
+
+        out = self._read_until(master, b"", b"Passphrase: ")
+        self.assertFalse(termios.tcgetattr(master)[3] & termios.ECHO)
+        os.write(master, b"\x1a")  # Ctrl+Z
+        deadline = time.monotonic() + TIMEOUT
+        while state() != "T" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(state(), "T")
+        self.assertTrue(termios.tcgetattr(master)[3] & termios.ECHO)
+        attrs = termios.tcgetattr(master)  # what the shell does
+        attrs[3] |= termios.ECHO
+        termios.tcsetattr(master, termios.TCSANOW, attrs)
+        os.kill(steg_pid, signal.SIGCONT)  # fg
+        out = self._read_until(master, out, b"\nPassphrase: ")
+        self.assertEqual(out.count(b"Passphrase: "), 2, out)
+        self.assertFalse(termios.tcgetattr(master)[3] & termios.ECHO)
+        os.write(master, b"shouldnotshow\n")
+        status, log = self._drain_and_wait(master, pid)
+        self.assertNotIn("shouldnotshow", log)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 1)  # no message in it
+
+    def test_eof_before_enter_refused(self):
+        # A line ended by Ctrl+D (or a hangup) instead of Enter may be cut
+        # short: it mustn't be used as the passphrase
+        pid, master = pty.fork()
+        if pid == 0:
+            exec_or_exit([BINARY, "extract", "-sf", self.cover])
+        self._read_until(master, b"", b"Passphrase: ")
+        os.write(master, b"correct hor\x04\x04")
+        status, log = self._drain_and_wait(master, pid)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 1, log)
+        self.assertIn("could not read passphrase", log)
+        self.assertNotIn("Deriving", log)
+
+    def test_long_paste_without_line_editing_is_bounded(self):
+        # With the terminal's line editor off there's no 4095-byte cap: a
+        # long paste must still be refused, without storing all of it
+        pid, master = pty.fork()
+        if pid == 0:
+            attrs = termios.tcgetattr(0)
+            attrs[3] &= ~termios.ICANON
+            termios.tcsetattr(0, termios.TCSANOW, attrs)
+            exec_or_exit([BINARY, "extract", "-sf", self.cover])
+        self._read_until(master, b"", b"Passphrase: ")
+        start = time.monotonic()
+        data = b"k" * 200_000 + b"\n"
+        while data:  # the reader drains it as we go
+            data = data[os.write(master, data[:4096]):]
+        status, log = self._drain_and_wait(master, pid)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 1, log)
+        self.assertIn("passphrase too long (max 4094 bytes)", log)
+        self.assertLess(time.monotonic() - start, 30)
+
     def test_ignored_signal_stays_ignored_at_prompt(self):
         # Under nohup (SIGHUP ignored), a hangup at the prompt mustn't kill it
         pid, master = pty.fork()

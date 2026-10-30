@@ -31,6 +31,14 @@ def say(*x):
 
 say("args", vars(a))
 sets = {p: data.split(a.D, p)[:a.limit] for p in ("train", "val", "test")}
+# Images the message didn't fit (JPEG only changes coefficients of 2 or
+# more, so a smooth image can hold less than the payload asks) are left out
+# of every set; capacity doesn't depend on the cost model, so the same ones
+# drop out for every model at a given payload.
+for p in sets:
+    kept = [b for b in sets[p] if os.path.exists(f"{a.D}/stego/{a.stego}/{b}.{a.kind}")]
+    if len(kept) < len(sets[p]): say(p, len(sets[p]) - len(kept), "images left out: no stego image")
+    sets[p] = kept
 X = {p: (data.load(a.D, a.kind, a.kind, b, not a.limit), data.load(a.D, a.kind, f"stego/{a.stego}", b, not a.limit))
      for p, b in sets.items()}
 for p, (c, s) in X.items():

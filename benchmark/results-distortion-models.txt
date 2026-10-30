@@ -1,0 +1,45 @@
+Distortion models benchmark, 2026-10-30. Binaries built from commit d2b7c04
+(scattersteg-d2b7c04-{hill-uerd,wow-juniward,suniward-uerd}); 480 Wikimedia covers
+fetched 2026-10-23, 512x512 RGB PNG and JPEG q75 4:2:0. 5 random 50/50 splits.
+
+srm hill       0.05  n=480 P_E=0.444 sd=0.007  AUC=0.582 sd=0.003  P_D@5%FP=0.083 sd=0.019  (99s)
+srm hill       0.1   n=480 P_E=0.415 sd=0.010  AUC=0.631 sd=0.005  P_D@5%FP=0.144 sd=0.017  (88s)
+srm hill       0.2   n=480 P_E=0.388 sd=0.008  AUC=0.683 sd=0.007  P_D@5%FP=0.201 sd=0.012  (91s)
+srm hill       0.4   n=480 P_E=0.357 sd=0.013  AUC=0.735 sd=0.012  P_D@5%FP=0.283 sd=0.013  (77s)
+srm wow        0.05  n=480 P_E=0.451 sd=0.007  AUC=0.577 sd=0.002  P_D@5%FP=0.089 sd=0.006  (73s)
+srm wow        0.1   n=480 P_E=0.419 sd=0.008  AUC=0.627 sd=0.004  P_D@5%FP=0.133 sd=0.019  (72s)
+srm wow        0.2   n=480 P_E=0.388 sd=0.008  AUC=0.675 sd=0.007  P_D@5%FP=0.201 sd=0.021  (72s)
+srm wow        0.4   n=480 P_E=0.359 sd=0.008  AUC=0.731 sd=0.012  P_D@5%FP=0.280 sd=0.008  (72s)
+srm suniward   0.05  n=480 P_E=0.448 sd=0.007  AUC=0.577 sd=0.003  P_D@5%FP=0.084 sd=0.013  (72s)
+srm suniward   0.1   n=480 P_E=0.416 sd=0.004  AUC=0.629 sd=0.004  P_D@5%FP=0.135 sd=0.018  (72s)
+srm suniward   0.2   n=480 P_E=0.383 sd=0.013  AUC=0.684 sd=0.008  P_D@5%FP=0.212 sd=0.015  (72s)
+srm suniward   0.4   n=480 P_E=0.351 sd=0.011  AUC=0.744 sd=0.010  P_D@5%FP=0.297 sd=0.011  (72s)
+dctr uerd       0.05  n=480 P_E=0.485 sd=0.006  AUC=0.515 sd=0.005  P_D@5%FP=0.052 sd=0.009  (28s)
+dctr uerd       0.1   n=480 P_E=0.464 sd=0.011  AUC=0.551 sd=0.002  P_D@5%FP=0.087 sd=0.016  (28s)
+dctr uerd       0.2   n=480 P_E=0.397 sd=0.014  AUC=0.645 sd=0.004  P_D@5%FP=0.174 sd=0.020  (28s)
+dctr uerd       0.3   n=476 P_E=0.261 sd=0.010  AUC=0.816 sd=0.015  P_D@5%FP=0.391 sd=0.045  (28s)
+dctr juniward   0.05  n=480 P_E=0.496 sd=0.009  AUC=0.513 sd=0.003  P_D@5%FP=0.057 sd=0.011  (28s)
+dctr juniward   0.1   n=480 P_E=0.468 sd=0.006  AUC=0.547 sd=0.008  P_D@5%FP=0.081 sd=0.011  (28s)
+dctr juniward   0.2   n=480 P_E=0.382 sd=0.009  AUC=0.677 sd=0.011  P_D@5%FP=0.189 sd=0.011  (28s)
+dctr juniward   0.3   n=476 P_E=0.232 sd=0.019  AUC=0.849 sd=0.014  P_D@5%FP=0.464 sd=0.041  (28s)
+
+png hill      0.05  changes/image     2369  PSNR 73.5 dB (median)
+png hill      0.1   changes/image     5096  PSNR 70.1 dB (median)
+png hill      0.2   changes/image    11146  PSNR 66.8 dB (median)
+png hill      0.4   changes/image    25647  PSNR 63.1 dB (median)
+png wow       0.05  changes/image     2439  PSNR 73.3 dB (median)
+png wow       0.1   changes/image     5212  PSNR 70.0 dB (median)
+png wow       0.2   changes/image    11314  PSNR 66.7 dB (median)
+png wow       0.4   changes/image    25751  PSNR 63.1 dB (median)
+png suniward  0.05  changes/image     2244  PSNR 73.6 dB (median)
+png suniward  0.1   changes/image     4741  PSNR 70.4 dB (median)
+png suniward  0.2   changes/image    10158  PSNR 67.1 dB (median)
+png suniward  0.4   changes/image    22745  PSNR 63.6 dB (median)
+jpg uerd      0.05  changed coefficients/image     910  of them at |2|  2.6%
+jpg uerd      0.1   changed coefficients/image    1941  of them at |2|  4.8%
+jpg uerd      0.2   changed coefficients/image    4662  of them at |2| 11.2%
+jpg uerd      0.3   changed coefficients/image    7982  of them at |2| 19.1%
+jpg juniward  0.05  changed coefficients/image     966  of them at |2| 13.1%
+jpg juniward  0.1   changed coefficients/image    2022  of them at |2| 15.5%
+jpg juniward  0.2   changed coefficients/image    4718  of them at |2| 20.2%
+jpg juniward  0.3   changed coefficients/image    7926  of them at |2| 25.1%

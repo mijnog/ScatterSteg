@@ -169,6 +169,94 @@ kernels and quantization steps were chosen here, and it has roughly a fifth of
 the published feature count. The published model and deep networks would score
 lower again.
 
+### Distortion models: WOW, S-UNIWARD, J-UNIWARD
+
+Three more cost functions from the literature, in `distortion.c` and
+`rust/src/distortion.rs`: WOW (Holub and Fridrich, 2012) and S-UNIWARD (Holub,
+Fridrich and Denemark, 2014) for PNG, J-UNIWARD (same paper) for JPEG. They
+are build choices for measuring, not options: `make PNG_COSTS=wow|suniward
+JPEG_COSTS=juniward` (cargo: `SCATTERSTEG_PNG_COSTS`, `SCATTERSTEG_JPEG_COSTS`).
+The default stays HILL and UERD, and any build reads what any other wrote.
+
+**Checked against the authors' code.** The Binghamton reference
+implementations (WOW v1.0, S-UNIWARD v1.0, J-UNIWARD v1.1; their C++ cost
+code, run on the same planes) on six benchmark photographs, crops of 37×53 and
+16×24, noise and a flat image: J-UNIWARD agrees to 1.2e-7 relative (double
+precision, as the reference), S-UNIWARD to 2.3e-5 and WOW to 5.3e-4. Those two
+references compute in single precision, and WOW divides by its filter
+outputs, which near 0 makes it sensitive to rounding. C and Rust give
+bit-identical costs on real PNGs and JPEGs for all five models.
+
+**Where ScatterSteg differs from the references**, which embed grayscale
+images with a ternary (±1) coder and simulate it at the payload's entropy:
+
+- Each colour channel (PNG) or JPEG component is costed on its own; the
+  references cost one gray plane (J-UNIWARD: luminance only). Chroma is costed
+  on its own plane, at its own resolution and with its own table.
+- J-UNIWARD works from the decompressed plane as ScatterSteg computes it from
+  the coefficients (float inverse DCT, rounded and clamped), which can differ
+  by 1 from libjpeg's integer decoder at a pixel; nothing is decoded or
+  re-encoded beyond what the loader already does.
+- Planes smaller than the 16-tap filters are mirrored repeatedly; the
+  references don't handle them.
+- The coder is ScatterSteg's binary STC with ±1 changes, and JPEG carriers
+  are the AC coefficients with |value| ≥ 2, as for UERD. J-UNIWARD's costs
+  are its own: no extra factor for |value| 2 (UERD's 1.75).
+- J-UNIWARD builds refuse a JPEG component over 2²⁶ pixels (its planes take
+  about 28 bytes per pixel), with the loader's generic error, and compute
+  the costs on every load, extract and `info` included.
+
+Cost of computing the costs alone (C, one core): a 512×512 image takes 0.04 s
+with HILL, 0.10 s with WOW or S-UNIWARD; 4000×3000 RGB 1.3 s (HILL, 266 MiB
+peak) against 4.2–4.3 s (314 MiB). JPEG: UERD 0.08 s and 47 MiB at 12
+megapixels, J-UNIWARD 2.0 s and 411 MiB. Every
+embed also runs Argon2id at 256 MiB.
+
+**Results.** Same 480 covers (fetched 2026-10-23), payloads, detectors and
+splits as above; builds of `d2b7c04`; `results-distortion-models.txt` has the
+raw output, `score_models.py` and `distortion_stats.py` compute it. HILL and
+UERD were re-measured alongside, as the baseline. P_E, ROC-AUC, and the
+detection rate at 5% false positives (P_D; lower rates aren't measurable with
+240 test covers), mean of 5 splits, standard deviation about 0.01 for P_E and
+AUC and 0.01–0.02 for P_D (0.04 at JPEG 0.3):
+
+| PNG, SRM-style | HILL | WOW | S-UNIWARD |
+|---|---|---|---|
+| 0.05 bpp: P_E / AUC / P_D | 0.444 / 0.582 / 0.083 | 0.451 / 0.577 / 0.089 | 0.448 / 0.577 / 0.084 |
+| 0.1 | 0.415 / 0.631 / 0.144 | 0.419 / 0.627 / 0.133 | 0.416 / 0.629 / 0.135 |
+| 0.2 | 0.388 / 0.683 / 0.201 | 0.388 / 0.675 / 0.201 | 0.383 / 0.684 / 0.212 |
+| 0.4 | 0.357 / 0.735 / 0.283 | 0.359 / 0.731 / 0.280 | 0.351 / 0.744 / 0.297 |
+
+| JPEG, DCTR-style | UERD | J-UNIWARD |
+|---|---|---|
+| 0.05 bits per non-zero AC | 0.485 / 0.515 / 0.052 | 0.496 / 0.513 / 0.057 |
+| 0.1 | 0.464 / 0.551 / 0.087 | 0.468 / 0.547 / 0.081 |
+| 0.2 | 0.397 / 0.645 / 0.174 | **0.382 / 0.677 / 0.189** |
+| 0.3 (control, 476 covers) | 0.261 / 0.816 / 0.391 | **0.232 / 0.849 / 0.464** |
+
+The HILL and UERD rows match the published ones above (measured on a later
+fetch of the covers) to within 0.002 and 0.014, so the harness is unchanged. For PNG, no model separates from the
+others: every difference is within about one standard deviation, at every
+payload. S-UNIWARD makes 5–11% fewer changes than HILL (2,244 against 2,369
+per image at 0.05, 22,745 against 25,647 at 0.4; WOW up to 3% more), without that
+showing in detection. For JPEG the two are level at the recommended 0.05–0.1,
+and J-UNIWARD is easier to detect at 0.2 and 0.3 (AUC +0.03, outside the
+noise). A likely cause, not yet tested: 13–25% of J-UNIWARD's changes hit a
+coefficient of |value| 2, which can only become 3, against 3–19% for UERD
+with its 1.75 factor; that shifts the 2:3 ratio JPEG detectors watch.
+
+So the defaults stay. These detectors are not the published SRM, GFR or deep
+networks, and one cover source is not many: what this supports is that, in
+ScatterSteg's binary coder and carrier set, none of the three improves on
+HILL or UERD against these detectors.
+
+    make PNG_COSTS=wow JPEG_COSTS=juniward   # one binary per model, from one commit
+    SCATTERSTEG=... python3 embed_png.py 480 wow
+    SCATTERSTEG=... python3 embed_jpg.py 480 juniward   # and BPNZ=0.3
+    python3 score_models.py png hill wow suniward
+    python3 score_models.py jpg uerd juniward
+    python3 distortion_stats.py
+
 ### Second cover set: BOSSbase
 
 1000 grayscale 512×512 images drawn at random from BOSSbase 1.01

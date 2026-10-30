@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 #include "codec.h"
+#include "distortion.h"
 #include "embed.h"
 #include "prng.h"
 #include "stc.h"
@@ -561,11 +562,17 @@ int codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
     sodium_free(p->keys);  /* not needed past here */
     p->keys = NULL;
 
-    /* PNG: HILL costs (see embed_costs) */
+    /* PNG: HILL costs (see embed_costs), or the build's other model */
     Carrier costed = *c;
     float *hill = NULL;
     if (c->img) {
+#if SCATTERSTEG_PNG_COSTS == COSTS_WOW
+        hill = distortion_wow(c->img);
+#elif SCATTERSTEG_PNG_COSTS == COSTS_SUNIWARD
+        hill = distortion_suniward(c->img);
+#else
         hill = embed_hill_costs(c->img);
+#endif
         if (!hill) {
             sodium_memzero(payload, payload_len);
             free(payload);

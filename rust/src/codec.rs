@@ -311,8 +311,9 @@ impl Prepared {
         sodium::secretbox_easy(&mut payload[NONCE_BYTES..], &packed[..packed_len], &nonce, self.keys.enc());
         drop(packed);
 
-        // PNG: HILL costs (see embed::costs); JPEG keeps its own
-        let hill = c.hill_costs();
+        // PNG: HILL costs (see embed::costs), or the build's other model;
+        // JPEG keeps its own
+        let hill = c.png_costs();
         let c = &mut c.with_png_costs(&hill);
 
         // Record every change (payload and salt), then make them together so

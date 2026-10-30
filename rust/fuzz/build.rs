@@ -7,7 +7,7 @@ fn main() {
     let mut b = cc::Build::new();
     b.include(root).std("c17").warnings(false).opt_level(1).debug(true)
         .define("FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION", None);
-    for f in ["png_io.c", "jpeg_io.c", "atomic_write.c", "codec.c", "embed.c", "prng.c", "stc.c"] {
+    for f in ["png_io.c", "jpeg_io.c", "atomic_write.c", "codec.c", "embed.c", "prng.c", "stc.c", "distortion.c"] {
         let p = root.join(f);
         println!("cargo:rerun-if-changed={}", p.display());
         b.file(p);

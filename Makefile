@@ -1,8 +1,17 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c17 -g
+CFLAGS  = -Wall -Wextra -std=c17 -g $(COSTS_FLAGS)
 LIBS    = -lsodium -lpng -ljpeg -lz -lm
 
-SRCS    = main.c codec.c prng.c embed.c stc.c png_io.c jpeg_io.c atomic_write.c
+# Distortion models (distortion.h), for benchmark builds: PNG_COSTS is hill,
+# wow or suniward, JPEG_COSTS uerd or juniward. Images made with any of them
+# read back with every build. Rebuild from clean after changing them.
+PNG_COSTS  ?= hill
+JPEG_COSTS ?= uerd
+upper       = $(shell echo $(1) | tr a-z A-Z)
+COSTS_FLAGS = -DSCATTERSTEG_PNG_COSTS=COSTS_$(call upper,$(PNG_COSTS)) \
+              -DSCATTERSTEG_JPEG_COSTS=COSTS_$(call upper,$(JPEG_COSTS))
+
+SRCS    = main.c codec.c prng.c embed.c stc.c png_io.c jpeg_io.c atomic_write.c distortion.c
 OBJS    = $(SRCS:.c=.o)
 TARGET  = scattersteg
 
@@ -27,8 +36,8 @@ $(TARGET): $(OBJS)
 TEST_DIR    = tests/build
 TEST_CFLAGS = $(CFLAGS) -I. -Itests -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_ENV    = ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_stc $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_jpeg_io $(TEST_DIR)/test_faults
-HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h
+UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_stc $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_jpeg_io $(TEST_DIR)/test_faults $(TEST_DIR)/test_distortion
+HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h distortion.h
 
 # Fault-injection build: the sources force-include tests/fault.h, so a test
 # can make the Nth malloc/fopen/fclose/rename/... fail (see tests/fault.c)
@@ -58,8 +67,11 @@ $(TEST_DIR)/test_prng: tests/test_prng.c prng.c tests/test.h $(HDRS) | $(TEST_DI
 $(TEST_DIR)/test_png_io: tests/test_png_io.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_png_io.c png_io.c atomic_write.c -o $@ -lpng -lz
 
-$(TEST_DIR)/test_jpeg_io: tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c -o $@ -ljpeg -lsodium
+$(TEST_DIR)/test_jpeg_io: tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c distortion.c tests/test.h $(HDRS) | $(TEST_DIR)
+	$(CC) $(TEST_CFLAGS) tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c distortion.c -o $@ -ljpeg -lsodium -lm
+
+$(TEST_DIR)/test_distortion: tests/test_distortion.c distortion.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
+	$(CC) $(TEST_CFLAGS) tests/test_distortion.c distortion.c embed.c png_io.c atomic_write.c -o $@ -lpng -lsodium -lm
 
 # Writes test JPEGs (no sanitizers: it's a tool, not code under test)
 $(TEST_DIR)/jpeg_fixture: tests/jpeg_fixture.c | $(TEST_DIR)
@@ -119,8 +131,8 @@ fuzz: $(FUZZERS) $(TEST_DIR)/jpeg_fixture
 $(FUZZ_DIR)/fuzz_png_load: tests/fuzz/fuzz_png_load.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_load.c png_io.c atomic_write.c -o $@ -lpng -lz
 
-$(FUZZ_DIR)/fuzz_jpeg_load: tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
-	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic_write.c -o $@ -ljpeg -lsodium
+$(FUZZ_DIR)/fuzz_jpeg_load: tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic_write.c distortion.c $(HDRS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(COSTS_FLAGS) tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic_write.c distortion.c -o $@ -ljpeg -lsodium -lm
 
 $(FUZZ_DIR)/fuzz_stc: tests/fuzz/fuzz_stc.c stc.c stc.h | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_stc.c stc.c -o $@ -lm
@@ -129,8 +141,8 @@ $(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c $(HDRS) | $(FUZZ_
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_embed.c embed.c prng.c -o $@ -lsodium
 
 # Built with Argon2id swapped for BLAKE2b (see codec.c), never for real use
-$(FUZZ_DIR)/fuzz_codec: tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c $(HDRS) | $(FUZZ_DIR)
-	$(FUZZ_CC) $(FUZZ_CFLAGS) -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c -o $@ -lsodium -lz -lm
+$(FUZZ_DIR)/fuzz_codec: tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c distortion.c $(HDRS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(COSTS_FLAGS) -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c distortion.c -o $@ -lsodium -lz -lm
 
 $(FUZZ_DIR)/fuzz_png_roundtrip: tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c -o $@ -lpng
@@ -147,7 +159,7 @@ coverage: $(COV_OBJS) | $(COV_DIR)
 	$(CC) $(COV_CFLAGS) tests/test_stc.c $(COV_DIR)/stc.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_stc -lm
 	$(CC) $(COV_CFLAGS) tests/test_prng.c $(COV_DIR)/prng.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_prng -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_png_io.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_png_io -lpng -lz
-	$(CC) $(COV_CFLAGS) tests/test_jpeg_io.c $(COV_DIR)/jpeg_io.o $(COV_DIR)/embed.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_jpeg_io -ljpeg -lsodium
+	$(CC) $(COV_CFLAGS) tests/test_jpeg_io.c $(COV_DIR)/jpeg_io.o $(COV_DIR)/embed.o $(COV_DIR)/atomic_write.o $(COV_DIR)/distortion.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_jpeg_io -ljpeg -lsodium -lm
 	$(CC) $(COV_CFLAGS) tests/test_faults.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_faults -lpng
 	$(CC) $(COV_CFLAGS) $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sodium.o -o $(COV_DIR)/scattersteg $(LIBS)
 	$(MAKE) --no-print-directory $(TEST_DIR)/jpeg_fixture

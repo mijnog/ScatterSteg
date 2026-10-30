@@ -87,6 +87,33 @@ jobs:
           SCATTERSTEG=$R/release/scattersteg SCATTERSTEG_FAULT=$R/fault/release/scattersteg \
             FAULT_LONG_MIN=15 python3 tests/test_cli.py
 
+  # Builds with the other distortion models (distortion.h), which the
+  # default builds above never run: the C one with WOW and J-UNIWARD under
+  # the sanitizers and fault sweeps, the Rust one with S-UNIWARD and
+  # J-UNIWARD through the CLI tests
+  models:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev libclang-dev pkg-config clang python3
+
+      - name: Let AddressSanitizer run
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: C with WOW and J-UNIWARD
+        run: make test PNG_COSTS=wow JPEG_COSTS=juniward
+
+      - name: Rust with S-UNIWARD and J-UNIWARD
+        env:
+          SCATTERSTEG_PNG_COSTS: suniward
+          SCATTERSTEG_JPEG_COSTS: juniward
+          JPEG_FIXTURE: tests/build/jpeg_fixture
+        run: |
+          (cd rust && cargo build --release --locked)
+          SCATTERSTEG=$PWD/rust/target/release/scattersteg python3 tests/test_cli.py
+
   differential:
     runs-on: ubuntu-24.04
     steps:

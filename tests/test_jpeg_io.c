@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L  /* mkdtemp */
 #include "test.h"
 #include "jpeg_io.h"
+#include "distortion.h"
 #include <jpeglib.h>
 #include <math.h>
 #include <setjmp.h>
@@ -410,12 +411,68 @@ static void check_uerd(const char *path) {
     jpeg_free(j);
 }
 
+/* J-UNIWARD builds: each carrier costs what J-UNIWARD gives its own block
+   and coefficient, with the component's plane rebuilt here from the
+   coefficients through libjpeg */
+static void check_juniward(const char *path) {
+    JpegImage *j = jpeg_load(path);
+    CHECK(j != NULL);
+    if (!j) return;
+    Carrier c = jpeg_carrier(j);
+
+    FILE *fp = fopen(path, "rb");
+    struct jpeg_decompress_struct d;
+    struct jpeg_error_mgr err;
+    d.err = jpeg_std_error(&err);
+    jpeg_create_decompress(&d);
+    jpeg_stdio_src(&d, fp);
+    jpeg_read_header(&d, TRUE);
+    jvirt_barray_ptr *coefs = jpeg_read_coefficients(&d);
+    uint32_t n = 0, bad = 0;
+    for (int ci = 0; ci < d.num_components; ci++) {
+        jpeg_component_info *comp = &d.comp_info[ci];
+        uint32_t w = comp->width_in_blocks, h = comp->height_in_blocks;
+        uint16_t q[64];
+        for (int k = 0; k < 64; k++) q[k] = comp->quant_table->quantval[k];
+        float *px = malloc((size_t)w * h * 64 * sizeof(float));
+        for (uint32_t by = 0; by < h; by++) {
+            JBLOCKARRAY row = d.mem->access_virt_barray((j_common_ptr)&d, coefs[ci], by, 1, FALSE);
+            for (uint32_t bx = 0; bx < w; bx++) {
+                float block[64];
+                distortion_idct_block(row[0][bx], q, block);
+                for (int i = 0; i < 64; i++) px[((size_t)by * 8 + i / 8) * w * 8 + bx * 8 + i % 8] = block[i];
+            }
+        }
+        JUniward *ju = juniward_new(px, w * 8, h * 8, q);
+        CHECK(ju != NULL);
+        for (uint32_t by = 0; ju && by < h; by++) {
+            JBLOCKARRAY row = d.mem->access_virt_barray((j_common_ptr)&d, coefs[ci], by, 1, FALSE);
+            for (uint32_t bx = 0; bx < w; bx++)
+                for (int k = 1; k < DCTSIZE2; k++) {
+                    int v = row[0][bx][k];
+                    if (v > -2 && v < 2) continue;
+                    if (n >= c.n_coefs || *c.coefs[n] != v || c.coef_costs[n] != juniward_cost(ju, bx, by, k)) bad++;
+                    n++;
+                }
+        }
+        juniward_free(ju);
+        free(px);
+    }
+    CHECK(n == c.n_coefs);
+    CHECK(bad == 0);
+    jpeg_destroy_decompress(&d);
+    fclose(fp);
+    jpeg_free(j);
+}
+
+/* The build's JPEG costs: UERD, or J-UNIWARD (see distortion.h) */
 static void test_uerd_costs(void) {
     const char *gray = path_in_dir("uerd-gray.jpg"), *color = path_in_dir("uerd-color.jpg");
+    void (*check)(const char *) = SCATTERSTEG_JPEG_COSTS == COSTS_JUNIWARD ? check_juniward : check_uerd;
     CHECK(make_fixture(gray, "64 48 1 85") == 0);
-    check_uerd(gray);
+    check(gray);
     CHECK(make_fixture(color, "40 32 3 75") == 0);
-    check_uerd(color);
+    check(color);
 }
 
 static void test_fuzz_regressions(void) {

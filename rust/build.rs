@@ -5,6 +5,19 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // Distortion models (see src/distortion.rs), for benchmark builds. The
+    // defaults are the measured ones; an unknown name is an error, not a
+    // silent fallback to them.
+    for (var, cfg, models) in [("SCATTERSTEG_PNG_COSTS", "png_costs", ["hill", "wow", "suniward"].as_slice()),
+                               ("SCATTERSTEG_JPEG_COSTS", "jpeg_costs", ["uerd", "juniward"].as_slice())] {
+        println!("cargo:rerun-if-env-changed={var}");
+        let values: Vec<String> = models.iter().map(|m| format!("\"{m}\"")).collect();
+        println!("cargo:rustc-check-cfg=cfg({cfg}, values({}))", values.join(", "));
+        let model = env::var(var).unwrap_or_else(|_| models[0].to_string());
+        assert!(models.contains(&model.as_str()), "{var} must be one of {models:?}, not {model:?}");
+        println!("cargo:rustc-cfg={cfg}=\"{model}\"");
+    }
+
     let lib = pkg_config::Config::new().probe("libjpeg").expect("libjpeg (libjpeg-turbo) not found");
     let mut builder = bindgen::Builder::default()
         .header_contents("wrapper.h", "#include <stdio.h>\n#include <stddef.h>\n#include <jpeglib.h>\n")

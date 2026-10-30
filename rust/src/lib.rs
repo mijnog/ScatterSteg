@@ -15,6 +15,7 @@ macro_rules! errln {
 pub mod atomic_write;
 pub mod codec;
 pub mod cover;
+pub mod distortion;
 pub mod embed;
 pub mod fault;
 pub mod png_io;

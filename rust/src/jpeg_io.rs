@@ -313,6 +313,21 @@ impl JpegImage {
             // coefficient's quantization step over the energy of the block
             // and, at a quarter weight, its 8 neighbours: cheap in busy
             // blocks and low frequencies, dear in smooth ones
+            // Or J-UNIWARD, in builds with it (see distortion)
+            let juniward = cfg!(jpeg_costs = "juniward").then(|| {
+                let quant: [u16; 64] = std::array::from_fn(|k| quant.map_or(1, |t| if t.quantval[k] > 0 { t.quantval[k] } else { 1 }));
+                let pw = wb * 8;
+                let mut pixels = vec![0f32; pw * hb * 8];
+                for (b, block) in self.coefs[start..].as_chunks::<DCTSIZE2>().0.iter().enumerate() {
+                    let (bx, by) = (b % wb, b / wb);
+                    let px = crate::distortion::idct_block(block, &quant);
+                    for y in 0..8 {
+                        let at = (by * 8 + y) * pw + bx * 8;
+                        pixels[at..at + 8].copy_from_slice(&px[y * 8..y * 8 + 8]);
+                    }
+                }
+                crate::distortion::JUniward::new(&pixels, pw, hb * 8, &quant)
+            });
             let energy: Vec<f32> = self.coefs[start..].as_chunks::<DCTSIZE2>().0.iter()
                 .map(|b| (1..DCTSIZE2).fold(0f32, |e, k| e + (b[k] as i32).abs() as f32 * q(k)))
                 .collect();
@@ -334,7 +349,10 @@ impl JpegImage {
                 // And 2 can only go to 3, shifting the 2:3 ratio detectors
                 // watch (see TWO_COST)
                 self.carriers.push((start + i) as u32);
-                self.costs.push(q(k) / around * if c == 2 || c == -2 { TWO_COST } else { 1.0 });
+                self.costs.push(match &juniward {
+                    Some(j) => j.cost(bx, by, k),
+                    None => q(k) / around * if c == 2 || c == -2 { TWO_COST } else { 1.0 },
+                });
             }
         }
         true

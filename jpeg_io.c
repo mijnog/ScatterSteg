@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L  /* open_memstream, fmemopen */
 #include "jpeg_io.h"
 #include "atomic_write.h"
+#include "distortion.h"
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,6 +123,35 @@ int is_jpeg_file(const char *path) {
     return n == 3 && sig[0] == 0xFF && sig[1] == 0xD8 && sig[2] == 0xFF;
 }
 
+#if SCATTERSTEG_JPEG_COSTS == COSTS_JUNIWARD
+/* J-UNIWARD for component ci (see distortion.h), from its decompressed plane */
+static JUniward *juniward_component(JpegImage *j, int ci) {
+    struct jpeg_decompress_struct *s = &j->src;
+    jpeg_component_info *comp = &s->comp_info[ci];
+    JDIMENSION w = comp->width_in_blocks, h = comp->height_in_blocks;
+    uint16_t quant[64];
+    for (int k = 0; k < 64; k++) {
+        /* (a corrupt file's component may lack a table) */
+        quant[k] = comp->quant_table && comp->quant_table->quantval[k] ? comp->quant_table->quantval[k] : 1;
+    }
+    size_t pw = (size_t)w * 8;
+    float *pixels = pw && h <= SIZE_MAX / sizeof(float) / 64 / pw ? malloc(pw * h * 8 * sizeof(float)) : NULL;
+    if (!pixels) return NULL;
+    for (JDIMENSION by = 0; by < h; by++) {
+        JBLOCKARRAY row = s->mem->access_virt_barray((j_common_ptr)s, j->coefs[ci], by, 1, FALSE);
+        for (JDIMENSION bx = 0; bx < w; bx++) {
+            float block[64];
+            distortion_idct_block(row[0][bx], quant, block);
+            for (int y = 0; y < 8; y++)
+                memcpy(pixels + ((size_t)by * 8 + y) * pw + (size_t)bx * 8, block + y * 8, 8 * sizeof(float));
+        }
+    }
+    JUniward *ju = juniward_new(pixels, (uint32_t)pw, h * 8, quant);
+    free(pixels);
+    return ju;
+}
+#endif
+
 /* Collect pointers to the carrier coefficients. libjpeg-turbo keeps virtual
    arrays wholly in memory (it has no backing store, and jpeg_load caps the
    size), so these pointers stay valid as long as the arrays do.
@@ -144,12 +174,16 @@ static int collect_carriers(JpegImage *j) {
     float *energy = malloc((blocks ? blocks : 1) * sizeof(float));
     if (!energy) return -1;
     int r = -1;
+    JUniward *ju = NULL;  /* J-UNIWARD builds: the component's costs */
     for (int pass = 0; pass < 2; pass++) {
         uint32_t n = 0;
         size_t base = 0;  /* this component's first block in energy[] */
         for (int ci = 0; ci < s->num_components; ci++) {
             jpeg_component_info *comp = &s->comp_info[ci];
             JDIMENSION w = comp->width_in_blocks, h = comp->height_in_blocks;
+#if SCATTERSTEG_JPEG_COSTS == COSTS_JUNIWARD
+            if (pass && !(ju = juniward_component(j, ci))) goto out;
+#endif
             for (JDIMENSION by = 0; by < h; by++) {
                 JBLOCKARRAY row = s->mem->access_virt_barray((j_common_ptr)s, j->coefs[ci], by, 1, TRUE);
                 for (JDIMENSION bx = 0; bx < w; bx++) {
@@ -179,7 +213,8 @@ static int collect_carriers(JpegImage *j) {
                                 /* And 2 can only go to 3, shifting the 2:3
                                    ratio detectors watch (see JPEG_TWO_COST) */
                                 j->carriers[n] = c;
-                                j->costs[n] = q / around * (*c == 2 || *c == -2 ? JPEG_TWO_COST : 1.0f);
+                                j->costs[n] = ju ? juniward_cost(ju, bx, by, k)
+                                                 : q / around * (*c == 2 || *c == -2 ? JPEG_TWO_COST : 1.0f);
                             }
                             n++;
                         }
@@ -187,6 +222,8 @@ static int collect_carriers(JpegImage *j) {
                     if (!pass) energy[base + (size_t)by * w + bx] = e;
                 }
             }
+            juniward_free(ju);
+            ju = NULL;
             base += (size_t)w * h;
         }
         if (!pass) {
@@ -199,6 +236,7 @@ static int collect_carriers(JpegImage *j) {
     }
     r = 0;
 out:
+    juniward_free(ju);
     free(energy);
     return r;
 }

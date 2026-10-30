@@ -85,6 +85,20 @@ impl<'a> Carrier<'a> {
         costs
     }
 
+    /// PNG: the build's cost model, HILL unless built with another (see
+    /// `distortion`). Empty for JPEG.
+    pub fn png_costs(&self) -> Vec<f32> {
+        let Samples::U8(px) = &self.samples else { return Vec::new() };
+        let (w, h, ch) = (self.width as usize, (self.positions / self.width.max(1)) as usize, self.channels as usize);
+        if cfg!(png_costs = "wow") {
+            crate::distortion::wow(px, w, h, ch)
+        } else if cfg!(png_costs = "suniward") {
+            crate::distortion::suniward(px, w, h, ch)
+        } else {
+            self.hill_costs()
+        }
+    }
+
     /// Pixels, or coefficients
     pub fn positions(&self) -> u32 { self.positions }
     /// Whether this carries JPEG coefficients rather than pixels

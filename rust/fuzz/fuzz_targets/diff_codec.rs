@@ -20,8 +20,8 @@ const WRONG: &[u8] = b"wrong horse battery";
 enum Samples {
     /// PNG: `channels` interleaved samples per pixel
     Pixels { pixels: Vec<u8>, w: u32, h: u32, channels: u32 },
-    /// JPEG: carrier coefficients, |v| from 2 to 129 as jpeg_io gives
-    Coefs { values: Vec<i16>, map: Vec<u32>, costs: Vec<f32> },
+    /// JPEG: blocks of 64 coefficients, the AC ones carriers
+    Coefs { values: Vec<i16>, costs: Vec<f32> },
 }
 
 impl Samples {
@@ -34,16 +34,18 @@ impl Samples {
         } else {
             let n = (w * h) as usize;
             let bytes: Vec<u8> = (0..n).map(at).collect();
-            let values = bytes.iter().map(|&b| ((b & 0x7F) as i16 + 2) * if b & 0x80 != 0 { -1 } else { 1 }).collect();
+            // -128..127, zeros and +-1 included, as fuzz_codec.c
+            let mut values = vec![0i16; n.div_ceil(63) * 64];
+            for (k, &b) in bytes.iter().enumerate() { values[k / 63 * 64 + k % 63 + 1] = b as i8 as i16; }
             let costs = bytes.iter().map(|&b| 1.0 + (b & 0x0F) as f32).collect();
-            Samples::Coefs { values, map: (0..n as u32).collect(), costs }
+            Samples::Coefs { values, costs }
         }
     }
 
     fn carrier(&mut self) -> Carrier<'_> {
         match self {
             Samples::Pixels { pixels, w, h, channels } => Carrier::png(pixels, *w, *h, *channels),
-            Samples::Coefs { values, map, costs } => Carrier::jpeg(values, map, costs),
+            Samples::Coefs { values, costs } => Carrier::jpeg(values, costs),
         }
     }
 

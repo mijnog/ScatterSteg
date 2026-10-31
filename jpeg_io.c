@@ -13,11 +13,13 @@
 /* Largest coefficient storage jpeg_load will allocate (1 GiB) */
 #define JPEG_MAX_COEF_BYTES ((size_t)1 << 30)
 /* Most carriers jpeg_load will take. Each costs memory of its own beyond its
-   2-byte coefficient: its pointer and cost here, its slot in the message
-   permutation, and the bits and cost STC works on. A file of all-±2 AC
-   coefficients near the coefficient cap would otherwise need ~9 GiB on top;
-   this keeps that to 1 GiB. */
-#define JPEG_CARRIER_BYTES (sizeof(int16_t *) + sizeof(float) + sizeof(uint32_t) + 2 + sizeof(float))
+   2-byte coefficient: its cost here, its slot in the message permutation,
+   and the bits and cost STC works on (each block's pointer adds an eighth
+   of a byte). A file near the coefficient cap would otherwise need ~7 GiB
+   on top; this keeps that to 1 GiB, about 50 megapixels of a 4:2:0 JPEG
+   (63 carriers per block, 1.5 blocks per 64 pixels). rust/src/jpeg_io.rs's
+   MAX_CARRIERS must equal it. */
+#define JPEG_CARRIER_BYTES (sizeof(float) + sizeof(uint32_t) + 2 + sizeof(float))
 #define JPEG_MAX_CARRIERS (JPEG_MAX_COEF_BYTES / JPEG_CARRIER_BYTES)
 /* Progressive JPEGs can have any number of scans, each a full pass over the
    coefficients; a crafted file with thousands of tiny scans takes minutes to
@@ -80,7 +82,7 @@ struct JpegImage {
     struct jpeg_decompress_struct src;
     ErrorJump err;
     jvirt_barray_ptr *coefs;
-    int16_t **carriers;
+    int16_t **blocks;  /* every 8x8 block's coefficients, see Carrier */
     float *costs;  /* per carrier, see collect_carriers */
     uint32_t n_carriers;
     uint64_t nonzero_ac;  /* AC coefficients that aren't 0 */
@@ -153,9 +155,10 @@ static JUniward *juniward_component(JpegImage *j, int ci) {
 }
 #endif
 
-/* Collect pointers to the carrier coefficients. libjpeg-turbo keeps virtual
-   arrays wholly in memory (it has no backing store, and jpeg_load caps the
-   size), so these pointers stay valid as long as the arrays do.
+/* Collect pointers to the blocks, whose AC coefficients are the carriers.
+   libjpeg-turbo keeps virtual arrays wholly in memory (it has no backing
+   store, and jpeg_load caps the size), so these pointers stay valid as
+   long as the arrays do.
 
    Also checks every coefficient is one the encoder can write back: corrupt
    entropy data can decode to values beyond its 11-bit DC / 10-bit AC
@@ -177,7 +180,7 @@ static int collect_carriers(JpegImage *j) {
     int r = -1;
     JUniward *ju = NULL;  /* J-UNIWARD builds: the component's costs */
     for (int pass = 0; pass < 2; pass++) {
-        uint32_t n = 0;
+        uint32_t n = 0, b = 0;  /* carriers, blocks */
         size_t base = 0;  /* this component's first block in energy[] */
         for (int ci = 0; ci < s->num_components; ci++) {
             jpeg_component_info *comp = &s->comp_info[ci];
@@ -201,6 +204,8 @@ static int collect_carriers(JpegImage *j) {
                             }
                     }
                     float e = 0;
+                    if (pass) j->blocks[b] = row[0][bx];
+                    b++;
                     for (int k = 1; k < DCTSIZE2; k++) {
                         JCOEF *c = &row[0][bx][k];
                         if (!pass && (*c < -JPEG_MAX_AC || *c > JPEG_MAX_AC)) goto out;
@@ -209,10 +214,7 @@ static int collect_carriers(JpegImage *j) {
                         if (q <= 0) q = 1;
                         if (!pass) e += (float)abs(*c) * q;
                         if (!pass && *c) j->nonzero_ac++;
-                        if (pass) {
-                            j->carriers[n] = c;
-                            j->costs[n] = ju ? juniward_cost(ju, bx, by, k) : q / around;
-                        }
+                        if (pass) j->costs[n] = ju ? juniward_cost(ju, bx, by, k) : q / around;
                         n++;
                     }
                     if (!pass) energy[base + (size_t)by * w + bx] = e;
@@ -225,9 +227,9 @@ static int collect_carriers(JpegImage *j) {
         if (!pass) {
             if (n > JPEG_MAX_CARRIERS) goto out;
             j->n_carriers = n;
-            j->carriers = malloc((n ? n : 1) * sizeof(int16_t *));
+            j->blocks = malloc((b ? b : 1) * sizeof(int16_t *));
             j->costs = malloc((n ? n : 1) * sizeof(float));
-            if (!j->carriers || !j->costs) goto out;
+            if (!j->blocks || !j->costs) goto out;
         }
     }
     r = 0;
@@ -250,7 +252,7 @@ JpegImage *jpeg_read(FILE *fp) {
     j->err.pub.output_message = silent;
     if (setjmp(j->err.jump)) {
         jpeg_destroy_decompress(&j->src);
-        free(j->carriers);
+        free(j->blocks);
         free(j->costs);
         free(j);
         fclose(fp);
@@ -294,7 +296,7 @@ JpegImage *jpeg_load(const char *path) {
 void jpeg_free(JpegImage *j) {
     if (!j) return;
     jpeg_destroy_decompress(&j->src);
-    free(j->carriers);
+    free(j->blocks);
     free(j->costs);
     free(j);
 }
@@ -330,7 +332,7 @@ const char *jpeg_unsuitable(const JpegImage *j) {
 }
 
 Carrier jpeg_carrier(JpegImage *j) {
-    Carrier c = {NULL, j->carriers, j->n_carriers, j->costs};
+    Carrier c = {NULL, j->blocks, j->n_carriers, j->costs};
     return c;
 }
 

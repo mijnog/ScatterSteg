@@ -16,7 +16,9 @@ pub struct CImage {
 #[repr(C)]
 pub struct CCarrier {
     pub img: *mut c_void,
-    pub coefs: *mut *mut i16,
+    /// JPEG: each block's 64 coefficients; carrier k is coefficient
+    /// k % 63 + 1 of block k / 63
+    pub blocks: *mut *mut i16,
     pub n_coefs: u32,
     pub costs: *const f32,
 }
@@ -73,7 +75,7 @@ impl CJpeg {
     /// The value of every carrier
     pub fn carrier_values(&self) -> Vec<i16> {
         let c = unsafe { jpeg_carrier(self.0) };
-        (0..c.n_coefs as usize).map(|i| unsafe { **c.coefs.add(i) }).collect()
+        (0..c.n_coefs as usize).map(|k| unsafe { *(*c.blocks.add(k / 63)).add(k % 63 + 1) }).collect()
     }
     pub fn unsuitable(&self) -> bool { !unsafe { jpeg_unsuitable(self.0) }.is_null() }
     pub fn writable(&mut self) -> bool { unsafe { jpeg_check_writable(self.0) == 0 } }
@@ -112,15 +114,16 @@ impl<'a> CCodecCover<'a> {
             width: w, height: h, channels, rows: rows.as_mut_ptr(),
             unsuitable: std::ptr::null(), meta: std::ptr::null_mut(),
         });
-        let carrier = CCarrier { img: (&mut *img as *mut CImage).cast(), coefs: std::ptr::null_mut(),
+        let carrier = CCarrier { img: (&mut *img as *mut CImage).cast(), blocks: std::ptr::null_mut(),
                                  n_coefs: 0, costs: std::ptr::null() };
         CCodecCover { _img: Some(img), _rows: rows, _coefs: Vec::new(), carrier, _samples: Default::default() }
     }
 
+    /// `values` in blocks of 64 coefficients, as `Carrier::jpeg` takes them
     pub fn coefs(values: &'a mut [i16], costs: &'a [f32]) -> Self {
-        let mut coefs: Vec<*mut i16> = values.iter_mut().map(|v| v as *mut i16).collect();
-        let carrier = CCarrier { img: std::ptr::null_mut(), coefs: coefs.as_mut_ptr(),
-                                 n_coefs: coefs.len() as u32, costs: costs.as_ptr() };
+        let mut coefs: Vec<*mut i16> = values.chunks_exact_mut(64).map(|b| b.as_mut_ptr()).collect();
+        let carrier = CCarrier { img: std::ptr::null_mut(), blocks: coefs.as_mut_ptr(),
+                                 n_coefs: costs.len() as u32, costs: costs.as_ptr() };
         CCodecCover { _img: None, _rows: Vec::new(), _coefs: coefs, carrier, _samples: Default::default() }
     }
 

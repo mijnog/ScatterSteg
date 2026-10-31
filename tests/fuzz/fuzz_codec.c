@@ -24,7 +24,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 typedef struct {
     Image img;
     int16_t *values;
-    int16_t **coefs;
+    int16_t **coefs;  /* JPEG: each block's first coefficient */
     float *costs;
     Carrier carrier;
 } Cover;
@@ -42,18 +42,18 @@ static void cover_make(Cover *c, int kind, uint32_t w, uint32_t h,
                 c->img.rows[y][i] = size ? data[(y * w * ch + i) % size] : 0;
         }
         c->carrier = carrier_of_image(&c->img);
-    } else {  /* JPEG: carrier coefficients, |v| from 2 to 129 as jpeg_carrier gives */
-        uint32_t n = w * h;
-        c->values = malloc(n * sizeof(int16_t));
-        c->coefs = malloc(n * sizeof(int16_t *));
+    } else {  /* JPEG: blocks of 64 coefficients, the AC ones carriers */
+        uint32_t n = w * h, blocks = (n + 62) / 63;
+        c->values = calloc((size_t)blocks * 64, sizeof(int16_t));
+        c->coefs = malloc((blocks ? blocks : 1) * sizeof(int16_t *));
         c->costs = malloc(n * sizeof(float));
+        for (uint32_t b = 0; b < blocks; b++) c->coefs[b] = &c->values[(size_t)b * 64];
+        c->carrier = (Carrier){NULL, c->coefs, n, c->costs};
         for (uint32_t i = 0; i < n; i++) {
             uint8_t b = size ? data[i % size] : 0;
-            c->values[i] = (int16_t)((b & 0x7F) + 2) * (b & 0x80 ? -1 : 1);
-            c->coefs[i] = &c->values[i];
+            *carrier_coef(&c->carrier, i) = (int8_t)b;  /* -128..127, zeros and +-1 included */
             c->costs[i] = 1.0f + (float)(b & 0x0F);
         }
-        c->carrier = (Carrier){NULL, c->coefs, n, c->costs};
     }
 }
 

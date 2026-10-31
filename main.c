@@ -288,7 +288,7 @@ static void carrier_digest(const Carrier *c, uint8_t out[crypto_generichash_BYTE
         int16_t buf[4096];
         for (uint32_t i = 0; i < c->n_coefs;) {
             size_t n = 0;
-            while (n < 4096 && i < c->n_coefs) buf[n++] = *c->coefs[i++];
+            while (n < 4096 && i < c->n_coefs) buf[n++] = *carrier_coef(c, i++);
             crypto_generichash_update(&st, (const uint8_t *)buf, n * sizeof(int16_t));
         }
     }

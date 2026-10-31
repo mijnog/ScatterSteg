@@ -15,7 +15,7 @@ What ScatterSteg tries to protect, against whom, and what it explicitly doesn't.
 
 Someone who sees many images (a censor, a platform, a border check) and runs detectors over them, looking for any that carry hidden data.
 
-- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one catches PNG output about 56% of the time at 0.05 bits per pixel, the lightest payload measured, and 65% at 0.4 (HILL costs; 65% and 93% with the uniform costs used before). That is harder to detect than steghide or plain LSB embedding, not undetectable. A deep-learning detector (SRNet) does much better: it catches 87% of PNGs at 0.4 bits per pixel and 93% of JPEGs at 0.2 bits per non-zero AC coefficient. Against a warden with such a detector, only light payloads in private covers can hope to pass; the lighter payloads are still being measured.
+- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one catches PNG output about 56% of the time at 0.05 bits per pixel, the lightest payload measured, and 65% at 0.4 (HILL costs; 65% and 93% with the uniform costs used before). That is harder to detect than steghide or plain LSB embedding, not undetectable. A deep-learning detector (SRNet) does much better: it catches 74% of PNGs at 0.2 bits per pixel, 87% at 0.4, and 92% of JPEGs at 0.2 bits per non-zero AC coefficient. Against a warden with such a detector, only light payloads in private covers can hope to pass; the lighter payloads are still being measured.
 - **How:** STC syndrome coding (few changes) with HILL costs for PNG (changes where the image is busy), ±1 changes paired as value swaps (the histogram kept), JPEG coefficients edited losslessly with UERD costs (changes in busy blocks), the output in the cover's own format and metadata, and no header or marker in the image.
 - **Evidence:** measured against chi-square, sample pair analysis, HCF-COM and adjacency HCF-COM (see [`benchmark/README.md`](benchmark/README.md#classic-detectors)), and against trained classifiers, rich models and SRNet (see [Machine-learning detectors](#machine-learning-detectors) below). The planned evaluation with Aletheia's EfficientNet-B0 detectors on ALASKA2 has not been done.
 - **Known-position test:** the salt must sit at public positions, so a warden can look exactly there. An earlier design wrote it straight in (about 64 changes in 128 known samples), and a targeted test of prediction error at those positions detected it slightly above chance: AUC 0.56 over 500 ALASKA2 images, 9% detected at 5% false alarms. The salt is now carried as an STC syndrome over a public region of ~8192 samples (about 18 sparse changes); the same test, and the same test over the whole region, are at chance (AUC 0.49–0.50).
@@ -111,17 +111,18 @@ The measurements, their method and their limitations are in [`benchmark/README.m
 | ScatterSteg PNG, HILL (1000 grayscale BOSSbase images) | 0.46 | 0.43 | 0.35 | 0.22 |
 | LSB matching (Wikimedia) | 0.17 | 0.09 | 0.05 | 0.02 |
 | steghide (Wikimedia, as BMP) | 0.04 | 0.03 | 0.02 | 0.02 |
-| ScatterSteg JPEG, UERD (payload per non-zero AC coefficient) | 0.50 | 0.48 | 0.39 | — |
+| ScatterSteg JPEG, UERD (payload per non-zero AC coefficient) | 0.47 | 0.46 | 0.42 | — |
 | steghide JPEG | 0.21 | 0.10 | 0.03 | — |
 
-What this means for A1: a warden with one of these detectors catches about 56% of ScatterSteg PNGs at 0.05 bits per pixel and 65% at 0.4, and 50–61% of its JPEGs at 0.05 to 0.2. That is better than chance at every payload, and a stronger detector would do better still: the published models and deep-learning detectors, not yet run, would score every row lower. ScatterSteg is harder to detect than steghide (caught 96–98% of the time) and than naive LSB embedding at every payload measured.
+What this means for A1: a warden with one of these detectors catches about 56% of ScatterSteg PNGs at 0.05 bits per pixel and 65% at 0.4, and 53–58% of its JPEGs at 0.05 to 0.2. That is better than chance at every payload, and a stronger detector would do better still: the published models and deep-learning detectors, not yet run, would score every row lower. ScatterSteg is harder to detect than steghide (caught 96–98% of the time) and than naive LSB embedding at every payload measured.
 
 SRNet, the reference deep network for steganalysis, trained on 7,000 cover/stego pairs from BOSSbase (resized to 256×256) and tested on 2,000 others:
 
 | Payload | P_E | Caught |
 |---|---|---|
+| ScatterSteg PNG, HILL, 0.2 bits per pixel | 0.26 | 74% |
 | ScatterSteg PNG, HILL, 0.4 bits per pixel | 0.13 | 87% |
-| ScatterSteg JPEG, UERD, 0.2 bits per non-zero AC coefficient | 0.07 | 93% |
+| ScatterSteg JPEG, UERD, 0.2 bits per non-zero AC coefficient | 0.08 | 92% |
 
 What this means for A1: a warden who can train a deep network on images like yours, at about the payload you use, will find moderate payloads most of the time. The rich-model figures above understate that warden. The lighter payloads, and the other cost models, are still being measured; until then, keep to the suggested most (`scattersteg info`) or well under it.
 

@@ -20,24 +20,14 @@ int is_jpeg_file(const char *path);  /* starts with the JPEG SOI marker */
 JpegImage *jpeg_load(const char *path);
 void jpeg_free(JpegImage *j);
 
-/* The carriers: every AC coefficient with |value| >= 2, in component,
-   block-row, block, coefficient order. DC coefficients, zeros and +-1 are
-   never used: changing them shows (blocking, and the count of zeros that
-   JPEG steganalysis watches). Embedding keeps |value| >= 2, so a decoder
-   finds the same carriers. Valid until jpeg_free. */
+/* The carriers: every AC coefficient, zeros included, in component,
+   block-row, block, coefficient order, as UED, UERD and J-UNIWARD use
+   them; the costs keep changes out of smooth blocks. DC coefficients are
+   never used: changing them shows as blocking. Valid until jpeg_free. */
 Carrier jpeg_carrier(JpegImage *j);
 void jpeg_size(const JpegImage *j, uint32_t *width, uint32_t *height);
 /* How many AC coefficients aren't 0: what JPEG payloads are measured in */
 uint64_t jpeg_nonzero_ac(const JpegImage *j);
-
-/* How much dearer a change to a coefficient of |value| 2 is than its UERD
-   cost: 2 can only go to 3, which shifts the 2:3 ratio JPEG detectors
-   watch. Tuned on the benchmark covers: 1.75 keeps the ratio within 0.17
-   of the covers' spread at 0.05-0.2 bits per non-zero AC coefficient
-   (1.5: 0.43, 2.0: 0.22), with the same DCTR detection to within noise. */
-#ifndef JPEG_TWO_COST
-#define JPEG_TWO_COST 1.75f
-#endif
 
 /* Why a cover this way would come out visibly changed, or NULL. Data
    after the EOI marker (MPF secondary images, Ultra HDR gain maps, depth

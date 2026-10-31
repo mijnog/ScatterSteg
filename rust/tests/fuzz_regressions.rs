@@ -63,7 +63,7 @@ fn jpeg_regressions() {
         if !j.check_writable() { continue; }
         j.save(&out).unwrap_or_else(|e| panic!("{}: save: {e}", f.display()));
         let back = JpegImage::load(&out).unwrap_or_else(|| panic!("{}: saved JPEG must reload", f.display()));
-        assert!(back.coefs == j.coefs && back.carriers == j.carriers, "{}", f.display());
+        assert!(back.coefs == j.coefs, "{}", f.display());
     }
 }
 

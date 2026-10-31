@@ -126,7 +126,7 @@ ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read th
 
 1. **Keys.** A random salt is hidden at public positions. Argon2id turns the passphrase and salt into a master key, which gives a *scatter key* and an *encryption key*.
 2. **Compression and encryption.** The message is compressed (DEFLATE) if that makes it shorter, since fewer bits to hide means fewer changes; text typically shrinks to half. It is then encrypted and authenticated with XSalsa20-Poly1305.
-3. **Order.** The scatter key shuffles the image's carriers into a secret order: the pixel samples of a PNG, or the AC coefficients of magnitude 2 or more in a JPEG.
+3. **Order.** The scatter key shuffles the image's carriers into a secret order: the pixel samples of a PNG, or the AC coefficients of a JPEG, zeros included.
 4. **Syndrome coding.** Instead of writing one bit into each carrier, which changes about half of them, syndrome-trellis codes (STC) find the cheapest set of changes that encodes the message. "Cheapest" comes from content-adaptive costs: HILL for PNG and UERD for JPEG make a change cheap where the image is busy and expensive where it is flat. This makes 2 to 3 times fewer changes than writing the bits directly, in the places hardest to notice.
 5. **Changes.** Every change is ±1. Where two carriers that both need changing hold values one apart, they swap values instead, which leaves the image's histogram exactly as it was (93–98.5% of changes, on photographs).
 
@@ -139,7 +139,7 @@ Detection error against the strongest detectors measured (0.5 means the detector
 | Payload | 0.05 | 0.1 | 0.2 | 0.4 |
 |---|---|---|---|---|
 | **ScatterSteg, PNG** | **0.44** | **0.42** | **0.39** | **0.36** |
-| **ScatterSteg, JPEG** | **0.50** | **0.48** | **0.39** | — |
+| **ScatterSteg, JPEG** | **0.47** | **0.46** | **0.42** | — |
 | steghide (as BMP) | 0.04 | 0.03 | 0.02 | 0.02 |
 | plain LSB matching | 0.17 | 0.09 | 0.05 | 0.02 |
 
@@ -149,8 +149,9 @@ These detectors are reimplementations of rich models trained on a few hundred im
 
 | SRNet, 10,000 BOSSbase images at 256×256 | Payload | Detection error | Caught |
 |---|---|---|---|
+| ScatterSteg, PNG | 0.2 bits per pixel | 0.26 | 74% |
 | ScatterSteg, PNG | 0.4 bits per pixel | 0.13 | 87% |
-| ScatterSteg, JPEG | 0.2 bits per non-zero AC coefficient | 0.07 | 93% |
+| ScatterSteg, JPEG | 0.2 bits per non-zero AC coefficient | 0.08 | 92% |
 
 SRNet was trained on 7,000 cover/stego pairs from the same source as the test images, at a known payload: a capable warden's best case, but a realistic one. The lighter payloads are still being measured; until they are, assume that only small messages in private, noisy covers stay hidden. [`benchmark/README.md`](benchmark/README.md) has every measurement, the method, and the full list of limitations.
 
@@ -170,7 +171,7 @@ ScatterSteg aims to be as hard to detect as current research allows, and built t
 
 Next, each measured before it's kept:
 
-- **JPEG: embed in every AC coefficient,** not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Concentrating the changes on fewer coefficients makes them easier to see.
+- **JPEG: embed in every AC coefficient** (done), not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Against DCTR it is harder to detect from 0.2 bits per non-zero AC coefficient up (P_E 0.42 against 0.40 at 0.2, 0.36 against 0.26 at 0.3); SRNet sees no difference. It also fits messages into smooth covers that couldn't hold them before, where they are easily found: a guard against that comes next.
 - **Write files the way the cover was written.** Done for PNG: the output keeps the cover's row filters, data chunk sizes and zlib settings, so a cover saved unchanged comes back identical. Still to do for JPEG, which libjpeg rewrites with its own scan order and Huffman tables (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), something a careful observer can notice without any steganalysis.
 - **Ternary embedding,** where the message also chooses the direction of each change, for fewer changes per message.
 - **A payload suggestion that follows the square root law:** the safe message size grows with the square root of the image size, not in proportion to it.

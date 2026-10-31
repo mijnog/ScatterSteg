@@ -20,12 +20,9 @@ fuzz_target!(|data: &[u8]| {
     let (path, out_path) = paths();
     std::fs::write(path, data).unwrap();
     let Some(mut j) = JpegImage::load(path) else { return };
-    for &i in &j.carriers {
-        let c = j.coefs[i as usize];
-        assert!(c <= -2 || c >= 2);
-    }
+    assert_eq!(j.costs.len(), j.coefs.len() / 64 * 63); // every AC coefficient
     if !j.check_writable() { return; }
     j.save(out_path).unwrap();
     let back = JpegImage::load(out_path).expect("saved JPEG must reload");
-    assert!(back.coefs == j.coefs && back.carriers == j.carriers);
+    assert!(back.coefs == j.coefs);
 });

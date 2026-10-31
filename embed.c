@@ -43,7 +43,7 @@ uint32_t carrier_channels(const Carrier *c) {
 
 /* The sample holding bit `pos` of the data written in `indices` order */
 static void *sample_at(const Carrier *c, const uint32_t *indices, uint32_t pos) {
-    if (!c->img) return c->coefs[indices[pos]];
+    if (!c->img) return carrier_coef(c, indices[pos]);
     uint32_t ch = c->img->channels, pixel = indices[pos / ch];
     return &c->img->rows[pixel / c->img->width][(pixel % c->img->width) * ch + pos % ch];
 }
@@ -92,8 +92,9 @@ static void write_bit(const Carrier *c, const uint32_t *indices, uint32_t pos,
 /* LSB matching: change the value by +-1 at random rather than overwriting
    the LSB. Overwriting only ever maps 2k <-> 2k+1, which leaves the pair
    statistics that chi-square, RS and sample pair analysis detect.
-   Pixel values stay in 0..255. JPEG coefficients must keep |c| >= 2 so the
-   decoder finds the same carriers: +-2 can only move outwards. */
+   Pixel values stay in 0..255, JPEG coefficients within what an encoder
+   can write. Every AC coefficient is a carrier, whatever its value, so a
+   decoder finds the same carriers however they change. */
 static int nudged(int kind, int v, Coins *coins) {
     if (kind == KIND_U8) {
         if (v == 0)   return 1;
@@ -116,8 +117,7 @@ static int nudged(int kind, int v, Coins *coins) {
    Only samples one value apart can pair, so the pairing graph is a chain of
    value buckets, where greedily pairing each bucket's leftovers with the
    next bucket gives a maximum matching. Shuffling first makes which
-   samples pair up random. The rest get a +-1 nudge. For JPEG, buckets -1,
-   0 and 1 hold no carriers, so no swap ever breaks |c| >= 2.
+   samples pair up random. The rest get a +-1 nudge.
 
    Every pair flips one even and one odd value, so the leftovers are mostly
    the cover's parity imbalance among the carriers, which random message
@@ -267,11 +267,10 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
    more of its changes pair up as value swaps (93-98% against 48-87%).
 
    JPEG: UERD, precomputed per carrier by jpeg_io (collect_carriers): the
-   quantization step over the energy of the block and its neighbours, and
-   dearer for |value| == 2, which can only go to 3 and shifts the 2:3
-   ratio JPEG detectors watch. Against the DCTR-style detector in
-   benchmark/ that cut detection from 54-73% to 50-61% (0.05-0.2 bits per
-   non-zero AC coefficient) over the quantization step alone. */
+   quantization step over the energy of the block and its neighbours, for
+   every AC coefficient. Against the DCTR-style detector in benchmark/
+   that gives P_E 0.47-0.36 at 0.05-0.3 bits per non-zero AC coefficient,
+   where the earlier rule (only |value| >= 2) gave 0.49-0.26. */
 void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
                  size_t n, float *costs) {
     uint32_t ch = carrier_channels(c);

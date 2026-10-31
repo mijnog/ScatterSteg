@@ -19,17 +19,13 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
 
-/// How much dearer a change to a coefficient of |value| 2 is than its UERD
-/// cost: 2 can only go to 3, which shifts the 2:3 ratio JPEG detectors watch.
-/// As C's JPEG_TWO_COST (jpeg_io.h), which has the tuning.
-const TWO_COST: f32 = 1.75;
 /// Largest coefficient storage load will allocate (1 GiB)
 const MAX_COEF_BYTES: usize = 1 << 30;
 /// Most carriers load will take. Each costs memory of its own beyond its
-/// 2-byte coefficient: its index (a pointer in the C version, whose cap this
-/// must equal) and cost here, its slot in the message
-/// permutation, and the bits and cost STC works on.
-const CARRIER_BYTES: usize = size_of::<*const i16>() + size_of::<f32>() + size_of::<u32>() + 2 + size_of::<f32>();
+/// 2-byte coefficient: its cost here, its slot in the message permutation,
+/// and the bits and cost STC works on. About 50 megapixels of a 4:2:0 JPEG;
+/// it must equal the C version's cap.
+const CARRIER_BYTES: usize = size_of::<f32>() + size_of::<u32>() + 2 + size_of::<f32>();
 const MAX_CARRIERS: usize = MAX_COEF_BYTES / CARRIER_BYTES;
 /// Progressive JPEGs can have any number of scans, each a full pass over the
 /// coefficients; a crafted file with thousands of tiny scans takes minutes to
@@ -190,11 +186,11 @@ pub struct JpegImage {
     comps: Vec<Component>,
     /// Every component's blocks, 64 coefficients each, block rows in order
     pub coefs: Vec<i16>,
-    /// Indices into `coefs` of the carriers: every AC coefficient with
-    /// |value| >= 2, in component, block-row, block, coefficient order. DC
-    /// coefficients, zeros and +-1 are never used: changing them shows
-    /// (blocking, and the count of zeros that JPEG steganalysis watches).
-    pub carriers: Vec<u32>,
+    /// The cost of changing each carrier. The carriers are every AC
+    /// coefficient, zeros included, in component, block-row, block,
+    /// coefficient order (see `Carrier::jpeg`), as UED, UERD and J-UNIWARD
+    /// use them; the costs keep changes out of smooth blocks. DC
+    /// coefficients are never used: changing them shows as blocking.
     pub costs: Vec<f32>,
     /// How many AC coefficients aren't 0: what JPEG payloads are measured in
     pub nonzero_ac: u64,
@@ -260,7 +256,7 @@ impl JpegImage {
 
         let mut img = JpegImage {
             src, _err: err, _progress: progress,
-            virt, comps: Vec::new(), coefs: Vec::new(), carriers: Vec::new(), costs: Vec::new(),
+            virt, comps: Vec::new(), coefs: Vec::new(), costs: Vec::new(),
             nonzero_ac: 0,
             trailing_data: false,
             _data: Vec::new(),
@@ -295,6 +291,7 @@ impl JpegImage {
             let (wb, hb) = (comp.width_in_blocks as usize, comp.height_in_blocks as usize);
             self.comps.push(Component { offset: self.coefs.len(), width_in_blocks: wb, height_in_blocks: hb });
             let start = self.coefs.len();
+            if self.costs.len() + wb * hb * (DCTSIZE2 - 1) > MAX_CARRIERS { return false; }
             self.coefs.reserve(wb * hb * DCTSIZE2);
             for by in 0..hb {
                 let row = unsafe { access(s as j_common_ptr, *self.virt.add(ci), by as u32, 1, 1) };
@@ -335,8 +332,7 @@ impl JpegImage {
             for (i, &c) in self.coefs[start..].iter().enumerate() {
                 let k = i % DCTSIZE2;
                 if k != 0 && c != 0 { self.nonzero_ac += 1; }
-                if k == 0 || (c > -2 && c < 2) { continue; }
-                if self.carriers.len() >= MAX_CARRIERS { return false; }
+                if k == 0 { continue; }
                 let (bx, by) = ((i / DCTSIZE2) % wb, (i / DCTSIZE2) / wb);
                 let mut around = 0f32;
                 for dy in -1..=1isize {
@@ -347,12 +343,9 @@ impl JpegImage {
                         around += if dy != 0 || dx != 0 { 0.25 * e } else { e };
                     }
                 }
-                // And 2 can only go to 3, shifting the 2:3 ratio detectors
-                // watch (see TWO_COST)
-                self.carriers.push((start + i) as u32);
                 self.costs.push(match &juniward {
                     Some(j) => j.cost(bx, by, k),
-                    None => q(k) / around * if c == 2 || c == -2 { TWO_COST } else { 1.0 },
+                    None => q(k) / around,
                 });
             }
         }
@@ -360,7 +353,7 @@ impl JpegImage {
     }
 
     pub fn carrier(&mut self) -> Carrier<'_> {
-        Carrier::jpeg(&mut self.coefs, &self.carriers, &self.costs)
+        Carrier::jpeg(&mut self.coefs, &self.costs)
     }
 
     /// Width and height in pixels
@@ -409,7 +402,7 @@ impl JpegImage {
     pub fn check_writable(&mut self) -> bool {
         let Some(bytes) = self.encode() else { return false };
         let Some(back) = JpegImage::from_bytes(bytes) else { return false };
-        back.coefs == self.coefs && back.carriers == self.carriers
+        back.coefs == self.coefs
     }
 
     /// Writes the coefficients and markers as a JPEG, atomically
@@ -532,11 +525,11 @@ unsafe fn standard_tables(s: *const jpeg_decompress_struct, d: *const jpeg_compr
 mod tests {
     use super::*;
 
-    /// jpeg_io.c's JPEG_CARRIER_BYTES counts an 8-byte pointer per carrier. A
-    /// different cap here lets us write JPEGs C refuses to read.
+    /// As jpeg_io.c's JPEG_CARRIER_BYTES. A different cap here lets us write
+    /// JPEGs C refuses to read.
     #[test]
     fn carrier_cap_matches_c() {
-        assert_eq!(CARRIER_BYTES, 22);
-        assert_eq!(MAX_CARRIERS, (1usize << 30) / 22);
+        assert_eq!(CARRIER_BYTES, 14);
+        assert_eq!(MAX_CARRIERS, (1usize << 30) / 14);
     }
 }

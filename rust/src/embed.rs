@@ -22,8 +22,6 @@ pub struct Carrier<'a> {
     samples: Samples<'a>,
     channels: u32,
     positions: u32,
-    /// JPEG: carrier k's index into the coefficients
-    map: &'a [u32],
     /// JPEG: cost of changing each carrier; PNG: of each sample, or empty
     /// for uniform
     costs: &'a [f32],
@@ -34,11 +32,19 @@ pub struct Carrier<'a> {
 impl<'a> Carrier<'a> {
     /// `pixels` is `channels` interleaved samples per pixel, row by row
     pub fn png(pixels: &'a mut [u8], width: u32, height: u32, channels: u32) -> Self {
-        Carrier { samples: Samples::U8(pixels), channels, positions: width * height, map: &[], costs: &[], width }
+        Carrier { samples: Samples::U8(pixels), channels, positions: width * height, costs: &[], width }
     }
 
-    pub fn jpeg(coefs: &'a mut [i16], map: &'a [u32], costs: &'a [f32]) -> Self {
-        Carrier { samples: Samples::Coef(coefs), channels: 1, positions: map.len() as u32, map, costs, width: 0 }
+    /// `coefs` is 8x8 blocks of 64 DCT coefficients each, DC first. Carrier
+    /// k is AC coefficient k % 63 + 1 of block k / 63, and costs[k] its cost.
+    pub fn jpeg(coefs: &'a mut [i16], costs: &'a [f32]) -> Self {
+        assert!(costs.len().div_ceil(63) * 64 <= coefs.len());
+        Carrier { samples: Samples::Coef(coefs), channels: 1, positions: costs.len() as u32, costs, width: 0 }
+    }
+
+    /// JPEG carrier k's index into the coefficients
+    fn coef_index(k: u32) -> usize {
+        (k / 63) as usize * 64 + (k % 63) as usize + 1
     }
 
     /// The same samples, with these costs if a PNG (see `costs`); a JPEG
@@ -48,7 +54,7 @@ impl<'a> Carrier<'a> {
             Samples::U8(s) => (Samples::U8(s), png_costs),
             Samples::Coef(s) => (Samples::Coef(s), self.costs),
         };
-        Carrier { samples, channels: self.channels, positions: self.positions, map: self.map, costs, width: self.width }
+        Carrier { samples, channels: self.channels, positions: self.positions, costs, width: self.width }
     }
 
     /// PNG: HILL costs (Li et al., 2014) for every sample, in pixel order:
@@ -115,8 +121,8 @@ impl<'a> Carrier<'a> {
         match &self.samples {
             Samples::U8(s) => h.update(&s[..self.positions as usize * self.channels as usize]),
             Samples::Coef(s) => {
-                for part in self.map.chunks(4096) {
-                    let bytes: Vec<u8> = part.iter().flat_map(|&i| s[i as usize].to_ne_bytes()).collect();
+                for part in (0..self.positions).collect::<Vec<u32>>().chunks(4096) {
+                    let bytes: Vec<u8> = part.iter().flat_map(|&k| s[Self::coef_index(k)].to_ne_bytes()).collect();
                     h.update(&bytes);
                 }
             }
@@ -127,7 +133,7 @@ impl<'a> Carrier<'a> {
     /// The sample holding bit `pos` of the data written in `indices` order
     fn flat(&self, indices: &[u32], pos: u32) -> usize {
         match self.samples {
-            Samples::Coef(_) => self.map[indices[pos as usize] as usize] as usize,
+            Samples::Coef(_) => Self::coef_index(indices[pos as usize]),
             Samples::U8(_) => {
                 let ch = self.channels;
                 (indices[(pos / ch) as usize] as usize) * ch as usize + (pos % ch) as usize
@@ -203,17 +209,15 @@ impl Coins {
 }
 
 /// LSB matching: change the value by +-1 at random rather than overwriting
-/// the LSB. Pixel values stay in 0..255. JPEG coefficients must keep
-/// |c| >= 2 so the decoder finds the same carriers: +-2 can only move
-/// outwards.
+/// the LSB. Pixel values stay in 0..255, JPEG coefficients within what an
+/// encoder can write. Every AC coefficient is a carrier, whatever its value,
+/// so a decoder finds the same carriers however they change.
 fn nudged(coef: bool, v: i32, coins: &mut Coins) -> i32 {
     if !coef {
         if v == 0 { return 1; }
         if v == 255 { return 254; }
     } else {
         // Stay within what a JPEG encoder can write (|AC| <= 1023)
-        if v == 2 { return 3; }
-        if v == -2 { return -3; }
         if v >= 1023 { return v - 1; }
         if v <= -1023 { return v + 1; }
     }
@@ -229,8 +233,7 @@ fn nudged(coef: bool, v: i32, coins: &mut Coins) -> i32 {
 /// Only samples one value apart can pair, so the pairing graph is a chain of
 /// value buckets, where greedily pairing each bucket's leftovers with the
 /// next bucket gives a maximum matching. Shuffling first makes which samples
-/// pair up random. The rest get a +-1 nudge. For JPEG, buckets -1, 0 and 1
-/// hold no carriers, so no swap ever breaks |c| >= 2.
+/// pair up random. The rest get a +-1 nudge.
 ///
 /// Decoding only reads LSBs, so it can't tell how they were set.
 pub fn apply(c: &mut Carrier, plan: &mut EmbedPlan) -> EmbedStats {
@@ -379,10 +382,10 @@ pub fn set_bits(c: &Carrier, indices: &[u32], start: usize, bits: &[u8], plan: &
 /// more of its changes pair up as value swaps (93-98% against 48-87%).
 ///
 /// JPEG: UERD, precomputed per carrier by the loader (collect_carriers): the
-/// quantization step over the energy of the block and its neighbours, and
-/// dearer for |value| == 2. Against the DCTR-style detector in benchmark/ that
-/// cut detection from 54-73% to 50-61% (0.05-0.2 bits per non-zero AC
-/// coefficient) over the quantization step alone.
+/// quantization step over the energy of the block and its neighbours, for
+/// every AC coefficient. Against the DCTR-style detector in benchmark/ that
+/// gives P_E 0.47-0.36 at 0.05-0.3 bits per non-zero AC coefficient, where
+/// the earlier rule (only |value| >= 2) gave 0.49-0.26.
 pub fn costs(c: &Carrier, indices: &[u32], start: usize, out: &mut [f32]) {
     let ch = c.channels as usize;
     for (i, o) in out.iter_mut().enumerate() {

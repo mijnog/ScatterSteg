@@ -18,7 +18,7 @@ fn paths() -> &'static [PathBuf; 3] {
     })
 }
 
-fn values(j: &JpegImage) -> Vec<i16> { j.carriers.iter().map(|&i| j.coefs[i as usize]).collect() }
+fn values(j: &JpegImage) -> Vec<i16> { j.coefs.chunks_exact(64).flat_map(|b| b[1..].iter().copied()).collect() }
 
 fuzz_target!(|data: &[u8]| {
     // The CLI only loads a file that starts with the JPEG signature (cover.rs)

@@ -185,11 +185,11 @@ static void test_carriers_and_embedding(void) {
     CHECK(j != NULL);
     if (!j) return;
     Carrier c = jpeg_carrier(j);
-    CHECK(c.n_coefs > 2000);
-    int all_big = 1;
-    for (uint32_t i = 0; i < c.n_coefs; i++)
-        if (*c.coefs[i] > -2 && *c.coefs[i] < 2) all_big = 0;
-    CHECK(all_big);
+    /* Every AC coefficient, zeros and +-1 included */
+    CHECK(c.n_coefs > 2000 && c.n_coefs % 63 == 0);
+    uint32_t zeros = 0;
+    for (uint32_t i = 0; i < c.n_coefs; i++) zeros += *carrier_coef(&c, i) == 0;
+    CHECK(zeros > c.n_coefs / 4);
 
     /* Fill every carrier with random bits, exchange-embedded */
     uint32_t n = c.n_coefs, len = n / 8;
@@ -198,24 +198,21 @@ static void test_carriers_and_embedding(void) {
     uint8_t *data = malloc(len), *back = malloc(len);
     randombytes_buf(data, len);
     int16_t *before = malloc(n * sizeof(int16_t));
-    for (uint32_t i = 0; i < n; i++) before[i] = *c.coefs[i];
+    for (uint32_t i = 0; i < n; i++) before[i] = *carrier_coef(&c, i);
     EmbedPlan *plan = embed_plan_new();
     EmbedStats st;
     CHECK(embed_write_raw(&c, idx, n, data, len, plan) == 0);
     CHECK(embed_apply(plan, &st) == 0);
     embed_plan_free(plan);
-    /* Most changes swap in pairs. Fewer than on PNG photos: coefficient
-       magnitudes fall off steeply (many more 2s than 3s), and the random
-       bits must even out that parity skew with nudges (68% pair here, about
-       80% on real photos). */
-    CHECK(st.exchanged * 10 > st.changes * 6);
+    /* Many changes swap in pairs, but fewer than on PNG photos: zeros far
+       outnumber +-1 (and those the 2s), and a swap needs neighbouring
+       values, so most zeros that must change are nudged to +-1 (47% pair
+       here, with random bits filling every carrier) */
+    CHECK(st.exchanged * 10 > st.changes * 4);
 
-    int kept = 1, within_one = 1;
-    for (uint32_t i = 0; i < n; i++) {
-        if (*c.coefs[i] > -2 && *c.coefs[i] < 2) kept = 0;
-        if (abs(*c.coefs[i] - before[i]) > 1) within_one = 0;
-    }
-    CHECK(kept);        /* every carrier is still a carrier */
+    int within_one = 1;
+    for (uint32_t i = 0; i < n; i++)
+        if (abs(*carrier_coef(&c, i) - before[i]) > 1) within_one = 0;
     CHECK(within_one);
 
     /* Through a file and back: the same carriers, holding the data */
@@ -359,7 +356,7 @@ static void test_unrewritable_refused(void) {
 /* UERD costs, recomputed here from the coefficients through libjpeg: a
    carrier costs its quantization step over its block's energy plus a
    quarter of each neighbour's (energy: the sum of |coefficient| x step
-   over the AC terms), JPEG_TWO_COST times that for |value| 2 */
+   over the AC terms). Every AC coefficient is a carrier. */
 static void check_uerd(const char *path) {
     JpegImage *j = jpeg_load(path);
     CHECK(j != NULL);
@@ -395,9 +392,8 @@ static void check_uerd(const char *path) {
                             around += (y == by && x == bx ? 1 : 0.25) * energy[y * w + x];
                 for (int k = 1; k < DCTSIZE2; k++) {
                     int v = row[0][bx][k];
-                    if (v > -2 && v < 2) continue;
-                    double want = q[k] / around * (v == 2 || v == -2 ? JPEG_TWO_COST : 1);
-                    if (n >= c.n_coefs || *c.coefs[n] != v || fabs(c.coef_costs[n] - want) > 1e-5 * want) bad++;
+                    double want = q[k] / around;
+                    if (n >= c.n_coefs || *carrier_coef(&c, n) != v || fabs(c.coef_costs[n] - want) > 1e-5 * want) bad++;
                     n++;
                 }
             }
@@ -450,8 +446,7 @@ static void check_juniward(const char *path) {
             for (uint32_t bx = 0; bx < w; bx++)
                 for (int k = 1; k < DCTSIZE2; k++) {
                     int v = row[0][bx][k];
-                    if (v > -2 && v < 2) continue;
-                    if (n >= c.n_coefs || *c.coefs[n] != v || c.coef_costs[n] != juniward_cost(ju, bx, by, k)) bad++;
+                    if (n >= c.n_coefs || *carrier_coef(&c, n) != v || c.coef_costs[n] != juniward_cost(ju, bx, by, k)) bad++;
                     n++;
                 }
         }
@@ -512,7 +507,7 @@ static void test_fuzz_regressions(void) {
             CHECK(k && jpeg_carrier(k).n_coefs == a.n_coefs);
             if (k && jpeg_carrier(k).n_coefs == a.n_coefs) {
                 Carrier b = jpeg_carrier(k);
-                for (uint32_t i = 0; i < a.n_coefs; i++) CHECK(*a.coefs[i] == *b.coefs[i]);
+                for (uint32_t i = 0; i < a.n_coefs; i++) CHECK(*carrier_coef(&a, i) == *carrier_coef(&b, i));
             }
             jpeg_free(k);
             jpeg_free(j);

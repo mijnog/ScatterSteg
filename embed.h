@@ -13,11 +13,18 @@
    (a position is one coefficient). Bits go LSB first. */
 typedef struct {
     Image *img;        /* PNG, or NULL */
-    int16_t **coefs;   /* JPEG: n_coefs pointers to carrier coefficients */
-    uint32_t n_coefs;
+    int16_t **blocks;  /* JPEG: the 8x8 blocks of DCT coefficients, 64 each,
+                          DC first. Carrier k is AC coefficient k % 63 + 1
+                          of block k / 63 (see carrier_coef). */
+    uint32_t n_coefs;  /* JPEG: how many carriers, 63 per block */
     const float *coef_costs;  /* JPEG: cost of changing each; PNG: of each
                                  sample, or NULL for uniform (see embed_costs) */
 } Carrier;
+
+/* JPEG carrier k */
+static inline int16_t *carrier_coef(const Carrier *c, uint32_t k) {
+    return &c->blocks[k / 63][k % 63 + 1];
+}
 
 static inline Carrier carrier_of_image(Image *img) {
     Carrier c = {img, NULL, 0, NULL};

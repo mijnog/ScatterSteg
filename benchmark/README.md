@@ -134,6 +134,23 @@ above to within 0.010:
 | 0.20 | 0.271 | 0.396 | **0.390** |
 | 0.30 | 0.132 | 0.260 | **0.262** |
 
+Embedding in every AC coefficient, zeros and ±1 included, as UED, UERD and
+J-UNIWARD were published, replaced this rule and its 1.75x factor
+(`results-allcoef.txt`, build `b702512` against `d2b7c04`; P_E ± sd over
+splits):
+
+| payload | UERD, \|value\| ≥ 2 | **UERD, every AC (current)** | J-UNIWARD, \|value\| ≥ 2 | J-UNIWARD, every AC |
+|---|---|---|---|---|
+| 0.05 | 0.485 ± 0.006 | **0.473** ± 0.011 | 0.496 ± 0.009 | 0.470 ± 0.007 |
+| 0.10 | 0.464 ± 0.011 | **0.456** ± 0.006 | 0.468 ± 0.006 | 0.462 ± 0.013 |
+| 0.20 | 0.397 ± 0.014 | **0.418** ± 0.009 | 0.382 ± 0.009 | 0.425 ± 0.008 |
+| 0.30 | 0.261 ± 0.010 | **0.356** ± 0.013 | 0.232 ± 0.019 | 0.360 ± 0.011 |
+
+A clear gain from 0.2 up; at 0.05 slightly worse, within one or two
+standard deviations. Every histogram shift (`hist_jpg.py`) stays under 0.1
+of the covers' spread, where the old rule moved the 2:3 ratio by up to 1.6
+(UERD) and 3.2 (J-UNIWARD) at 0.3. And every cover holds 0.3.
+
 0.3 is a control at a heavy payload: the median cover holds 0.47 bits per
 non-zero AC coefficient (10th to 90th percentile 0.42 to 0.54), so 0.3 is
 about 63% of capacity. (0.5 was tried first; only 45 of 480 covers could hold
@@ -298,14 +315,27 @@ batches of pairs of the same image, flipped and rotated alike. Builds of
 |---|---|---|---|---|
 | ScatterSteg PNG, HILL | 0.4 bits per pixel | **0.129** ± 0.008 | 0.954 | 76% |
 | ScatterSteg JPEG, UERD | 0.2 bits per non-zero AC | **0.073** ± 0.006 | 0.981 | 89% |
+| ScatterSteg PNG, HILL | 0.2 bits per pixel | **0.256** ± 0.010 | 0.842 | 42% |
+| ScatterSteg JPEG, UERD, every AC coefficient | 0.2 bits per non-zero AC | **0.077** ± 0.006 | 0.979 | 89% |
+
+The last two rows were trained for 15 epochs, starting from the detector of
+the row above them (`hill_0.4` and the first JPEG row), with build `b702512`
+for the last. A head start favours the detector, so they are if anything
+pessimistic for the user.
 
 This is far stronger than the rich models. On BOSSbase (512×512 there, so
 not the same images) the SRM-style detector's P_E for HILL at 0.4 was 0.22;
 SRNet's is 0.13, catching 87% of PNGs. JPEG, which DCTR barely separated at
-0.2 (P_E 0.39 on Wikimedia), is caught 93% of the time. The JPEG test leaves
-out 45 of its 2,000 images, and 171 training images, whose cover couldn't
-hold the message: ScatterSteg only embeds in coefficients of magnitude 2 or
-more, which in a small, smooth JPEG may not be enough.
+0.2 (P_E 0.39 on Wikimedia), is caught 93% of the time. The first JPEG row
+leaves out 45 of its 2,000 test images, and 171 training images, whose
+cover couldn't hold the message: that version only embedded in coefficients
+of magnitude 2 or more, which in a small, smooth JPEG may not be enough.
+
+Embedding in every AC coefficient (the current rule) fits all of them. On
+the same 1,955 test images its P_E is 0.078 against 0.073, a difference
+within one standard error (0.004 by bootstrap): SRNet sees none. But the 45
+smooth images it now fits are caught almost every time (P_E 0.022 on those
+alone), so a message there isn't hidden at all.
 
 So against a strong, well-trained detector, payloads of 0.2 to 0.4 are not
 hidden. The lighter payloads (0.05 to 0.2), S-UNIWARD and J-UNIWARD are

@@ -41,7 +41,8 @@ uint64_t jpeg_nonzero_ac(const JpegImage *j);
 
 /* Why a cover this way would come out visibly changed, or NULL. Data
    after the EOI marker (MPF secondary images, Ultra HDR gain maps, depth
-   maps) isn't kept, while the markers indexing it would be. */
+   maps) isn't kept, while the markers indexing it would be. A content
+   credential (C2PA) would be kept, but no longer match the pixels. */
 const char *jpeg_unsuitable(const JpegImage *j);
 
 /* Some JPEGs decode fine but libjpeg won't write their coefficients back

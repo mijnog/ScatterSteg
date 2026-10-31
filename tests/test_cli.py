@@ -2015,6 +2015,34 @@ class JpegTest(CliBase):
         self.assertIn("data after the end of the image", log)
         self.assertFalse(os.path.exists(out))
 
+    def test_content_credential_refused(self):
+        # A C2PA manifest signs the image data: kept, it would show the
+        # changes as tampering. As a camera writes it: APP11, JUMBF ("JP",
+        # instance, sequence), a "jumb" superbox whose "jumd" is labelled c2pa.
+        src = self.path("signed.jpg")
+        make_jpeg(src, 200, 150)
+        label = b"c2pa\x00"
+        jumd = b"jumd" + b"c2pa\x00\x11\x00\x10\x80\x00\x00\xaa\x00\x38\x9b\x71" + b"\x03" + label
+        jumd = struct.pack(">I", 4 + len(jumd)) + jumd
+        jumb = struct.pack(">I", 8 + len(jumd)) + b"jumb" + jumd
+        app11 = b"JP" + struct.pack(">HI", 1, 1) + jumb
+        with open(src, "rb") as f:
+            data = f.read()
+        with open(src, "wb") as f:
+            f.write(data[:2] + b"\xff\xeb" + struct.pack(">H", 2 + len(app11)) + app11 + data[2:])
+        out = self.path("steg.jpg")
+        code, log = self.embed(b"x", out, src=src)
+        self.assertEqual(code, 1, log)
+        self.assertIn("content credential (C2PA)", log)
+        self.assertFalse(os.path.exists(out))
+        # Another APP11 (JPEG XT, JPEG 360) is kept as before
+        with open(src, "wb") as f:
+            other = b"JP" + struct.pack(">HI", 1, 1) + b"\x00\x00\x00\x10jumbxt360"
+            f.write(data[:2] + b"\xff\xeb" + struct.pack(">H", 2 + len(other)) + other + data[2:])
+        self.assertEqual(self.embed(b"x", out, src=src)[0], 0)
+        self.assertIn(0xEB, [m for m, _ in jpeg_segments(out)])
+        self.assertDecodes(out, "x")
+
     def test_gray(self):
         src = self.path("gray.jpg")
         make_jpeg(src, 200, 150, 1)

@@ -370,9 +370,31 @@ impl JpegImage {
 
     /// Why a cover this way would come out visibly changed, or None. Data
     /// after the EOI marker (MPF secondary images, Ultra HDR gain maps, depth
-    /// maps) isn't kept, while the markers indexing it would be.
+    /// maps) isn't kept, while the markers indexing it would be. A content
+    /// credential (C2PA) would be kept, but no longer match the pixels.
     pub fn unsuitable(&self) -> Option<&'static str> {
-        self.trailing_data.then_some("data after the end of the image (such as a second image or an HDR gain map)")
+        if self.trailing_data {
+            return Some("data after the end of the image (such as a second image or an HDR gain map)");
+        }
+        self.c2pa_manifest().then_some("a content credential (C2PA) signing its pixels")
+    }
+
+    /// A C2PA manifest (content credentials, which some phones and cameras
+    /// now sign their photos with): JUMBF boxes in APP11 segments, the first
+    /// one labelled "c2pa". It signs a hash of the image data, so any change
+    /// to the coefficients shows as tampering to anyone who checks it.
+    fn c2pa_manifest(&self) -> bool {
+        let mut m = self.src.marker_list;
+        while !m.is_null() {
+            // SAFETY: libjpeg's saved-marker list, kept until the decompressor is destroyed
+            let mk = unsafe { &*m };
+            let data = unsafe { std::slice::from_raw_parts(mk.data, mk.data_length as usize) };
+            if mk.marker == JPEG_APP0 as u8 + 11 && data.starts_with(b"JP") && data.windows(4).any(|w| w == b"c2pa") {
+                return true;
+            }
+            m = mk.next;
+        }
+        false
     }
 
     /// Some JPEGs decode fine but libjpeg won't write their coefficients back

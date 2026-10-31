@@ -313,9 +313,25 @@ void jpeg_size(const JpegImage *j, uint32_t *width, uint32_t *height) {
     *height = j->src.image_height;
 }
 
+/* A C2PA manifest (content credentials, which some phones and cameras now
+   sign their photos with): JUMBF boxes in APP11 segments, the first one
+   labelled "c2pa". It signs a hash of the image data, so any change to the
+   coefficients shows as tampering to anyone who checks it. */
+static int c2pa_manifest(const JpegImage *j) {
+    for (jpeg_saved_marker_ptr m = j->src.marker_list; m; m = m->next) {
+        if (m->marker != JPEG_APP0 + 11 || m->data_length < 2 || memcmp(m->data, "JP", 2) != 0)
+            continue;
+        for (unsigned i = 0; i + 4 <= m->data_length; i++)
+            if (memcmp(m->data + i, "c2pa", 4) == 0) return 1;
+    }
+    return 0;
+}
+
 const char *jpeg_unsuitable(const JpegImage *j) {
-    return j->trailing_data ? "data after the end of the image (such as a second "
-                              "image or an HDR gain map)" : NULL;
+    if (j->trailing_data)
+        return "data after the end of the image (such as a second image or an HDR gain map)";
+    if (c2pa_manifest(j)) return "a content credential (C2PA) signing its pixels";
+    return NULL;
 }
 
 Carrier jpeg_carrier(JpegImage *j) {

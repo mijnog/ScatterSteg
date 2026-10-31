@@ -337,6 +337,23 @@ within one standard error (0.004 by bootstrap): SRNet sees none. But the 45
 smooth images it now fits are caught almost every time (P_E 0.022 on those
 alone), so a message there isn't hidden at all.
 
+That is not the new rule's doing: at the same payload, detection depends
+strongly on how textured the image is, under either rule. By the share of
+AC coefficients that aren't 0 (test images in fifths of that share; the
+old rule's column leaves out the 45 it couldn't fit):
+
+| nonzero AC share | images | P_E, \|value\| ≥ 2 | P_E, every AC |
+|---|---|---|---|
+| 2–8% (smoothest tenth) | 200 | 0.000 | 0.002 |
+| 8–12% | 300 | 0.017 | 0.018 |
+| 12–18% | 500 | 0.029 | 0.034 |
+| 18–24% | 500 | 0.068 | 0.073 |
+| 24–47% | 500 | 0.173 | 0.176 |
+
+So bits per non-zero AC coefficient doesn't put covers on an equal footing:
+the same relative payload is far safer in a busy image. The old rule hid
+this only by refusing the smoothest covers as too small.
+
 So against a strong, well-trained detector, payloads of 0.2 to 0.4 are not
 hidden. The lighter payloads (0.05 to 0.2), S-UNIWARD and J-UNIWARD are
 still being trained; their rows go here. This setting favours the warden:

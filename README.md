@@ -171,7 +171,7 @@ ScatterSteg aims to be as hard to detect as current research allows, and built t
 
 Next, each measured before it's kept:
 
-- **JPEG: embed in every AC coefficient** (done), not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Against DCTR it is harder to detect from 0.2 bits per non-zero AC coefficient up (P_E 0.42 against 0.40 at 0.2, 0.36 against 0.26 at 0.3); SRNet sees no difference. It also fits messages into smooth covers that couldn't hold them before, where they are easily found: a guard against that comes next.
+- **JPEG: embed in every AC coefficient** (done), not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Against DCTR it is harder to detect from 0.2 bits per non-zero AC coefficient up (P_E 0.42 against 0.40 at 0.2, 0.36 against 0.26 at 0.3); SRNet sees no difference. It also fits messages into smooth covers that couldn't hold them before, where they are easily found, as smooth covers always were at the same payload: the payload suggestion will take that into account.
 - **Write files the way the cover was written** (done). A PNG keeps the cover's row filters, data chunk sizes and zlib settings, and a camera JPEG its whole header and Huffman tables, so a cover saved unchanged comes back identical. Before, the output's structure showed it had been rewritten (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), which a careful observer could notice without any steganalysis.
 - **Ternary embedding,** where the message also chooses the direction of each change, for fewer changes per message.
 - **A payload suggestion that follows the square root law:** the safe message size grows with the square root of the image size, not in proportion to it.

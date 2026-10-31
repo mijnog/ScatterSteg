@@ -100,8 +100,6 @@ static int nudged(int kind, int v, Coins *coins) {
         if (v == 255) return 254;
     } else {
         /* Stay within what a JPEG encoder can write (|AC| <= 1023) */
-        if (v == 2)      return 3;
-        if (v == -2)     return -3;
         if (v >= 1023)   return v - 1;
         if (v <= -1023)  return v + 1;
     }

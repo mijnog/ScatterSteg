@@ -209,16 +209,11 @@ static int collect_carriers(JpegImage *j) {
                         if (q <= 0) q = 1;
                         if (!pass) e += (float)abs(*c) * q;
                         if (!pass && *c) j->nonzero_ac++;
-                        if (*c >= 2 || *c <= -2) {
-                            if (pass) {
-                                /* And 2 can only go to 3, shifting the 2:3
-                                   ratio detectors watch (see JPEG_TWO_COST) */
-                                j->carriers[n] = c;
-                                j->costs[n] = ju ? juniward_cost(ju, bx, by, k)
-                                                 : q / around * (*c == 2 || *c == -2 ? JPEG_TWO_COST : 1.0f);
-                            }
-                            n++;
+                        if (pass) {
+                            j->carriers[n] = c;
+                            j->costs[n] = ju ? juniward_cost(ju, bx, by, k) : q / around;
                         }
+                        n++;
                     }
                     if (!pass) energy[base + (size_t)by * w + bx] = e;
                 }

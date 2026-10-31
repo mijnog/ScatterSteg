@@ -79,6 +79,14 @@ jobs:
         working-directory: rust
         run: cargo test --release --locked
 
+      # Pinned, so a new Rust release's new lints can't turn CI red by
+      # themselves; move it up together with whatever clippy then says
+      - name: Clippy, with every warning an error
+        working-directory: rust
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component clippy
+          cargo +1.99.1 clippy --all-targets --locked -- -D warnings
+
       - name: CLI and fault-injection tests against the Rust binary
         env:
           JPEG_FIXTURE: tests/build/jpeg_fixture

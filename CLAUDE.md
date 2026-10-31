@@ -16,9 +16,11 @@ ScatterSteg competes with steghide, so its command line uses steghide's commands
   - Messages are always byte-exact (no newline added or removed).
 - **Both front ends:** `main.c` (C) and `rust/src/main.rs` (Rust) must behave identically, wording included. `tests/test_cli.py` runs against each (`SCATTERSTEG=<binary>`).
 
-## Handoff (2026-10-31, night): resume here
+## Handoff (2026-11-01, night): resume here
 
-**State.** `main` is at `75566c5`: the costed-length format (ALASKA2's J-MiPOD detector, which caught the old raw length write at any payload, is at chance now: 0.479/0.477/0.467 at 0.1/0.2/0.4, level with conseal's UERD), `5_LEVELS_OF_SCATTERSTEG.md`, the ALASKA2 scripts in `benchmark/alaska2/`. The old remote branches `cost-aware-length` and `five-levels-alaska2` are merged: the owner deletes them (`! git push origin --delete cost-aware-length five-levels-alaska2`).
+**Overnight, unattended:** (1) `~/bench/dl/train_queue4.sh` (light payloads; `hill_0.1` done, P_E 0.339; then `uerdall_0.1`, `suniward_0.2`, `juniwardall_0.1`, `uerdall_0.05`), then `~/bench/dl/queue5.sh` trains `uerdbin_0.2` (binary) and `uerdtern_0.2` (ternary, 1024 samples per bit), both on the costed-length format, 15 epochs from `uerdall_0.2` (log `queue5.log`, runs in `~/bench/dl/runs/`). That SRNet pair decides ternary: DCTR favoured ternary-1024 (P_E 0.440 vs 0.420 at 0.2, 0.395 vs 0.360 at 0.3; `~/bench/run-distortion/results-ternary.txt`), ALASKA2's J-UNIWARD model disfavoured it at 0.4 (0.33 vs 0.37; `~/bench/alaska-test/results-ternary.txt`); write all three into `benchmark/README.md`. (2) The owner's upload of the **public** Kaggle dataset `qpdbqp/scattersteg-srnet-ternary` (`~/bench/kaggle/bundle`, verified; BOSSbase republished with its maintainer's permission, by email to the owner). The notebook (`~/bench/kaggle/kernel/`, public, 2xT4) isn't pushed: `~/bench/venv-kaggle/bin/kaggle kernels push -p ~/bench/kaggle/kernel`, only if local results aren't in. Token in `~/.kaggle/access_token` (0600).
+
+**Merge pending:** branch `cleanups` (`95fb324`, pushed; holds the audit fixes 1–8, three Rust PNG fixes diff_png found, the cleanups and the review fixes) fast-forwards `main` when its CI is green (owner approved). CI failed three times on diff_png, each a real C/Rust difference after the image data (second IHDR, reserved-letter name, bad-CRC critical chunk), each fixed with a regression file; 221,000 local runs since found nothing.
 
 **Branches, and what each waits for**
 - `audit-2026-10-31` (local, `.md` only): `AUDIT-2026-10-31.md` and the updated status table in `AUDIT-2026-10-24.md`. Push and merge on the owner's go-ahead, no CI needed.

@@ -77,6 +77,12 @@ impl CJpeg {
         let c = unsafe { jpeg_carrier(self.0) };
         (0..c.n_coefs as usize).map(|k| unsafe { *(*c.blocks.add(k / 63)).add(k % 63 + 1) }).collect()
     }
+    /// Sets carrier k's value
+    pub fn set_carrier(&mut self, k: usize, v: i16) {
+        let c = unsafe { jpeg_carrier(self.0) };
+        assert!(k < c.n_coefs as usize);
+        unsafe { *(*c.blocks.add(k / 63)).add(k % 63 + 1) = v };
+    }
     pub fn unsuitable(&self) -> bool { !unsafe { jpeg_unsuitable(self.0) }.is_null() }
     pub fn writable(&mut self) -> bool { unsafe { jpeg_check_writable(self.0) == 0 } }
     pub fn save(&self, p: &Path) -> bool { unsafe { jpeg_save(self.0, cpath(p).as_ptr()) == 0 } }

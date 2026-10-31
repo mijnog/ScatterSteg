@@ -65,6 +65,40 @@ def jpeg_segments(path):
     return out
 
 
+def camera_layout(src, dst):
+    """src's JPEG with its header laid out as many cameras write theirs, and
+    libjpeg never does: every quantization table in one DQT segment and every
+    Huffman table in one DHT, both before the frame header"""
+    with open(src, "rb") as f:
+        data = f.read()
+    segs = jpeg_segments(src)
+    seg = lambda m, p: bytes([0xFF, m]) + (len(p) + 2).to_bytes(2, "big") + p
+    dqt = b"".join(p for m, p in segs if m == 0xDB)
+    dht = b"".join(p for m, p in segs if m == 0xC4)
+    head = b"".join(seg(m, p) for m, p in segs if m >= 0xE0)  # APPn first
+    head += seg(0xDB, dqt) + seg(0xC4, dht)
+    head += b"".join(seg(m, p) for m, p in segs if m not in (0xDB, 0xC4, 0xDA) and m < 0xE0)
+    sos = next(p for m, p in segs if m == 0xDA)
+    scan_at = data.index(seg(0xDA, sos))
+    with open(dst, "wb") as f:
+        f.write(b"\xff\xd8" + head + data[scan_at:])
+
+
+def header_layout(path):
+    """The header's segments, with only which tables each DHT defines"""
+    out = []
+    for m, p in jpeg_segments(path):
+        if m == 0xC4:
+            ids, i = [], 0
+            while i < len(p):
+                ids.append(p[i])
+                i += 17 + sum(p[i + 1:i + 17])
+            out.append((m, tuple(ids)))
+        else:
+            out.append((m, None if m == 0xDA else p))
+    return out
+
+
 def exec_or_exit(argv):
     """In a forked child: become argv, or exit; never go on to run the rest of
     the tests in the child"""
@@ -2141,6 +2175,23 @@ class JpegTest(CliBase):
         self.assertEqual(code, 1, log)
         self.assertIn("give it a .png name", log)
         self.assertEqual(sorted(os.listdir(self.dir)), ["cover.jpg", "cover.png"])
+
+    def test_written_like_a_camera(self):
+        # A cover laid out as a camera writes it keeps that layout: its header
+        # is copied, and only the scan is new. With the standard tables (as
+        # most cameras use, and the fixture), byte for byte; with a cover's
+        # optimized tables, which the changed coefficients may need codes
+        # beyond, the new tables go in the same segments and slots.
+        for opts in ((), ("optimize",)):
+            plain, src, out = self.path("plain.jpg"), self.path("camera.jpg"), self.path("steg.jpg")
+            make_jpeg(plain, 256, 192, 3, 85, "nojfif", *opts)
+            camera_layout(plain, src)
+            code, log = self.embed(b"like a camera", out, src=src)
+            self.assertEqual(code, 0, log)
+            self.assertDecodes(out, "like a camera")
+            self.assertEqual(header_layout(out), header_layout(src), opts)
+            if not opts:
+                self.assertEqual(jpeg_segments(out), jpeg_segments(src))
 
     def test_flat_jpeg(self):
         # Mostly flat: most blocks and their neighbours have no AC energy,

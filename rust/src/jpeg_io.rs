@@ -24,6 +24,9 @@ use std::ptr;
 /// UERD implementations use, so the trellis can still pass through such
 /// carriers when it must. As C's JPEG_WET_COST.
 const WET_COST: f32 = 1e13;
+/// Largest header (everything before the first scan's data) kept to copy into
+/// the output; past it, the output gets libjpeg's own. As C's JPEG_MAX_HEADER.
+const MAX_HEADER: usize = 16 << 20;
 /// Largest coefficient storage load will allocate (1 GiB)
 const MAX_COEF_BYTES: usize = 1 << 30;
 /// Most carriers load will take. Each costs memory of its own beyond its
@@ -201,6 +204,12 @@ pub struct JpegImage {
     pub nonzero_ac: u64,
     /// Bytes after the EOI marker
     trailing_data: bool,
+    /// How long the cover's header is (from SOI to the end of its first SOS
+    /// segment, the start of `_data`), for `write_like_cover`; 0 if it
+    /// couldn't be kept
+    header_len: usize,
+    /// How many scans the cover has
+    scans: c_int,
 }
 
 impl JpegImage {
@@ -240,6 +249,7 @@ impl JpegImage {
             jpeg_save_markers(s, JPEG_COM as c_int, 0xFFFF);
             for m in 0..16 { jpeg_save_markers(s, JPEG_APP0 as c_int + m, 0xFFFF); }
             jpeg_read_header(s, 1);
+            let header_len = data.len() - (*(*s).src).bytes_in_buffer;
 
             // 2 bytes per coefficient, one coefficient per sample: an upper
             // bound even before subsampling, checked before anything is allocated
@@ -252,9 +262,9 @@ impl JpegImage {
             if hollow_frame(s, (*(*s).src).bytes_in_buffer as u64) { error_exit(s as j_common_ptr); }
             let virt = jpeg_read_coefficients(s);
             if virt.is_null() { error_exit(s as j_common_ptr); }
-            virt
+            (virt, header_len)
         });
-        let Ok(virt) = loaded else {
+        let Ok((virt, header_len)) = loaded else {
             destroy(s);
             return None;
         };
@@ -265,6 +275,12 @@ impl JpegImage {
             nonzero_ac: 0,
             trailing_data: false,
             _data: Vec::new(),
+            // Whole segments ending with the SOS
+            header_len: match find_sos(&data[..header_len.min(data.len())]) {
+                Some(sos) if header_len <= MAX_HEADER && sos + 2 + be16(&data[sos + 2..]) == header_len => header_len,
+                _ => 0,
+            },
+            scans: 0,
         };
         // `img` owns the struct now: take the pointer from there (the Box's
         // address is the same, but a pointer taken before the move is not
@@ -272,6 +288,7 @@ impl JpegImage {
         let s: *mut jpeg_decompress_struct = &mut *img.src;
         // Reading stops at EOI: anything left in the buffer comes after
         img.trailing_data = unsafe { (*(*s).src).bytes_in_buffer } > 0;
+        img.scans = unsafe { (*s).input_scan_number };
         let collected = guarded(|| img.collect_carriers());
         if !matches!(collected, Ok(true)) { return None; } // dropping img destroys the decompressor
         img._data = data;
@@ -433,9 +450,87 @@ impl JpegImage {
         }
     }
 
-    /// The coefficients and markers as a JPEG file's bytes
+    /// The coefficients and markers as a JPEG file's bytes: like the cover if
+    /// it can be (see `write_like_cover`), else libjpeg's way
     pub fn encode(&mut self) -> Option<Vec<u8>> {
         self.sync_to_libjpeg();
+        self.write_like_cover(Tables::Cover)
+            .or_else(|| self.write_like_cover(Tables::Optimized))
+            .or_else(|| self.encode_with(Tables::Libjpeg))
+    }
+
+    /// A cover with one sequential, Huffman-coded scan (as cameras and phones
+    /// write them) keeps its whole header: its markers in their order, its
+    /// tables packed into segments its encoder's way, which libjpeg would
+    /// write its own way. Only the scan's data is new, coded with the cover's
+    /// own tables (`Tables::Cover`: the header byte for byte) or, if those
+    /// lack a code the changed coefficients need, with optimized ones in the
+    /// same slots (`Tables::Optimized`: the header with those tables swapped
+    /// in), as such a cover's encoder optimizes them per image. libjpeg-turbo
+    /// doesn't say when a table lacks a code (it writes a code of no bits),
+    /// so the result is decoded and checked. None if that fails, or
+    /// libjpeg's scan header doesn't match the cover's. As C's
+    /// write_like_cover.
+    fn write_like_cover(&mut self, tables: Tables) -> Option<Vec<u8>> {
+        let s = &*self.src;
+        if self.header_len == 0 || self.scans != 1 || s.progressive_mode != 0 || s.arith_code != 0
+            || s.comps_in_scan != s.num_components {
+            return None;
+        }
+        let out = self.encode_with(tables)?;
+        let header = &self._data[..self.header_len];
+        let sos = find_sos(&out)?;
+        let cover_sos = find_sos(header)?;
+        let sos_len = 2 + be16(&header[cover_sos + 2..]);
+        // The same scan header: the same components, tables and spectral range
+        if sos + sos_len > out.len() || out[sos..sos + sos_len] != header[cover_sos..] { return None; }
+        let mut joined = match tables {
+            Tables::Cover => header.to_vec(),
+            _ => with_new_tables(header, &out[..sos]),
+        };
+        joined.extend_from_slice(&out[sos + sos_len..]);
+        self.decodes_to(&joined).then_some(joined)
+    }
+
+    /// Does this JPEG decode cleanly, with no warning, to our coefficients?
+    fn decodes_to(&self, bytes: &[u8]) -> bool {
+        let mut err: Box<jpeg_error_mgr> = zeroed_box();
+        let mut src: Box<jpeg_decompress_struct> = zeroed_box();
+        unsafe {
+            src.err = jpeg_std_error(&mut *err);
+            err.error_exit = Some(error_exit);
+            err.output_message = Some(silent);
+        }
+        let s: *mut jpeg_decompress_struct = &mut *src;
+        if guarded(|| unsafe { jpeg_CreateDecompress(s, JPEG_LIB_VERSION as c_int, size_of::<jpeg_decompress_struct>()) }).is_err() {
+            return false;
+        }
+        let same = guarded(|| unsafe {
+            jpeg_mem_src(s, bytes.as_ptr(), bytes.len() as c_ulong);
+            jpeg_read_header(s, 1);
+            let virt = jpeg_read_coefficients(s);
+            if virt.is_null() || (*s).num_components as usize != self.comps.len() { return false; }
+            let access = (*(*s).mem).access_virt_barray.unwrap();
+            for (ci, comp) in self.comps.iter().enumerate() {
+                let c = &*(*s).comp_info.add(ci);
+                if c.width_in_blocks as usize != comp.width_in_blocks || c.height_in_blocks as usize != comp.height_in_blocks {
+                    return false;
+                }
+                for by in 0..comp.height_in_blocks {
+                    let row = access(s as j_common_ptr, *virt.add(ci), by as u32, 1, 0);
+                    let blocks = std::slice::from_raw_parts(*row, comp.width_in_blocks);
+                    let at = comp.offset + by * comp.width_in_blocks * DCTSIZE2;
+                    if blocks.as_flattened() != &self.coefs[at..at + comp.width_in_blocks * DCTSIZE2] { return false; }
+                }
+            }
+            true
+        });
+        unsafe { jpeg_destroy_decompress(s) };
+        matches!(same, Ok(true)) && err.num_warnings == 0
+    }
+
+    /// The coefficients and markers as a JPEG, with the tables `tables` says
+    fn encode_with(&mut self, tables: Tables) -> Option<Vec<u8>> {
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut dst: Box<jpeg_compress_struct> = zeroed_box();
         unsafe {
@@ -477,6 +572,25 @@ impl JpegImage {
             // the standard tables if it had them, else optimize like its
             // encoder did.
             (*d).optimize_coding = ((*d).arith_code == 0 && !standard_tables(s, d)) as boolean;
+            if tables != Tables::Libjpeg {
+                (*d).optimize_coding = (tables == Tables::Optimized) as boolean;
+                if tables == Tables::Cover {
+                    for i in 0..NUM_HUFF_TBLS as usize {
+                        for (from, to) in [((*s).dc_huff_tbl_ptrs[i], &mut (*d).dc_huff_tbl_ptrs[i]),
+                                           ((*s).ac_huff_tbl_ptrs[i], &mut (*d).ac_huff_tbl_ptrs[i])] {
+                            if from.is_null() { continue; }
+                            if to.is_null() { *to = jpeg_alloc_huff_table(d as j_common_ptr); }
+                            (**to).bits = (*from).bits;
+                            (**to).huffval = (*from).huffval;
+                        }
+                    }
+                }
+                for ci in 0..(*d).num_components as usize {
+                    let (from, to) = (&*(*s).comp_info.add(ci), &mut *(*d).comp_info.add(ci));
+                    to.dc_tbl_no = from.dc_tbl_no;
+                    to.ac_tbl_no = from.ac_tbl_no;
+                }
+            }
 
             jpeg_write_coefficients(d, virt);
 
@@ -505,6 +619,78 @@ impl Drop for JpegImage {
         let s: *mut jpeg_decompress_struct = &mut *self.src;
         unsafe { jpeg_destroy_decompress(s) };
     }
+}
+
+/// How `encode_with` picks the Huffman tables: libjpeg's way (the standard
+/// ones if the cover had them, else optimized); the cover's own; or
+/// optimized, in the cover's table slots (see `write_like_cover`)
+#[derive(Clone, Copy, PartialEq)]
+enum Tables { Libjpeg, Cover, Optimized }
+
+fn be16(b: &[u8]) -> usize { (b[0] as usize) << 8 | b[1] as usize }
+
+/// Where the SOS segment starts in a JPEG's bytes, which must be whole
+/// segments from SOI on; None if there's none
+fn find_sos(d: &[u8]) -> Option<usize> {
+    if d.len() < 2 || d[..2] != [0xFF, 0xD8] { return None; }
+    let mut pos = 2;
+    while pos + 4 <= d.len() && d[pos] == 0xFF {
+        if d[pos + 1] == 0xDA { return Some(pos); }
+        pos += 2 + be16(&d[pos + 2..]);
+    }
+    None
+}
+
+/// Each Huffman table slot's table (its Tc/Th byte, then 16 counts and the
+/// values) in the DHT segments of a JPEG's header, whole segments from SOI
+/// on. Slot: Tc * 4 + Th.
+fn dht_tables(d: &[u8]) -> [Option<&[u8]>; 8] {
+    let mut slots = [None; 8];
+    let mut pos = 2;
+    while pos + 4 <= d.len() && d[pos] == 0xFF && d[pos + 1] != 0xDA {
+        let end = pos + 2 + be16(&d[pos + 2..]);
+        if end > d.len() { break; }
+        if d[pos + 1] == 0xC4 {
+            let mut t = pos + 4;
+            while t + 17 <= end {
+                let n = 17 + d[t + 1..t + 17].iter().map(|&c| c as usize).sum::<usize>();
+                if t + n > end || d[t] >> 4 > 1 || d[t] & 15 > 3 { return slots; }
+                slots[(d[t] >> 4) as usize * 4 + (d[t] & 15) as usize] = Some(&d[t..t + n]);
+                t += n;
+            }
+        }
+        pos = end;
+    }
+    slots
+}
+
+/// The cover's header with each of its Huffman tables replaced by the one
+/// libjpeg wrote for that slot (in `out`, its header), where it wrote one:
+/// the same segments in the same order, only the tables' contents new
+fn with_new_tables(header: &[u8], out: &[u8]) -> Vec<u8> {
+    let fresh = dht_tables(out);
+    let mut h = header[..2].to_vec(); // SOI
+    let mut pos = 2;
+    while pos < header.len() {
+        let seg = &header[pos..pos + 2 + be16(&header[pos + 2..])];
+        if seg[1] != 0xC4 {
+            h.extend_from_slice(seg);
+        } else {
+            let start = h.len();
+            h.extend_from_slice(&seg[..4]);
+            let mut t = 4;
+            while t + 17 <= seg.len() {
+                let n = 17 + seg[t + 1..t + 17].iter().map(|&c| c as usize).sum::<usize>();
+                let slot = (seg[t] >> 4) as usize * 4 + (seg[t] & 15) as usize;
+                h.extend_from_slice(fresh[slot].unwrap_or(&seg[t..t + n]));
+                t += n;
+            }
+            let len = (h.len() - start - 2) as u16;
+            h[start + 2..start + 4].copy_from_slice(&len.to_be_bytes());
+        }
+        pos += seg.len();
+    }
+    h
 }
 
 fn is_marker(m: &jpeg_marker_struct, data: &[u8], code: u8, tag: &[u8]) -> bool {

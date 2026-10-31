@@ -7,6 +7,7 @@
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <jpeglib.h>
 
@@ -59,6 +60,10 @@ static uint64_t bytes_to_end(FILE *fp) {
    carriers when it must. rust/src/jpeg_io.rs's WET_COST must equal it. */
 #define JPEG_WET_COST 1e13f
 
+/* Largest header (everything before the first scan's data) kept to copy
+   into the output; past it, the output gets libjpeg's own */
+#define JPEG_MAX_HEADER ((size_t)16 << 20)
+
 /* What an 8-bit encoder can write: DC in [-1024, 1023] (an all-black block
    at quality 100 is -1024), so block-to-block differences fit its 11 bits;
    AC values that fit 10 bits */
@@ -93,7 +98,48 @@ struct JpegImage {
     uint32_t n_carriers;
     uint64_t nonzero_ac;  /* AC coefficients that aren't 0 */
     int trailing_data;    /* bytes after the EOI marker */
+    /* The cover's header, from SOI to the end of its first SOS segment,
+       for write_like_cover; NULL if it couldn't be kept */
+    uint8_t *header;
+    size_t header_len;
+    int scans;            /* how many the cover has */
 };
+
+static uint16_t be16(const uint8_t *p) {
+    return (uint16_t)(p[0] << 8 | p[1]);
+}
+
+/* Where the SOS segment starts in a JPEG's first len bytes, which must
+   be whole segments from SOI on; 0 if there's none */
+static size_t find_sos(const uint8_t *d, size_t len) {
+    size_t pos = 2;
+    if (len < 2 || d[0] != 0xFF || d[1] != 0xD8) return 0;
+    while (pos + 4 <= len && d[pos] == 0xFF) {
+        if (d[pos + 1] == 0xDA) return pos;
+        pos += 2 + (size_t)be16(d + pos + 2);
+    }
+    return 0;
+}
+
+/* Keeps the cover's header: the bytes libjpeg read up to the first scan's
+   data, read again from fp (which must seek) without moving it */
+static void keep_header(JpegImage *j, FILE *fp, long start) {
+    long here = ftell(fp);
+    if (start < 0 || here < start) return;
+    size_t len = (size_t)(here - start) - j->src.src->bytes_in_buffer;
+    if (len > JPEG_MAX_HEADER || !(j->header = malloc(len ? len : 1))) return;
+    int ok = fseek(fp, start, SEEK_SET) == 0 && fread(j->header, 1, len, fp) == len;
+    /* Back where libjpeg left it, or reading on would go wrong */
+    if (fseek(fp, here, SEEK_SET) != 0) error_exit((j_common_ptr)&j->src);
+    /* Whole segments ending with the SOS */
+    size_t sos = ok ? find_sos(j->header, len) : 0;
+    if (!sos || sos + 2 + be16(j->header + sos + 2) != len) {
+        free(j->header);
+        j->header = NULL;
+        return;
+    }
+    j->header_len = len;
+}
 
 static void silent(j_common_ptr cinfo) {
     (void)cinfo;  /* warnings about recoverable corruption: keep going */
@@ -261,18 +307,21 @@ JpegImage *jpeg_read(FILE *fp) {
         jpeg_destroy_decompress(&j->src);
         free(j->blocks);
         free(j->costs);
+        free(j->header);
         free(j);
         fclose(fp);
         return NULL;
     }
     jpeg_create_decompress(&j->src);
     j->src.progress = &progress.pub;
+    long start = ftell(fp);
     j->src.mem->max_memory_to_use = JPEG_MAX_COEF_BYTES + (16 << 20);
     jpeg_stdio_src(&j->src, fp);
     /* Keep comments and every APPn (EXIF, ICC profile, XMP...) to write back */
     jpeg_save_markers(&j->src, JPEG_COM, 0xFFFF);
     for (int m = 0; m < 16; m++) jpeg_save_markers(&j->src, JPEG_APP0 + m, 0xFFFF);
     jpeg_read_header(&j->src, TRUE);
+    keep_header(j, fp, start);
 
     /* 2 bytes per coefficient, one coefficient per sample: an upper bound
        even before subsampling, checked before anything is allocated */
@@ -287,6 +336,7 @@ JpegImage *jpeg_read(FILE *fp) {
     j->coefs = jpeg_read_coefficients(&j->src);
     if (!j->coefs || collect_carriers(j) != 0)
         error_exit((j_common_ptr)&j->src);
+    j->scans = j->src.input_scan_number;
     /* Reading stops at EOI: anything left, buffered or not, comes after */
     j->trailing_data = j->src.src->bytes_in_buffer > 0 || fgetc(fp) != EOF;
     fclose(fp);
@@ -305,6 +355,7 @@ void jpeg_free(JpegImage *j) {
     jpeg_destroy_decompress(&j->src);
     free(j->blocks);
     free(j->costs);
+    free(j->header);
     free(j);
 }
 
@@ -365,8 +416,15 @@ static int is_marker(const jpeg_saved_marker_ptr m, int code, const char *tag, u
     return m->marker == code && m->data_length >= len && memcmp(m->data, tag, len) == 0;
 }
 
-/* Encodes the coefficients and markers to fp */
-static int write_coefficients(JpegImage *j, FILE *fp) {
+/* How encode picks the Huffman tables: libjpeg's way (the standard ones
+   if the cover had them, else optimized); the cover's own; or optimized,
+   in the cover's table slots (see write_like_cover) */
+enum { TABLES_LIBJPEG, TABLES_COVER, TABLES_OPTIMIZED };
+
+/* Encodes the coefficients and markers to fp, with the tables `tables`
+   says. With the cover's tables it doesn't fail if they lack a code the
+   coefficients now need: libjpeg-turbo writes a code of no bits. */
+static int encode(JpegImage *j, FILE *fp, int tables) {
     struct jpeg_compress_struct dst;
     ErrorJump err;
     dst.err = jpeg_std_error(&err.pub);
@@ -392,6 +450,23 @@ static int write_coefficients(JpegImage *j, FILE *fp) {
        lacks, so the cover's own tables can't be reused. Keep the standard
        tables if it had them, else optimize like its encoder did. */
     dst.optimize_coding = !dst.arith_code && !standard_tables(&j->src, &dst);
+    if (tables != TABLES_LIBJPEG) {
+        dst.optimize_coding = tables == TABLES_OPTIMIZED;
+        for (int i = 0; i < NUM_HUFF_TBLS && tables == TABLES_COVER; i++) {
+            JHUFF_TBL **from[2] = {&j->src.dc_huff_tbl_ptrs[i], &j->src.ac_huff_tbl_ptrs[i]};
+            JHUFF_TBL **to[2] = {&dst.dc_huff_tbl_ptrs[i], &dst.ac_huff_tbl_ptrs[i]};
+            for (int t = 0; t < 2; t++) {
+                if (!*from[t]) continue;
+                if (!*to[t]) *to[t] = jpeg_alloc_huff_table((j_common_ptr)&dst);
+                memcpy((*to[t])->bits, (*from[t])->bits, sizeof((*from[t])->bits));
+                memcpy((*to[t])->huffval, (*from[t])->huffval, sizeof((*from[t])->huffval));
+            }
+        }
+        for (int ci = 0; ci < dst.num_components; ci++) {
+            dst.comp_info[ci].dc_tbl_no = j->src.comp_info[ci].dc_tbl_no;
+            dst.comp_info[ci].ac_tbl_no = j->src.comp_info[ci].ac_tbl_no;
+        }
+    }
 
     jpeg_write_coefficients(&dst, j->coefs);
 
@@ -408,6 +483,175 @@ static int write_coefficients(JpegImage *j, FILE *fp) {
     return 0;
 }
 
+/* Are a's coefficients exactly those b decoded, every one of them? */
+static int same_as_decoded(JpegImage *a, j_decompress_ptr b, jvirt_barray_ptr *bc) {
+    if (a->src.num_components != b->num_components) return 0;
+    for (int ci = 0; ci < a->src.num_components; ci++) {
+        jpeg_component_info *ca = &a->src.comp_info[ci], *cb = &b->comp_info[ci];
+        if (ca->width_in_blocks != cb->width_in_blocks || ca->height_in_blocks != cb->height_in_blocks)
+            return 0;
+        for (JDIMENSION by = 0; by < ca->height_in_blocks; by++) {
+            JBLOCKARRAY ra = a->src.mem->access_virt_barray((j_common_ptr)&a->src, a->coefs[ci], by, 1, FALSE);
+            JBLOCKARRAY rb = b->mem->access_virt_barray((j_common_ptr)b, bc[ci], by, 1, FALSE);
+            if (memcmp(ra[0], rb[0], ca->width_in_blocks * sizeof(JBLOCK)) != 0) return 0;
+        }
+    }
+    return 1;
+}
+
+static int same_coefficients(JpegImage *a, JpegImage *b) {
+    return same_as_decoded(a, &b->src, b->coefs);
+}
+
+/* Does the JPEG in buf decode cleanly, with no warning, to j's
+   coefficients? */
+static int decodes_to(JpegImage *j, const uint8_t *buf, size_t len) {
+    struct jpeg_decompress_struct d;
+    ErrorJump err;
+    d.err = jpeg_std_error(&err.pub);
+    err.pub.error_exit = error_exit;
+    err.pub.output_message = silent;
+    if (setjmp(err.jump)) {
+        jpeg_destroy_decompress(&d);
+        return 0;
+    }
+    jpeg_create_decompress(&d);
+    jpeg_mem_src(&d, buf, (unsigned long)len);
+    jpeg_read_header(&d, TRUE);
+    jvirt_barray_ptr *c = jpeg_read_coefficients(&d);
+    int same = c && err.pub.num_warnings == 0 && same_as_decoded(j, &d, c);
+    jpeg_destroy_decompress(&d);
+    return same;
+}
+
+/* Each Huffman table slot's table (from its Tc/Th byte, then 16 counts
+   and the values) in the DHT segments of a JPEG's first len bytes, whole
+   segments from SOI on; NULL where there's none. Slot: Tc * 4 + Th. */
+static void dht_tables(const uint8_t *d, size_t len, const uint8_t *slots[8], size_t sizes[8]) {
+    for (int i = 0; i < 8; i++) slots[i] = NULL;
+    for (size_t pos = 2; pos + 4 <= len && d[pos] == 0xFF && d[pos + 1] != 0xDA;) {
+        size_t end = pos + 2 + be16(d + pos + 2);
+        if (end > len) return;
+        if (d[pos + 1] == 0xC4)
+            for (size_t t = pos + 4; t + 17 <= end;) {
+                size_t n = 17;
+                for (int k = 1; k <= 16; k++) n += d[t + k];
+                int slot = (d[t] >> 4) * 4 + (d[t] & 15);
+                if (t + n > end || (d[t] >> 4) > 1 || (d[t] & 15) > 3) return;
+                slots[slot] = d + t;
+                sizes[slot] = n;
+                t += n;
+            }
+        pos = end;
+    }
+}
+
+/* The cover's header with each of its Huffman tables replaced by the one
+   libjpeg wrote for that slot (in out's header), where it wrote one: the
+   same segments in the same order, only the tables' contents new. Into h
+   if not NULL; returns the length either way. */
+static size_t new_tables_into(const JpegImage *j, const uint8_t *const fresh[8],
+                              const size_t fresh_n[8], uint8_t *h) {
+    size_t at = 2;  /* SOI */
+    if (h) memcpy(h, j->header, 2);
+    for (size_t pos = 2; pos < j->header_len;) {
+        const uint8_t *seg = j->header + pos;
+        size_t seg_len = 2 + (size_t)be16(seg + 2);
+        if (seg[1] != 0xC4) {
+            if (h) memcpy(h + at, seg, seg_len);
+            at += seg_len;
+        } else {
+            size_t start = at;
+            if (h) memcpy(h + at, seg, 4);
+            at += 4;
+            for (size_t t = 4; t + 17 <= seg_len;) {
+                size_t n = 17;
+                for (int k = 1; k <= 16; k++) n += seg[t + k];
+                int slot = (seg[t] >> 4) * 4 + (seg[t] & 15);
+                const uint8_t *use = fresh[slot] ? fresh[slot] : seg + t;
+                size_t use_n = fresh[slot] ? fresh_n[slot] : n;
+                if (h) memcpy(h + at, use, use_n);
+                at += use_n;
+                t += n;
+            }
+            if (h) {
+                h[start + 2] = (uint8_t)((at - start - 2) >> 8);
+                h[start + 3] = (uint8_t)(at - start - 2);
+            }
+        }
+        pos += seg_len;
+    }
+    return at;
+}
+
+/* The same, allocated; NULL if out of memory */
+static uint8_t *with_new_tables(const JpegImage *j, const uint8_t *out, size_t out_len, size_t *len) {
+    const uint8_t *fresh[8];
+    size_t fresh_n[8];
+    dht_tables(out, out_len, fresh, fresh_n);
+    *len = new_tables_into(j, fresh, fresh_n, NULL);
+    uint8_t *h = malloc(*len);
+    if (h) new_tables_into(j, fresh, fresh_n, h);
+    return h;
+}
+
+/* A cover with one sequential, Huffman-coded scan (as cameras and phones
+   write them) keeps its whole header: its markers in their order, its
+   tables packed into segments its encoder's way, which libjpeg would
+   write its own way. Only the scan's data is new, coded with the cover's
+   own tables (TABLES_COVER: the header byte for byte) or, if those lack a
+   code the changed coefficients need, with optimized ones in the same
+   slots (TABLES_OPTIMIZED: the header with those tables swapped in), as
+   such a cover's encoder optimizes them per image. libjpeg-turbo doesn't
+   say when a table lacks a code (it writes a code of no bits), so the
+   result is decoded and checked. If that fails, or libjpeg's scan header
+   doesn't match the cover's, returns -1 having written nothing; -2 if
+   writing to fp failed. */
+static int write_like_cover(JpegImage *j, FILE *fp, int tables) {
+    if (!j->header || j->scans != 1 || j->src.progressive_mode || j->src.arith_code ||
+        j->src.comps_in_scan != j->src.num_components)
+        return -1;
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *mem = open_memstream(&buf, &len);
+    if (!mem) return -1;
+    int r = encode(j, mem, tables);
+    if (fclose(mem) != 0) r = -1;  /* also sets buf and len */
+    size_t sos = r == 0 ? find_sos((uint8_t *)buf, len) : 0;
+    size_t cover_sos = find_sos(j->header, j->header_len);
+    size_t sos_len = 2 + (size_t)be16(j->header + cover_sos + 2);
+    /* The same scan header: the same components, tables and spectral range */
+    if (!sos || sos + sos_len > len || memcmp(buf + sos, j->header + cover_sos, sos_len) != 0) {
+        free(buf);
+        return -1;
+    }
+    size_t data = sos + sos_len, head_len = j->header_len;
+    uint8_t *head = tables == TABLES_COVER ? j->header : with_new_tables(j, (uint8_t *)buf, sos, &head_len);
+    /* What it decodes to */
+    uint8_t *joined = head ? malloc(head_len + len - data) : NULL;
+    int ok = joined != NULL;
+    if (ok) {
+        memcpy(joined, head, head_len);
+        memcpy(joined + head_len, buf + data, len - data);
+        ok = decodes_to(j, joined, head_len + len - data);
+    }
+    free(joined);
+    errno = 0;
+    r = !ok ? -1 :
+        fwrite(head, 1, head_len, fp) == head_len && fwrite(buf + data, 1, len - data, fp) == len - data ? 0 : -2;
+    if (head != j->header) free(head);
+    free(buf);
+    return r;
+}
+
+/* Like the cover if it can be, else libjpeg's way. -1 on failure. */
+static int write_coefficients(JpegImage *j, FILE *fp) {
+    int r = write_like_cover(j, fp, TABLES_COVER);
+    if (r == -1) r = write_like_cover(j, fp, TABLES_OPTIMIZED);
+    if (r == -2) return -1;  /* a write failed part way */
+    return r == 0 ? 0 : encode(j, fp, TABLES_LIBJPEG);
+}
+
 int jpeg_write(JpegImage *j, FILE *fp) {
     return write_coefficients(j, fp);
 }
@@ -418,22 +662,6 @@ static int write_jpeg(FILE *fp, const void *ctx) {
 
 int jpeg_save(const JpegImage *j, const char *path) {
     return atomic_write(path, write_jpeg, j);
-}
-
-/* Are a's coefficients exactly b's, every one of them? */
-static int same_coefficients(JpegImage *a, JpegImage *b) {
-    if (a->src.num_components != b->src.num_components) return 0;
-    for (int ci = 0; ci < a->src.num_components; ci++) {
-        jpeg_component_info *ca = &a->src.comp_info[ci], *cb = &b->src.comp_info[ci];
-        if (ca->width_in_blocks != cb->width_in_blocks || ca->height_in_blocks != cb->height_in_blocks)
-            return 0;
-        for (JDIMENSION by = 0; by < ca->height_in_blocks; by++) {
-            JBLOCKARRAY ra = a->src.mem->access_virt_barray((j_common_ptr)&a->src, a->coefs[ci], by, 1, FALSE);
-            JBLOCKARRAY rb = b->src.mem->access_virt_barray((j_common_ptr)&b->src, b->coefs[ci], by, 1, FALSE);
-            if (memcmp(ra[0], rb[0], ca->width_in_blocks * sizeof(JBLOCK)) != 0) return 0;
-        }
-    }
-    return 1;
 }
 
 int jpeg_check_writable(JpegImage *j) {

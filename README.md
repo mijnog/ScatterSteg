@@ -130,7 +130,7 @@ ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read th
 4. **Syndrome coding.** Instead of writing one bit into each carrier, which changes about half of them, syndrome-trellis codes (STC) find the cheapest set of changes that encodes the message. "Cheapest" comes from content-adaptive costs: HILL for PNG and UERD for JPEG make a change cheap where the image is busy and expensive where it is flat. This makes 2 to 3 times fewer changes than writing the bits directly, in the places hardest to notice.
 5. **Changes.** Every change is ±1. Where two carriers that both need changing hold values one apart, they swap values instead, which leaves the image's histogram exactly as it was (93–98.5% of a PNG's changes, on the benchmark's photographs).
 
-JPEG coefficients are edited directly: the image is never decompressed and recompressed. The image stores no header or version marker. [`FORMAT.md`](FORMAT.md) specifies the format exactly.
+JPEG coefficients are edited directly: the image is never decompressed and recompressed. The image stores no header or version marker. [`FORMAT.md`](FORMAT.md) specifies the format exactly. [`5_LEVELS_OF_SCATTERSTEG.md`](5_LEVELS_OF_SCATTERSTEG.md) explains all this five times, from a child's level to an expert's.
 
 ## Steganalysis results
 

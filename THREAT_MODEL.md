@@ -125,10 +125,11 @@ What this means for A1: a warden with one of these detectors catches about 56% o
 | ScatterSteg, 0.05 bits per non-zero AC coefficient | 0.46 | 0.49 |
 | published UERD (conseal's simulator), 0.05 | 0.47 | 0.49 |
 | ScatterSteg before the fix, 0.1 / 0.2 / 0.4 | 0.44 / 0.39 / 0.38 | 0.37 / 0.37 / 0.35 |
+| ScatterSteg, 0.1 / 0.2 / 0.4 | 0.44 / 0.40 / 0.37 | 0.48 / 0.48 / 0.47 |
 | published UERD, 0.4 | 0.35 | 0.47 |
 | steghide, 0.1 | 0.47 | 0.49 (its own model: 0.02) |
 
-The J-MiPOD model caught the old format at any payload, even a 1-byte message: the 32-bit length was written straight into 32 secret samples, about 16 changes that ignored the costs, mostly zeros made ±1 in flat blocks. With the length syndrome-coded (`FORMAT.md`), it is at chance, and ScatterSteg scores like the published UERD. The heavier payloads have not been re-run since the fix; the J-UNIWARD model's figures for them should hold, as the length barely moved it. A detector off the shelf is a weak warden; SRNet, trained on the cover source, is the strong one.
+The J-MiPOD model caught the old format at any payload, even a 1-byte message: the 32-bit length was written straight into 32 secret samples, about 16 changes that ignored the costs, mostly zeros made ±1 in flat blocks. With the length syndrome-coded (`FORMAT.md`), it is at or near chance at every payload, and ScatterSteg scores like the published UERD; the J-UNIWARD model, which the length barely moved, catches heavier payloads as it catches the published schemes. A detector off the shelf is a weak warden; SRNet, trained on the cover source, is the strong one.
 
 SRNet, the reference deep network for steganalysis, trained on 7,000 cover/stego pairs from BOSSbase (resized to 256×256) and tested on 2,000 others:
 

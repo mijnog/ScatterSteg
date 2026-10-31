@@ -380,9 +380,10 @@ A warden needn't train anything: Aletheia ships EfficientNet-B0 detectors
 trained on ALASKA2 for J-UNIWARD, J-MiPOD, nsF5 and steghide. Run unchanged
 on 480 Wikimedia photographs at quality 75 (512×512), against the same
 covers. P_E is at the best threshold chosen on the same 480 pairs, so chance
-reads about 0.47 rather than 0.5. Scripts and raw output are in
-`~/bench/alaska-test` on the benchmark machine (`score_aletheia.py`,
-`analyse.py`, `sim_reference.py`; not yet in this repository). The
+reads about 0.47 rather than 0.5. The scripts are in [`alaska2/`](alaska2/README.md);
+the covers are `fetch_images.py`'s downloads, resized and cropped by Pillow
+(a later fetch gets a different set, as Wikimedia's featured pictures
+change). The
 published UERD and J-UNIWARD are conseal's simulators, at the same payload.
 
 | Set | J-UNIWARD model | J-MiPOD model |
@@ -394,6 +395,7 @@ published UERD and J-UNIWARD are conseal's simulators, at the same payload.
 | published UERD 0.05 | 0.471 | 0.492 |
 | published J-UNIWARD 0.05 | 0.480 | 0.492 |
 | ScatterSteg UERD 0.1 / 0.2 / 0.4, old format | 0.436 / 0.386 / 0.375 | 0.370 / 0.369 / 0.348 |
+| ScatterSteg UERD 0.1 / 0.2 / 0.4 | 0.436 / 0.395 / 0.374 | 0.479 / 0.477 / 0.467 |
 | ScatterSteg J-UNIWARD 0.1 / 0.2 / 0.4, old format | 0.441 / 0.399 / 0.327 | 0.362 / 0.368 / 0.357 |
 | published UERD 0.4 | 0.350 | 0.465 |
 | published J-UNIWARD 0.4 | 0.345 | 0.465 |
@@ -406,10 +408,10 @@ ignored the costs, mostly zeros made ±1 in flat blocks. Without that write
 it scored 0.49; exchange embedding, the salt region's size and chroma
 changes made no difference. The length is now an STC syndrome over up to
 2,048 samples, with costs (`FORMAT.md`), and the J-MiPOD model is at chance;
-ScatterSteg scores like the published UERD. The heavier payloads haven't
-been re-run on the new format; the J-UNIWARD model barely saw the length,
-so its figures for them should hold, and there ScatterSteg is level with
-the published schemes.
+ScatterSteg scores like the published UERD at every payload. At 0.4 the
+J-MiPOD model is at 0.467 against the published UERD's 0.465, and the
+J-UNIWARD model, which barely saw the length, gives the same figures as
+before (0.374 against 0.350 for the published UERD).
 
 ## Classic detectors
 

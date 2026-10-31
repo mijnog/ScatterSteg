@@ -105,7 +105,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Grad student:** Binary or ternary?
 
-**Me:** Binary STC with ±1 changes, where the direction is chosen afterwards to set up those value swaps. The published HILL and UERD results assume a ternary coder, where the message also chooses the direction. That's more efficient: against conseal's reference simulators, ScatterSteg makes about 1.75 times as many changes at the same payload. Moving to multi-layer ternary STC is the next planned step. It will cut the number of changes but remove most of the swaps, so it has to be measured, not assumed.
+**Me:** Binary STC with ±1 changes, where the direction is chosen afterwards to set up those value swaps. The published HILL and UERD results assume a ternary coder, where the message also chooses the direction. In theory that's more efficient. ScatterSteg makes about 1.75 times as many changes as conseal's reference simulators at the same payload, but those run at the theoretical bound, on luminance only. A multi-layer ternary prototype cuts ScatterSteg's own changes by only about 14%, and it gives up most of the swaps. Its first detection results are mixed: a little harder for a DCTR-style detector to catch at 0.2–0.3, easier for one of the ALASKA2 models at 0.4. So binary stays until the measurements say otherwise.
 
 **How it's evaluated.** The figure of merit is **P_E** = min over thresholds of ½(P_FA + P_MD), where 0.5 means the detector is guessing. ScatterSteg has been run against:
 
@@ -140,7 +140,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Expert:** What about non-additive costs? Synchronizing changes between neighbours?
 
-**Me:** Not done. CMD and Synch-style schemes that make adjacent changes agree in sign beat additive HILL against SRM, and it's an open question how much of that survives against SRNet. Before that comes the ternary coder. ScatterSteg has an extra wrinkle there: its binary coder plus value swaps keep the first-order histogram exactly, and a ternary coder gives most of that up. Which matters more against a CNN is an empirical question.
+**Me:** Not done. CMD and Synch-style schemes that make adjacent changes agree in sign beat additive HILL against SRM, and it's an open question how much of that survives against SRNet. Ternary coding raises the same question in another form. ScatterSteg's binary coder plus value swaps keep the first-order histogram exactly, and a ternary coder gives most of that up for fewer changes. The prototype's mixed results so far say it's an empirical question, not a foregone conclusion.
 
 **Expert:** Side information?
 
@@ -152,7 +152,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Expert:** So where does it actually stand?
 
-**Me:** Honestly: well engineered, cryptographically conventional, steganographically mid-pack. Content-adaptive costs, near-optimal binary coding, no cost-blind changes, careful file structure. Behind the state of the art in its coder (binary, not ternary), its costs (additive, not synchronized) and its payload guidance (linear, not √n). Not independently reviewed. Against a capable warden who trains on its output, only small messages in private, textured covers have a good chance. The remaining work is mostly closing those gaps and measuring each step, and then freezing the format so someone independent can try to break it.
+**Me:** Honestly: well engineered, cryptographically conventional, steganographically mid-pack. Content-adaptive costs, near-optimal binary coding, no cost-blind changes, careful file structure. Behind the state of the art in its costs (additive, not synchronized) and its payload guidance (linear, not √n), and possibly in its coder (binary; a ternary prototype hasn't yet shown a clear gain). Not independently reviewed. Against a capable warden who trains on its output, only small messages in private, textured covers have a good chance. The remaining work is mostly closing those gaps and measuring each step, and then freezing the format so someone independent can try to break it.
 
 ---
 

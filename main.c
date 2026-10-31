@@ -510,7 +510,7 @@ static void usage(FILE *out, const char *prog) {
                  "  -z, --compress [1-9]   compression level, 9 (the default) smallest\n"
                  "  -Z, --dontcompress     store the file as is\n"
                  "  -N, --dontembedname    don't store the file's name\n"
-                 "  -f, --force            replace files that already exist\n"
+                 "  -f, --force            replace existing files (not one named by the image)\n"
                  "  -q, --quiet            print only prompts, warnings and errors\n"
                  "  -v, --verbose          say what was stored, and how\n"
                  "Long forms of the others: --embedfile, --coverfile, --stegofile, --extractfile.\n");

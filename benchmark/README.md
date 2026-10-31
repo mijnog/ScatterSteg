@@ -8,11 +8,11 @@ modest measurement. Read the limitations before quoting a number.
 [HILL](#content-adaptive-costs-hill), [UERD](#content-adaptive-jpeg-costs-uerd),
 [BOSSbase](#second-cover-set-bossbase), [SRNet](#deep-learning-detector-srnet),
 [Off-the-shelf detectors](#off-the-shelf-detectors-aletheia-alaska2)
-and [Classic detectors](#classic-detectors). Every JPEG figure before the
-off-the-shelf section was measured with the message length written straight
-into 32 samples, which that section shows was detectable on its own; the
-format now syndrome-codes it, so those figures, if anything, flatter the
-warden. SRNet, a deep network, is by far
+and [Classic detectors](#classic-detectors). Every other figure in this
+file, PNG and JPEG, was measured with the message length written straight
+into 32 samples, which that section shows was detectable on its own (in
+JPEG at least); the format now syndrome-codes it, so those figures, if
+anything, flatter the warden. SRNet, a deep network, is by far
 the strongest detector run; read the rest as rankings.
 The tables before the HILL section are the original measurements, from
 before content-adaptive costs, kept as the baseline the later ones are

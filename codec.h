@@ -25,8 +25,8 @@ enum { DECODED, NO_MATCH, FAILED };
 #define CODEC_SUGGESTED_UNITS_PER_BYTE 160
 
 /* Whether name can be stored with a message, and so created by extract: a
-   bare file name of 1 to CODEC_NAME_MAX bytes, no '/' or control
-   characters, not "." or ".." */
+   bare file name of 1 to CODEC_NAME_MAX bytes of UTF-8, not starting with
+   '.', with no '/', control characters or bidi controls (see name_ok) */
 int codec_name_ok(const char *name);
 
 /* The fewest positions a payload order needs, one sample per bit of the

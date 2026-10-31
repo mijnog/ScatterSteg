@@ -327,7 +327,7 @@ fn usage(prog: &str, to_stdout: bool) -> io::Result<()> {
         \x20 -z, --compress [1-9]   compression level, 9 (the default) smallest\n\
         \x20 -Z, --dontcompress     store the file as is\n\
         \x20 -N, --dontembedname    don't store the file's name\n\
-        \x20 -f, --force            replace files that already exist\n\
+        \x20 -f, --force            replace existing files (not one named by the image)\n\
         \x20 -q, --quiet            print only prompts, warnings and errors\n\
         \x20 -v, --verbose          say what was stored, and how\n\
         Long forms of the others: --embedfile, --coverfile, --stegofile, --extractfile.\n");

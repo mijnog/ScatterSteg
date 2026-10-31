@@ -56,7 +56,7 @@ Images may come from anyone, so the decoder parses hostile input.
   - a truncated progressive JPEG that libjpeg writes back with different coefficients, which would have silently corrupted a hidden message; the trial write now reads its output back and must match exactly;
   - a 178-byte JPEG declaring a 15144×32800 frame, which cost seconds and ~1 GB to load (hence the hollow-frame check above).
 - **Assumes:** libpng, libjpeg-turbo and libsodium are themselves sound.
-- **The Rust port** (`rust/`) swaps libpng for the `png` crate, with the same pixel, chunk and scan caps and the same 1 GiB + 64 MiB cap on a PNG file (C keeps a copy of a PNG cover's bytes to study its compression, and refuses past that too); a failed allocation aborts rather than exiting cleanly. The `png` crate is shown only the chunks it needs, so it cannot refuse (or panic on) a file libpng accepts. Fuzzed with cargo-fuzz in CI. See `rust/README.md`.
+- **The Rust port** (`rust/`) swaps libpng for the `png` crate, with the same pixel, chunk and scan caps. Rust reads a file whole and refuses one over 1 GiB + 64 MiB; C keeps a copy of what libpng reads of a PNG (to study its compression) and refuses once that passes the same size, so only bytes after a PNG's end, which libpng never reads, load in C and not in Rust; a failed allocation aborts rather than exiting cleanly. The `png` crate is shown only the chunks it needs, so it cannot refuse (or panic on) a file libpng accepts. Fuzzed with cargo-fuzz in CI. See `rust/README.md`.
 
 ### A6 — Someone on the same machine
 

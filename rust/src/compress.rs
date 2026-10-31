@@ -167,7 +167,7 @@ fn inflate(src: &[u8], out: Option<&mut [u8]>) -> Result<usize, Unpack> {
 
 /// The message in the secretbox's plaintext (see `pack`), and the file name
 /// stored with it (empty for none)
-pub fn unpack(pt: &[u8]) -> Result<(Secret, Vec<u8>), Unpack> {
+pub fn unpack(pt: &[u8]) -> Result<(Secret, Secret), Unpack> {
     let Some((&encoding, body)) = pt.split_first() else { return Err(Unpack::Malformed) };
     let record = match encoding {
         STORED => Secret::from_slice(body).ok_or(Unpack::Alloc)?,
@@ -186,5 +186,7 @@ pub fn unpack(pt: &[u8]) -> Result<(Secret, Vec<u8>), Unpack> {
         return Err(Unpack::Malformed);
     }
     let msg = Secret::from_slice(&record[name_end..size]).ok_or(Unpack::Alloc)?;
-    Ok((msg, record[1..name_end].to_vec()))
+    // The name is plaintext too: locked memory (until extract makes a file of it)
+    let name = Secret::from_slice(&record[1..name_end]).ok_or(Unpack::Alloc)?;
+    Ok((msg, name))
 }

@@ -250,7 +250,7 @@ pub struct Decrypted {
     /// The message
     pub plaintext: Secret,
     /// The file name stored with it, empty for none (see compress::name_ok)
-    pub name: Vec<u8>,
+    pub name: Secret,
 }
 
 /// Ok(None) for a wrong passphrase or no message; Err carries a message.

@@ -814,7 +814,16 @@ static int do_extract(const Options *o) {
 
     uint8_t *plaintext = NULL;
     uint32_t pt_len = 0;
-    char name[CODEC_NAME_MAX + 1] = "";
+    /* The name is part of the plaintext, so it lives in locked memory too
+       (until extract makes a file of it) */
+    char *name = sodium_malloc(CODEC_NAME_MAX + 1);
+    if (!name) {
+        free_passphrase(passphrase);
+        cover_free(&cover);
+        fprintf(stderr, "Error: allocation failed\n");
+        return 1;
+    }
+    name[0] = '\0';
     if (!o->quiet) fprintf(stderr, "Deriving keys...\n");
     int r = codec_decode(&cover.carrier, passphrase, &plaintext, &pt_len, name);
     free_passphrase(passphrase);
@@ -822,7 +831,10 @@ static int do_extract(const Options *o) {
     if (r == NO_MATCH)
         fprintf(stderr, "Error: decryption failed — wrong passphrase, "
                         "or no message in this image\n");
-    if (r != DECODED) return 1;
+    if (r != DECODED) {
+        sodium_free(name);
+        return 1;
+    }
 
     /* Where it goes: -xf, else the name stored with it, else stdout */
     const char *dest = to_stdout ? NULL : o->extract_file ? o->extract_file : name[0] ? name : NULL;
@@ -853,6 +865,7 @@ static int do_extract(const Options *o) {
         }
     }
     sodium_free(plaintext);
+    sodium_free(name);
     return status;
 }
 

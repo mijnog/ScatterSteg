@@ -10,6 +10,19 @@ use crate::png_io::{self, Image};
 use std::io::{self, Write};
 use std::path::Path;
 
+/// Why a cover whose XMP cites a remote content credential is refused, for
+/// PNG and JPEG alike (as xmp.h)
+pub const C2PA_REFERENCE: &str = "a reference to a content credential (C2PA) signing its pixels";
+
+/// Does this XMP (or the chunk or segment holding it) cite a C2PA manifest
+/// kept elsewhere? The C2PA spec does it with dcterms:provenance, so: the
+/// Dublin Core terms namespace, and a provenance property in some prefix.
+/// It still signs the image data (AUDIT-2026-10-31, 6).
+pub fn xmp_cites_c2pa(d: &[u8]) -> bool {
+    let has = |s: &[u8]| d.windows(s.len()).any(|w| w == s);
+    has(b"http://purl.org/dc/terms/") && has(b":provenance")
+}
+
 pub enum Cover {
     Png(Image),
     Jpeg(JpegImage),

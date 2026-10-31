@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 #include "png_io.h"
+#include "xmp.h"
 #include "atomic_write.h"
 #include <png.h>
 #include <zlib.h>
@@ -154,6 +155,21 @@ static int low_sbit(png_structp png, png_infop info) {
         if (memcmp(chunks[i].name, "sBIT", 4) == 0)
             for (size_t k = 0; k < chunks[i].size; k++)
                 if (chunks[i].data[k] < 8) return 1;
+    return 0;
+}
+
+/* XMP in an iTXt chunk (keyword XML:com.adobe.xmp, uncompressed as the
+   XMP spec has it) citing a remote C2PA manifest: kept in the output, it
+   still signs the pixels (AUDIT-2026-10-31, 6) */
+static int c2pa_reference(png_structp png, png_infop info) {
+    static const char key[] = "XML:com.adobe.xmp";  /* with its NUL */
+    png_unknown_chunkp chunks;
+    int n = png_get_unknown_chunks(png, info, &chunks);
+    for (int i = 0; i < n; i++)
+        if (memcmp(chunks[i].name, "iTXt", 4) == 0 && chunks[i].size >= sizeof(key) &&
+            memcmp(chunks[i].data, key, sizeof(key)) == 0 &&
+            xmp_cites_c2pa(chunks[i].data, chunks[i].size))
+            return 1;
     return 0;
 }
 
@@ -346,6 +362,8 @@ Image *png_read(FILE *fp) {
        Checked once the pixels and every chunk are in. */
     if (!img->unsuitable && animated(png, info))
         img->unsuitable = "an animation (APNG)";
+    else if (!img->unsuitable && c2pa_reference(png, info))
+        img->unsuitable = COVER_C2PA_REFERENCE;
     else if (!img->unsuitable && low_sbit(png, info))
         img->unsuitable = PNG_LOW_SBIT;
     else if (!img->unsuitable && all_gray(img))

@@ -2204,6 +2204,39 @@ class JpegTest(CliBase):
         self.assertIn(0xEB, [m for m, _ in jpeg_segments(out)])
         self.assertDecodes(out, "x")
 
+    def test_remote_content_credential_refused(self):
+        # XMP citing a C2PA manifest kept elsewhere (dcterms:provenance) still
+        # signs the image data (AUDIT-2026-10-31, 6). Other XMP is kept.
+        xmp = lambda prop: (b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf='
+                            b'"http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description '
+                            b'xmlns:dcterms="http://purl.org/dc/terms/" ' + prop + b'/></rdf:RDF></x:xmpmeta>')
+        signed = xmp(b'dcterms:provenance="https://example.com/manifest.c2pa"')
+        plain = xmp(b'dcterms:created="2026-10-31"')
+        src, out = self.path("remote.jpg"), self.path("steg.jpg")
+        make_jpeg(src, 200, 150)
+        with open(src, "rb") as f:
+            data = f.read()
+        for packet, refused in ((signed, True), (plain, False)):
+            app1 = b"http://ns.adobe.com/xap/1.0/\0" + packet
+            with open(src, "wb") as f:
+                f.write(data[:2] + b"\xff\xe1" + struct.pack(">H", 2 + len(app1)) + app1 + data[2:])
+            code, log = self.embed(b"x", out, src=src)
+            if refused:
+                self.assertEqual(code, 1, log)
+                self.assertIn("a reference to a content credential (C2PA)", log)
+            else:
+                self.assertEqual(code, 0, log)
+                self.assertDecodes(out, "x")
+        # A PNG's XMP is an iTXt chunk, kept in the output: the same
+        png = self.path("remote.png")
+        for packet, refused in ((signed, True), (plain, False)):
+            itxt = _chunk(b"iTXt", b"XML:com.adobe.xmp\0\0\0\0\0" + packet)
+            write_png(png, 64, 64, cover_pixel, extra=itxt)
+            code, log = self.embed(b"x", self.path("steg.png"), src=png)
+            self.assertEqual(code, 1 if refused else 0, log)
+            if refused:
+                self.assertIn("a reference to a content credential (C2PA)", log)
+
     def test_gray(self):
         src = self.path("gray.jpg")
         make_jpeg(src, 200, 150, 1)

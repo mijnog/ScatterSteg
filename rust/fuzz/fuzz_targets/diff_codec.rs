@@ -58,7 +58,7 @@ impl Samples {
 
     fn decode_rust(&mut self, passphrase: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         let d: Option<Decrypted> = codec::decode(&self.carrier(), passphrase).expect("Rust decode failed");
-        d.map(|d| (d.name, d.plaintext.to_vec()))
+        d.map(|d| (d.name.to_vec(), d.plaintext.to_vec()))
     }
 
     fn decode_c(&mut self, passphrase: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {

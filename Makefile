@@ -37,7 +37,7 @@ TEST_DIR    = tests/build
 TEST_CFLAGS = $(CFLAGS) -I. -Itests -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_ENV    = ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_stc $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_jpeg_io $(TEST_DIR)/test_faults $(TEST_DIR)/test_distortion
-HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h distortion.h
+HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h distortion.h xmp.h
 
 # Fault-injection build: the sources force-include tests/fault.h, so a test
 # can make the Nth malloc/fopen/fclose/rename/... fail (see tests/fault.c)

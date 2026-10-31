@@ -392,7 +392,27 @@ impl JpegImage {
         if self.trailing_data {
             return Some("data after the end of the image (such as a second image or an HDR gain map)");
         }
-        self.c2pa_manifest().then_some("a content credential (C2PA) signing its pixels")
+        if self.c2pa_manifest() { return Some("a content credential (C2PA) signing its pixels"); }
+        self.c2pa_reference().then_some(crate::cover::C2PA_REFERENCE)
+    }
+
+    /// XMP (APP1, the main packet or an extended one) citing a remote C2PA
+    /// manifest: dcterms:provenance, whatever its prefix. The manifest lives
+    /// elsewhere, but still signs the image data (AUDIT-2026-10-31, 6).
+    fn c2pa_reference(&self) -> bool {
+        let mut m = self.src.marker_list;
+        while !m.is_null() {
+            // SAFETY: libjpeg's saved-marker list, kept until the decompressor is destroyed
+            let mk = unsafe { &*m };
+            let data = unsafe { std::slice::from_raw_parts(mk.data, mk.data_length as usize) };
+            if mk.marker == JPEG_APP0 as u8 + 1
+                && (data.starts_with(b"http://ns.adobe.com/xap/1.0/") || data.starts_with(b"http://ns.adobe.com/xmp/extension/"))
+                && crate::cover::xmp_cites_c2pa(data) {
+                return true;
+            }
+            m = mk.next;
+        }
+        false
     }
 
     /// A C2PA manifest (content credentials, which some phones and cameras
@@ -486,7 +506,7 @@ impl JpegImage {
         if sos + sos_len > out.len() || out[sos..sos + sos_len] != header[cover_sos..] { return None; }
         let mut joined = match tables {
             Tables::Cover => header.to_vec(),
-            _ => with_new_tables(header, &out[..sos]),
+            _ => with_new_tables(header, &out[..sos])?,
         };
         joined.extend_from_slice(&out[sos + sos_len..]);
         self.decodes_to(&joined).then_some(joined)
@@ -666,13 +686,19 @@ fn dht_tables(d: &[u8]) -> [Option<&[u8]>; 8] {
 
 /// The cover's header with each of its Huffman tables replaced by the one
 /// libjpeg wrote for that slot (in `out`, its header), where it wrote one:
-/// the same segments in the same order, only the tables' contents new
-fn with_new_tables(header: &[u8], out: &[u8]) -> Vec<u8> {
+/// the same segments in the same order, only the tables' contents new.
+/// None if the header doesn't parse as whole segments and tables: libjpeg
+/// refused such a cover at load, but this doesn't rely on it
+/// (AUDIT-2026-10-31, 7).
+fn with_new_tables(header: &[u8], out: &[u8]) -> Option<Vec<u8>> {
     let fresh = dht_tables(out);
     let mut h = header[..2].to_vec(); // SOI
     let mut pos = 2;
     while pos < header.len() {
-        let seg = &header[pos..pos + 2 + be16(&header[pos + 2..])];
+        if pos + 4 > header.len() { return None; }
+        let end = pos + 2 + be16(&header[pos + 2..]);
+        if end > header.len() || end < pos + 4 { return None; }
+        let seg = &header[pos..end];
         if seg[1] != 0xC4 {
             h.extend_from_slice(seg);
         } else {
@@ -681,6 +707,7 @@ fn with_new_tables(header: &[u8], out: &[u8]) -> Vec<u8> {
             let mut t = 4;
             while t + 17 <= seg.len() {
                 let n = 17 + seg[t + 1..t + 17].iter().map(|&c| c as usize).sum::<usize>();
+                if t + n > seg.len() || seg[t] >> 4 > 1 || seg[t] & 15 > 3 { return None; }
                 let slot = (seg[t] >> 4) as usize * 4 + (seg[t] & 15) as usize;
                 h.extend_from_slice(fresh[slot].unwrap_or(&seg[t..t + n]));
                 t += n;
@@ -690,7 +717,7 @@ fn with_new_tables(header: &[u8], out: &[u8]) -> Vec<u8> {
         }
         pos += seg.len();
     }
-    h
+    Some(h)
 }
 
 fn is_marker(m: &jpeg_marker_struct, data: &[u8], code: u8, tag: &[u8]) -> bool {
@@ -716,6 +743,34 @@ unsafe fn standard_tables(s: *const jpeg_decompress_struct, d: *const jpeg_compr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header whose DHT names a slot past 7, or whose table runs past its
+    /// segment, is refused, not indexed or sliced past the end
+    /// (AUDIT-2026-10-31, 7). libjpeg refuses both at load, so this is the
+    /// only way to reach them.
+    #[test]
+    fn new_tables_refuse_malformed_dht() {
+        let table = |tc_th: u8, count: u8| {
+            let mut t = vec![tc_th];
+            t.extend_from_slice(&[count; 1]);
+            t.extend_from_slice(&[0; 15]);
+            t.extend(std::iter::repeat_n(0u8, count as usize));
+            t
+        };
+        let header = |t: &[u8], extra: usize| {
+            let mut h = vec![0xFF, 0xD8, 0xFF, 0xC4];
+            let len = (2 + t.len() - extra) as u16;
+            h.extend_from_slice(&len.to_be_bytes());
+            h.extend_from_slice(t);
+            h.extend_from_slice(&[0xFF, 0xDA, 0, 2]);  // a stub SOS
+            h
+        };
+        let out = [0xFF, 0xD8];
+        assert!(with_new_tables(&header(&table(0x01, 1), 0), &out).is_some());
+        assert!(with_new_tables(&header(&table(0x25, 1), 0), &out).is_none());  // class 2
+        assert!(with_new_tables(&header(&table(0x14, 1), 0), &out).is_none());  // slot 4
+        assert!(with_new_tables(&header(&table(0x01, 3), 2), &out).is_none());  // past the segment
+    }
 
     /// As jpeg_io.c's JPEG_CARRIER_BYTES. A different cap here lets us write
     /// JPEGs C refuses to read.

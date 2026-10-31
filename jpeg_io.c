@@ -2,6 +2,7 @@
    Copyright (C) 2026 Maxime de Montbron */
 #define _POSIX_C_SOURCE 200809L  /* open_memstream, fmemopen */
 #include "jpeg_io.h"
+#include "xmp.h"
 #include "atomic_write.h"
 #include "distortion.h"
 #include <setjmp.h>
@@ -382,10 +383,26 @@ static int c2pa_manifest(const JpegImage *j) {
     return 0;
 }
 
+/* XMP (APP1, the main packet or an extended one) citing a remote C2PA
+   manifest: dcterms:provenance, whatever its prefix. The manifest lives
+   elsewhere, but still signs the image data (AUDIT-2026-10-31, 6). */
+static int c2pa_reference(const JpegImage *j) {
+    static const char main_xmp[] = "http://ns.adobe.com/xap/1.0/";
+    static const char ext_xmp[] = "http://ns.adobe.com/xmp/extension/";
+    for (jpeg_saved_marker_ptr m = j->src.marker_list; m; m = m->next) {
+        if (m->marker != JPEG_APP0 + 1) continue;
+        if ((m->data_length >= sizeof(main_xmp) - 1 && !memcmp(m->data, main_xmp, sizeof(main_xmp) - 1)) ||
+            (m->data_length >= sizeof(ext_xmp) - 1 && !memcmp(m->data, ext_xmp, sizeof(ext_xmp) - 1)))
+            if (xmp_cites_c2pa(m->data, m->data_length)) return 1;
+    }
+    return 0;
+}
+
 const char *jpeg_unsuitable(const JpegImage *j) {
     if (j->trailing_data)
         return "data after the end of the image (such as a second image or an HDR gain map)";
     if (c2pa_manifest(j)) return "a content credential (C2PA) signing its pixels";
+    if (c2pa_reference(j)) return COVER_C2PA_REFERENCE;
     return NULL;
 }
 
@@ -549,14 +566,18 @@ static void dht_tables(const uint8_t *d, size_t len, const uint8_t *slots[8], si
 /* The cover's header with each of its Huffman tables replaced by the one
    libjpeg wrote for that slot (in out's header), where it wrote one: the
    same segments in the same order, only the tables' contents new. Into h
-   if not NULL; returns the length either way. */
+   if not NULL; returns the length either way, or 0 if the header doesn't
+   parse as whole segments and tables (libjpeg refused such a cover at
+   load, but this doesn't rely on it: AUDIT-2026-10-31, 7). */
 static size_t new_tables_into(const JpegImage *j, const uint8_t *const fresh[8],
                               const size_t fresh_n[8], uint8_t *h) {
     size_t at = 2;  /* SOI */
     if (h) memcpy(h, j->header, 2);
     for (size_t pos = 2; pos < j->header_len;) {
         const uint8_t *seg = j->header + pos;
+        if (j->header_len - pos < 4) return 0;
         size_t seg_len = 2 + (size_t)be16(seg + 2);
+        if (seg_len < 4 || seg_len > j->header_len - pos) return 0;
         if (seg[1] != 0xC4) {
             if (h) memcpy(h + at, seg, seg_len);
             at += seg_len;
@@ -567,6 +588,7 @@ static size_t new_tables_into(const JpegImage *j, const uint8_t *const fresh[8],
             for (size_t t = 4; t + 17 <= seg_len;) {
                 size_t n = 17;
                 for (int k = 1; k <= 16; k++) n += seg[t + k];
+                if (n > seg_len - t || (seg[t] >> 4) > 1 || (seg[t] & 15) > 3) return 0;
                 int slot = (seg[t] >> 4) * 4 + (seg[t] & 15);
                 const uint8_t *use = fresh[slot] ? fresh[slot] : seg + t;
                 size_t use_n = fresh[slot] ? fresh_n[slot] : n;
@@ -590,6 +612,7 @@ static uint8_t *with_new_tables(const JpegImage *j, const uint8_t *out, size_t o
     size_t fresh_n[8];
     dht_tables(out, out_len, fresh, fresh_n);
     *len = new_tables_into(j, fresh, fresh_n, NULL);
+    if (!*len) return NULL;
     uint8_t *h = malloc(*len);
     if (h) new_tables_into(j, fresh, fresh_n, h);
     return h;

@@ -749,9 +749,10 @@ fn extract(o: &Options) -> ExitCode {
     let len = found.plaintext.len();
     warn_if_swappable(&mut found.plaintext, len);
     if o.verbose {
-        let stored = if found.name.is_empty() { String::new() }
-                     else { format!(", stored as '{}'", String::from_utf8_lossy(&found.name)) };
-        scattersteg::errln!("Found {len} bytes{stored}");
+        // No String: the name stays in locked memory (it is UTF-8, name_ok)
+        let name = std::str::from_utf8(&found.name).unwrap_or("");
+        let (before, after) = if name.is_empty() { ("", "") } else { (", stored as '", "'") };
+        scattersteg::errln!("Found {len} bytes{before}{name}{after}");
     }
     let Some(dest) = dest else {
         // All of it, NULs too, unbuffered (write_fd)

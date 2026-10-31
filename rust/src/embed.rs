@@ -418,7 +418,7 @@ mod tests {
 
     /// A cover half flat, half noise
     fn half_flat(w: usize, h: usize) -> Vec<u8> {
-        (0..w * h).map(|i| if i % w < w / 2 { 128 } else { (i * 2654435761usize >> 13) as u8 }).collect()
+        (0..w * h).map(|i| if i % w < w / 2 { 128 } else { ((i * 2654435761usize) >> 13) as u8 }).collect()
     }
 
     #[test]
@@ -431,6 +431,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn hill_costs_match_c() {
         // From embed_hill_costs (embed.c) on the same 6 x 5 RGB image
         const C: [f32; 90] = [

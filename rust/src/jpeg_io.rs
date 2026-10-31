@@ -300,8 +300,8 @@ impl JpegImage {
                 let row = unsafe { access(s as j_common_ptr, *self.virt.add(ci), by as u32, 1, 1) };
                 let blocks = unsafe { std::slice::from_raw_parts(*row, wb) };
                 for block in blocks {
-                    if block[0] < MIN_DC || block[0] > MAX_DC { return false; }
-                    if block[1..].iter().any(|&c| c < -MAX_AC || c > MAX_AC) { return false; }
+                    if !(MIN_DC..=MAX_DC).contains(&block[0]) { return false; }
+                    if block[1..].iter().any(|&c| !(-MAX_AC..=MAX_AC).contains(&c)) { return false; }
                     self.coefs.extend_from_slice(block);
                 }
             }

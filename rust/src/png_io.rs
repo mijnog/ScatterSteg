@@ -66,7 +66,7 @@ const KEPT_CHUNKS: [&[u8; 4]; 20] = [
 ];
 
 fn keep_chunk(name: &[u8; 4]) -> bool {
-    name[3] & 0x20 != 0 || KEPT_CHUNKS.iter().any(|k| *k == name)
+    name[3] & 0x20 != 0 || KEPT_CHUNKS.contains(&name)
 }
 
 /// The cover's ancillary chunks, in order, with whether each follows the
@@ -146,7 +146,7 @@ fn decoder_view(file: &mut Vec<u8>) -> bool {
                     // libpng fails on a palette that isn't whole entries or
                     // is empty; one with more entries than the bit depth
                     // allows is only cut short (written below)
-                    if len % 3 != 0 || len == 0 || len > 768 { return false; }
+                    if !len.is_multiple_of(3) || len == 0 || len > 768 { return false; }
                     plte_entries = plte_entries.min(1usize << depth.min(8));
                     true
                 } else {

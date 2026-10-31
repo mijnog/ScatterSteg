@@ -14,6 +14,7 @@
 
 /// The Daubechies 8 decomposition filters, low and high pass, to the digits
 /// the references give them
+#[allow(clippy::excessive_precision)]
 const LO: [f64; TAPS] = [
     -0.00011747678400228192, 0.00067544940599855677, -0.00039174037299597711,
     -0.0048703529930106603, 0.0087460940470156547, 0.013981027917015516,
@@ -21,6 +22,7 @@ const LO: [f64; TAPS] = [
     0.00047248457399797254, -0.28401554296242809, -0.015829105256023893,
     0.58535468365486909, 0.67563073629801285, 0.31287159091446592,
     0.054415842243081609];
+#[allow(clippy::excessive_precision)]
 const HI: [f64; TAPS] = [
     -0.054415842243081609, 0.31287159091446592, -0.67563073629801285,
     0.58535468365486909, 0.015829105256023893, -0.28401554296242809,
@@ -38,8 +40,7 @@ const BANDS: [[&[f64; TAPS]; 2]; 3] = [[&LO, &HI], [&HI, &LO], [&HI, &HI]];
 /// them
 const PAD: usize = 16;
 
-/// As the references write it
-const PI: f64 = 3.14159265358979323846;
+const PI: f64 = std::f64::consts::PI;
 /// 2^-6, the J-UNIWARD paper's and MATLAB reference's; S-UNIWARD uses 1
 const SIGMA_JPEG: f64 = 0.015625;
 const SIGMA_SPATIAL: f64 = 1.0;
@@ -131,7 +132,7 @@ fn wavelet_costs(px: &[u8], w: usize, h: usize, ch: usize, uniward: bool) -> Vec
         }
     }
     for v in costs.iter_mut() {
-        if !(*v <= WET_SPATIAL) { *v = WET_SPATIAL; } // and NaN
+        if v.is_nan() || *v > WET_SPATIAL { *v = WET_SPATIAL; } // and NaN
     }
     costs
 }
@@ -293,6 +294,7 @@ mod tests {
     // implementation, which matched the authors' reference code
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn wow_matches_c() {
         let want = [0.0141366525f32, 0.0145788305, 0.0143218692, 0.0129158907, 0.0106896516,
             0.014331637, 0.0144222546, 0.0116113629, 0.0166720171, 0.0135587277, 0.0129521862,
@@ -302,6 +304,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn suniward_matches_c() {
         let want = [0.766949177f32, 0.539925933, 0.641394734, 0.507885456, 0.700752497,
             0.777545214, 1.01516366, 0.426031649, 0.770571947, 0.693113446, 0.76456368,
@@ -315,6 +318,7 @@ mod tests {
         41, 52, 57, 46, 25, 32, 39, 44, 52, 61, 60, 51, 36, 46, 48, 49, 56, 50, 52, 50];
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn juniward_matches_c() {
         let cases = [(0, 0, 1, 5.34709358f32), (0, 0, 9, 7.0657196), (1, 0, 63, 90.6809921),
             (0, 1, 8, 6.65914679), (1, 1, 27, 29.6261711), (1, 1, 2, 3.98322415)];

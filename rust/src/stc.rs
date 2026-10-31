@@ -104,6 +104,9 @@ fn embed_chunk(x: &[u8], costs: &[f32], m: &[u8], a: usize, b: usize, mlen: usiz
     // so take the cheapest, and walk the path back
     let mut s = 0usize;
     for t in 1..STATES { if cost[t] < cost[s] { s = t; } }
+    // No finite way through (infinite costs): the path from s isn't one, and
+    // walking it would leave the trellis
+    if !cost[s].is_finite() { return Err(()); }
     for i in (a..b).rev() {
         s = (s << 1) | m[i] as usize;
         let from = block_start(i, mlen, n) - base;

@@ -2142,6 +2142,18 @@ class JpegTest(CliBase):
         self.assertIn("give it a .png name", log)
         self.assertEqual(sorted(os.listdir(self.dir)), ["cover.jpg", "cover.png"])
 
+    def test_flat_jpeg(self):
+        # Mostly flat: most blocks and their neighbours have no AC energy,
+        # where UERD's cost is q / 0. Once every AC coefficient became a
+        # carrier, such zeros got an infinite cost and the trellis walked
+        # off its path (a crash, found on a camera test file); they now get
+        # a large finite cost
+        src, out = self.path("flat.jpg"), self.path("steg.jpg")
+        make_jpeg(src, 512, 384, 3, 85, "flat")
+        code, log = self.embed(b"in a flat cover", out, src=src)
+        self.assertEqual(code, 0, log)
+        self.assertDecodes(out, "in a flat cover")
+
     def test_unrewritable_jpeg_refused(self):
         # A JPEG libjpeg decodes but won't re-encode (found by fuzzing):
         # refused up front, before any key derivation

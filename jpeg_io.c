@@ -53,6 +53,12 @@ static uint64_t bytes_to_end(FILE *fp) {
     if (fseek(fp, here, SEEK_SET) != 0 || end < here) return UINT64_MAX;
     return (uint64_t)(end - here);
 }
+/* UERD's cost where the block and its neighbours have no AC energy at all
+   (every AC coefficient 0): q / 0. A large finite "wet" cost instead, as
+   UERD implementations use, so the trellis can still pass through such
+   carriers when it must. rust/src/jpeg_io.rs's WET_COST must equal it. */
+#define JPEG_WET_COST 1e13f
+
 /* What an 8-bit encoder can write: DC in [-1024, 1023] (an all-black block
    at quality 100 is -1024), so block-to-block differences fit its 11 bits;
    AC values that fit 10 bits */
@@ -214,7 +220,8 @@ static int collect_carriers(JpegImage *j) {
                         if (q <= 0) q = 1;
                         if (!pass) e += (float)abs(*c) * q;
                         if (!pass && *c) j->nonzero_ac++;
-                        if (pass) j->costs[n] = ju ? juniward_cost(ju, bx, by, k) : q / around;
+                        if (pass) j->costs[n] = ju ? juniward_cost(ju, bx, by, k)
+                                                : around > 0 ? q / around : JPEG_WET_COST;
                         n++;
                     }
                     if (!pass) energy[base + (size_t)by * w + bx] = e;

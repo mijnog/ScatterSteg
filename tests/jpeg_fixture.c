@@ -26,7 +26,7 @@ int main(int argc, char **argv) {
     }
     int w = atoi(argv[2]), h = atoi(argv[3]), comps = atoi(argv[4]), quality = atoi(argv[5]);
     int progressive = 0, optimize = 0, arith = 0, restart = 0, markers = 0, full = 0, many = 0;
-    int nojfif = 0;
+    int nojfif = 0, flat = 0;
     for (int i = 6; i < argc; i++) {
         progressive |= !strcmp(argv[i], "progressive");
         optimize    |= !strcmp(argv[i], "optimize");
@@ -36,6 +36,7 @@ int main(int argc, char **argv) {
         full        |= !strcmp(argv[i], "444");
         many        |= !strcmp(argv[i], "manyscans");
         nojfif      |= !strcmp(argv[i], "nojfif");
+        flat        |= !strcmp(argv[i], "flat");  /* plain gray but for one column of blocks */
     }
 
     FILE *fp = fopen(argv[1], "wb");
@@ -103,6 +104,7 @@ int main(int argc, char **argv) {
                 seed = seed * 1103515245u + 12345u;
                 int v = (x * 255 / (w ? w : 1) + y * 128 / (h ? h : 1) + k * 60) % 256;
                 v += (int)((seed >> 16) % 41) - 20;  /* texture */
+                if (flat && x >= 8) v = 128;
                 row[(size_t)x * comps + k] = (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
             }
         JSAMPROW rows[1] = {row};

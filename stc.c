@@ -102,6 +102,12 @@ static int embed_chunk(const uint8_t *x, const float *costs, const uint8_t *m,
        do, so take the cheapest, and walk the path back */
     unsigned s = 0;
     for (unsigned t = 1; t < STATES; t++) if (cost[t] < cost[s]) s = t;
+    /* No finite way through (infinite costs): the path from s isn't one,
+       and walking it would leave the trellis */
+    if (!isfinite(cost[s])) {
+        free(cost); free(next); free(path);
+        return -1;
+    }
     for (size_t i = b; i-- > a;) {
         s = (s << 1) | m[i];
         size_t from = block_start(i, mlen, n) - base, to = block_start(i + 1, mlen, n) - base;

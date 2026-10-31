@@ -19,6 +19,11 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
 
+/// UERD's cost where the block and its neighbours have no AC energy at all
+/// (every AC coefficient 0): q / 0. A large finite "wet" cost instead, as
+/// UERD implementations use, so the trellis can still pass through such
+/// carriers when it must. As C's JPEG_WET_COST.
+const WET_COST: f32 = 1e13;
 /// Largest coefficient storage load will allocate (1 GiB)
 const MAX_COEF_BYTES: usize = 1 << 30;
 /// Most carriers load will take. Each costs memory of its own beyond its
@@ -345,7 +350,8 @@ impl JpegImage {
                 }
                 self.costs.push(match &juniward {
                     Some(j) => j.cost(bx, by, k),
-                    None => q(k) / around,
+                    None if around > 0.0 => q(k) / around,
+                    None => WET_COST,
                 });
             }
         }

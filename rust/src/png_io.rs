@@ -109,6 +109,9 @@ fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
         match &name {
             b"IDAT" => { after_idat = true; continue; }
             b"IEND" => break,
+            // A second IHDR is a fatal error to libpng, even after the image
+            // data: C stops reading there, keeping what it has
+            b"IHDR" if after_idat => break,
             b"IHDR" | b"PLTE" | b"tRNS" => continue,
             _ => {}
         }
@@ -240,6 +243,14 @@ fn low_sbit(chunks: &[Chunk]) -> bool {
     chunks.iter().any(|c| &c.name == b"sBIT" && c.data.iter().any(|&b| b < 8))
 }
 
+/// XMP in an iTXt chunk (keyword XML:com.adobe.xmp, uncompressed as the XMP
+/// spec has it) citing a remote C2PA manifest: kept in the output, it still
+/// signs the pixels (AUDIT-2026-10-31, 6)
+fn c2pa_reference(chunks: &[Chunk]) -> bool {
+    chunks.iter().any(|c| &c.name == b"iTXt" && c.data.starts_with(b"XML:com.adobe.xmp\0")
+                          && crate::cover::xmp_cites_c2pa(&c.data))
+}
+
 /// Gray stored as RGB: R = G = B in every pixel. Changing the channels
 /// independently breaks that, which a one-line check finds.
 fn all_gray(pixels: &[u8], channels: u32) -> bool {
@@ -326,6 +337,8 @@ pub fn from_bytes(mut file: Vec<u8>) -> Option<Image> {
     let unsuitable = unsuitable.or_else(|| {
         if animated {
             Some("an animation (APNG)")
+        } else if c2pa_reference(&chunks) {
+            Some(crate::cover::C2PA_REFERENCE)
         } else if low_sbit(&chunks) {
             Some(LOW_SBIT)
         } else if all_gray(&pixels, channels) {

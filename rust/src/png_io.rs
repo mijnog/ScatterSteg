@@ -111,6 +111,13 @@ fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
             if after_idat { break; }
             continue;
         }
+        // A critical chunk failing its CRC is fatal to libpng (an ancillary
+        // one only warns); after the image data, C stops reading there
+        if after_idat && name[0] & 0x20 == 0
+            && crc32fast::hash(&file[pos - 12 - len + 4..pos - 4])
+                != u32::from_be_bytes(file[pos - 4..pos].try_into().unwrap()) {
+            break;
+        }
         match &name {
             b"IDAT" => { after_idat = true; continue; }
             b"IEND" => break,

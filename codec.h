@@ -29,7 +29,8 @@ enum { DECODED, NO_MATCH, FAILED };
    characters, not "." or ".." */
 int codec_name_ok(const char *name);
 
-/* Positions the 32-bit length header takes: fewer, and no message fits */
+/* The fewest positions a payload order needs, one sample per bit of the
+   32-bit length: fewer, and no message fits */
 uint32_t codec_header_pixels(uint32_t channels);
 
 /* DECODED gives the message in *plaintext (sodium_malloc memory, pt_len

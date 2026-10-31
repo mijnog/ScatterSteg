@@ -14,7 +14,7 @@ The commands and options are steghide's, for everything ScatterSteg does, so ste
 ## How safe is it?
 
 - **The message itself is well protected.** It is encrypted and authenticated with standard, well-reviewed cryptography (libsodium), and every passphrase guess costs an attacker about 0.2 s and 256 MiB of memory. A changed image fails to decode; it never yields a wrong message.
-- **Hiding that a message exists is harder, and only partly achieved.** Classic and feature-based detectors catch ScatterSteg 50–65% of the time at the payloads tested, against 96–98% for steghide. But a deep-learning detector (SRNet) trained on images like the cover catches it 87–93% of the time at moderate payloads. Small messages and private covers matter more than anything else. See [Steganalysis results](#steganalysis-results).
+- **Hiding that a message exists is harder, and only partly achieved.** Classic and feature-based detectors catch ScatterSteg 50–65% of the time at the payloads tested, against 96–98% for steghide. Off-the-shelf deep-learning detectors (Aletheia's ALASKA2 models) are at chance against a light JPEG payload. But a deep-learning detector (SRNet) trained on images like the cover catches it 74–92% of the time at the payloads measured so far (0.2–0.4 bits). Small messages and private covers matter more than anything else. See [Steganalysis results](#steganalysis-results).
 - **Nobody independent has reviewed it.** The code is heavily tested and has had a security audit of its own ([`AUDIT-2026-10-24.md`](AUDIT-2026-10-24.md)), but no outside review. Don't rely on it where your safety is at stake.
 
 [`THREAT_MODEL.md`](THREAT_MODEL.md) says exactly what it protects, against whom, and what it doesn't.
@@ -83,7 +83,7 @@ How hard the message is to detect depends mostly on the cover and on how much yo
 | | PNG | JPEG |
 |---|---|---|
 | Accepted | 8-bit RGB or grayscale, no transparency | 8-bit baseline or progressive, Huffman or arithmetic coding |
-| Capacity (before compression) | about 760 KB in a 1080p image | about 0.12–0.15 bits per pixel (about 68 KB in 4.5 MP) |
+| Capacity (before compression) | about 760 KB in a 1080p image | about 1.45 bits per pixel in a usual 4:2:0 JPEG (about 800 KB in 4.5 MP), twice that in 4:4:4 |
 | Kept from the cover | interlacing, and every ancillary chunk the PNG spec defines (color space, pHYs, text, tIME, eXIf...) or marks safe to copy, byte for byte and in place | quantization, sampling, coding mode, restart interval, APPn and COM markers |
 | Refused | palette, transparency, 16-bit, gray below 8 bits, an `sBIT` chunk under 8, RGB whose pixels are all gray, animation (APNG) | 12-bit, lossless, files that can't be rewritten exactly, data after the image (MPO, Ultra HDR), a content credential (C2PA) |
 
@@ -128,7 +128,7 @@ ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read th
 2. **Compression and encryption.** The message is compressed (DEFLATE) if that makes it shorter, since fewer bits to hide means fewer changes; text typically shrinks to half. It is then encrypted and authenticated with XSalsa20-Poly1305.
 3. **Order.** The scatter key shuffles the image's carriers into a secret order: the pixel samples of a PNG, or the AC coefficients of a JPEG, zeros included.
 4. **Syndrome coding.** Instead of writing one bit into each carrier, which changes about half of them, syndrome-trellis codes (STC) find the cheapest set of changes that encodes the message. "Cheapest" comes from content-adaptive costs: HILL for PNG and UERD for JPEG make a change cheap where the image is busy and expensive where it is flat. This makes 2 to 3 times fewer changes than writing the bits directly, in the places hardest to notice.
-5. **Changes.** Every change is ±1. Where two carriers that both need changing hold values one apart, they swap values instead, which leaves the image's histogram exactly as it was (93–98.5% of changes, on photographs).
+5. **Changes.** Every change is ±1. Where two carriers that both need changing hold values one apart, they swap values instead, which leaves the image's histogram exactly as it was (93–98.5% of a PNG's changes, on the benchmark's photographs).
 
 JPEG coefficients are edited directly: the image is never decompressed and recompressed. The image stores no header or version marker. [`FORMAT.md`](FORMAT.md) specifies the format exactly.
 
@@ -153,7 +153,7 @@ These detectors are reimplementations of rich models trained on a few hundred im
 | ScatterSteg, PNG | 0.4 bits per pixel | 0.13 | 87% |
 | ScatterSteg, JPEG | 0.2 bits per non-zero AC coefficient | 0.08 | 92% |
 
-SRNet was trained on 7,000 cover/stego pairs from the same source as the test images, at a known payload: a capable warden's best case, but a realistic one. The lighter payloads are still being measured; until they are, assume that only small messages in private, noisy covers stay hidden. [`benchmark/README.md`](benchmark/README.md) has every measurement, the method, and the full list of limitations.
+SRNet was trained on 7,000 cover/stego pairs from the same source as the test images, at a known payload: a capable warden's best case, but a realistic one. A warden who downloads a detector instead does far worse: Aletheia's EfficientNet detectors, trained on ALASKA2 for J-UNIWARD and J-MiPOD, score ScatterSteg's JPEGs at 0.05 bits per non-zero AC coefficient at 0.46 and 0.49 (480 Wikimedia photographs at quality 75; chance is about 0.47 there), level with the published UERD's 0.47 and 0.49. The lighter payloads are still being measured; until they are, assume that only small messages in private, noisy covers stay hidden. [`benchmark/README.md`](benchmark/README.md) has every measurement, the method, and the full list of limitations.
 
 ## Limitations
 
@@ -175,7 +175,8 @@ Next, each measured before it's kept:
 - **Write files the way the cover was written** (done). A PNG keeps the cover's row filters, data chunk sizes and zlib settings, and a camera JPEG its whole header and Huffman tables, so a cover saved unchanged comes back identical. Before, the output's structure showed it had been rewritten (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), which a careful observer could notice without any steganalysis.
 - **Ternary embedding,** where the message also chooses the direction of each change, for fewer changes per message.
 - **A payload suggestion that follows the square root law:** the safe message size grows with the square root of the image size, not in proportion to it.
-- **Comparison with the other modern tools** (HStego, phasm) and with Aletheia's detectors, to know where ScatterSteg stands.
+- **No cost-blind changes** (done). The message length was written straight into 32 secret positions, about 16 changes that ignored the costs; Aletheia's J-MiPOD detector caught that alone, even with a 1-byte message (P_E 0.41). It is now syndrome-coded like the rest, and the same detector is at chance (0.49).
+- **Comparison with the other modern tools** (HStego, phasm) and with Aletheia's detectors (its ALASKA2 JPEG detectors done, above), to know where ScatterSteg stands.
 
 Then a first release with a frozen format, and an independent review.
 

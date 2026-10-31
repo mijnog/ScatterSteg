@@ -6,8 +6,13 @@ modest measurement. Read the limitations before quoting a number.
 
 **Current results** (HILL costs for PNG, UERD for JPEG) are in
 [HILL](#content-adaptive-costs-hill), [UERD](#content-adaptive-jpeg-costs-uerd),
-[BOSSbase](#second-cover-set-bossbase), [SRNet](#deep-learning-detector-srnet)
-and [Classic detectors](#classic-detectors). SRNet, a deep network, is by far
+[BOSSbase](#second-cover-set-bossbase), [SRNet](#deep-learning-detector-srnet),
+[Off-the-shelf detectors](#off-the-shelf-detectors-aletheia-alaska2)
+and [Classic detectors](#classic-detectors). Every JPEG figure before the
+off-the-shelf section was measured with the message length written straight
+into 32 samples, which that section shows was detectable on its own; the
+format now syndrome-codes it, so those figures, if anything, flatter the
+warden. SRNet, a deep network, is by far
 the strongest detector run; read the rest as rankings.
 The tables before the HILL section are the original measurements, from
 before content-adaptive costs, kept as the baseline the later ones are
@@ -218,9 +223,10 @@ images with a ternary (±1) coder and simulate it at the payload's entropy:
   re-encoded beyond what the loader already does.
 - Planes smaller than the 16-tap filters are mirrored repeatedly; the
   references don't handle them.
-- The coder is ScatterSteg's binary STC with ±1 changes, and JPEG carriers
-  are the AC coefficients with |value| ≥ 2, as for UERD. J-UNIWARD's costs
-  are its own: no extra factor for |value| 2 (UERD's 1.75).
+- The coder is ScatterSteg's binary STC with ±1 changes. In these runs
+  (build `d2b7c04`) JPEG carriers were the AC coefficients with |value| ≥ 2,
+  with UERD's extra 1.75 factor for |value| 2 and none for J-UNIWARD; every
+  AC coefficient is a carrier now, with no factor (see the UERD section).
 - J-UNIWARD builds refuse a JPEG component over 2²⁶ pixels (its planes take
   about 28 bytes per pixel), with the loader's generic error, and compute
   the costs on every load, extract and `info` included.
@@ -317,10 +323,11 @@ batches of pairs of the same image, flipped and rotated alike. Builds of
 | ScatterSteg JPEG, UERD | 0.2 bits per non-zero AC | **0.073** ± 0.006 | 0.981 | 89% |
 | ScatterSteg PNG, HILL | 0.2 bits per pixel | **0.256** ± 0.010 | 0.842 | 42% |
 | ScatterSteg JPEG, UERD, every AC coefficient | 0.2 bits per non-zero AC | **0.077** ± 0.006 | 0.979 | 89% |
+| ScatterSteg PNG, S-UNIWARD (benchmark build) | 0.4 bits per pixel | **0.095** ± 0.007 | 0.976 | 85% |
 
-The last two rows were trained for 15 epochs, starting from the detector of
-the row above them (`hill_0.4` and the first JPEG row), with build `b702512`
-for the last. A head start favours the detector, so they are if anything
+The last three rows were trained for 15 epochs, starting from the detector
+of `hill_0.4` (the PNG rows) or the first JPEG row, with build `b702512`
+for the every-AC row. A head start favours the detector, so they are if anything
 pessimistic for the user.
 
 This is far stronger than the rich models. On BOSSbase (512×512 there, so
@@ -355,8 +362,10 @@ the same relative payload is far safer in a busy image. The old rule hid
 this only by refusing the smoothest covers as too small.
 
 So against a strong, well-trained detector, payloads of 0.2 to 0.4 are not
-hidden. The lighter payloads (0.05 to 0.2), S-UNIWARD and J-UNIWARD are
-still being trained; their rows go here. This setting favours the warden:
+hidden. S-UNIWARD is caught more often than HILL at 0.4 (P_E 0.095 against
+0.129), though it makes fewer changes, so HILL stays the PNG default. The
+lighter payloads (0.05 to 0.2) and J-UNIWARD are still being trained; their
+rows go here. This setting favours the warden:
 one cover source for training and test, the payload known, and small
 images, where a given rate is easier to detect.
 
@@ -364,6 +373,43 @@ images, where a given rate is easier to detect.
     SCATTERSTEG=... python3 dl/embed.py DIR png hill 0.4    # and jpg uerd 0.2
     python3 dl/train.py DIR png hill_0.4 DIR/runs/hill_0.4 --epochs 40
     python3 dl/summarize.py DIR
+
+## Off-the-shelf detectors (Aletheia, ALASKA2)
+
+A warden needn't train anything: Aletheia ships EfficientNet-B0 detectors
+trained on ALASKA2 for J-UNIWARD, J-MiPOD, nsF5 and steghide. Run unchanged
+on 480 Wikimedia photographs at quality 75 (512×512), against the same
+covers. P_E is at the best threshold chosen on the same 480 pairs, so chance
+reads about 0.47 rather than 0.5. Scripts and raw output are in
+`~/bench/alaska-test` on the benchmark machine (`score_aletheia.py`,
+`analyse.py`, `sim_reference.py`; not yet in this repository). The
+published UERD and J-UNIWARD are conseal's simulators, at the same payload.
+
+| Set | J-UNIWARD model | J-MiPOD model |
+|---|---|---|
+| ScatterSteg, 1-byte message, old format | 0.489 | **0.412** |
+| ScatterSteg, 1-byte message | 0.483 | 0.494 |
+| ScatterSteg UERD 0.05, old format | 0.455 | **0.370** |
+| ScatterSteg UERD 0.05 | 0.458 | 0.491 |
+| published UERD 0.05 | 0.471 | 0.492 |
+| published J-UNIWARD 0.05 | 0.480 | 0.492 |
+| ScatterSteg UERD 0.1 / 0.2 / 0.4, old format | 0.436 / 0.386 / 0.375 | 0.370 / 0.369 / 0.348 |
+| ScatterSteg J-UNIWARD 0.1 / 0.2 / 0.4, old format | 0.441 / 0.399 / 0.327 | 0.362 / 0.368 / 0.357 |
+| published UERD 0.4 | 0.350 | 0.465 |
+| published J-UNIWARD 0.4 | 0.345 | 0.465 |
+| steghide 0.1 | 0.472 | 0.493 (its own model: 0.018) |
+
+The J-MiPOD model caught the old format at about 0.35–0.41 whatever the
+payload, even a single byte. Ablation found why: the 32-bit length was
+written straight into 32 secret samples, about 16 changes per file that
+ignored the costs, mostly zeros made ±1 in flat blocks. Without that write
+it scored 0.49; exchange embedding, the salt region's size and chroma
+changes made no difference. The length is now an STC syndrome over up to
+2,048 samples, with costs (`FORMAT.md`), and the J-MiPOD model is at chance;
+ScatterSteg scores like the published UERD. The heavier payloads haven't
+been re-run on the new format; the J-UNIWARD model barely saw the length,
+so its figures for them should hold, and there ScatterSteg is level with
+the published schemes.
 
 ## Classic detectors
 
@@ -376,7 +422,7 @@ Measured on the 480 benchmark photographs (512×512 RGB; `classic.py` and `hcf.p
 | Sample pair analysis, shift from the cover | +0.008 to +0.064, tracking the payload | 0.000 | −0.001 to −0.019 (3 cover-to-stego sd at 0.4) | **−0.0002 to −0.0012** |
 | Ker's adjacency HCF-COM shift (cover 107.6, sd 10.6) | −0.45 to −1.51 | −0.56 to −4.54 | −0.15 to −1.14 | **−0.01 to −0.14** |
 
-Chi-square only catches sequential embedding, and none of the scattered methods trigger it. Sample pair analysis did see uniform costs, in the opposite direction from LSB replacement; HILL's shift is 7 to 16 times smaller. For JPEG, the 2:3 ratio of coefficients of magnitude 2 and 3 (cover 1.93, sd 0.13 across covers) moves +0.7%, +0.9% and −1.1% with UERD at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient (`tune_two.py`). An earlier version of this table, measured on two photographs, is in the git history.
+Chi-square only catches sequential embedding, and none of the scattered methods trigger it. Sample pair analysis did see uniform costs, in the opposite direction from LSB replacement; HILL's shift is 7 to 16 times smaller. For JPEG, the 2:3 ratio of coefficients of magnitude 2 and 3 (cover 1.93, sd 0.13 across covers) moved +0.7%, +0.9% and −1.1% with UERD at 0.05, 0.1 and 0.2 bits per non-zero AC coefficient under the old |value| ≥ 2 rule (`tune_two.py`); embedding in every AC coefficient keeps every histogram shift under 0.1 of the covers' spread (`hist_jpg.py`). An earlier version of this table, measured on two photographs, is in the git history.
 
 `classic.py` implements chi-square and sample pair analysis and was calibrated on the LSB baselines first; `hcf.py` scores adjacency HCF-COM.
 

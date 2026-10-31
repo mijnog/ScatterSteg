@@ -34,10 +34,10 @@ static inline Carrier carrier_of_image(Image *img) {
 uint32_t carrier_positions(const Carrier *c);  /* pixels, or coefficients */
 uint32_t carrier_channels(const Carrier *c);   /* samples per position */
 
-/* Writing is two-phase: embed_encode and embed_write_raw record which
-   samples must change in a plan, and embed_apply changes them all at once,
-   pairing them up so the histogram is preserved (see embed.c). A plan
-   holds samples of one carrier type. */
+/* Writing is two-phase: embed_set_bits (and the older embed_encode and
+   embed_write_raw) record which samples must change in a plan, and
+   embed_apply changes them all at once, pairing them up so the histogram
+   is preserved (see embed.c). A plan holds samples of one carrier type. */
 typedef struct EmbedPlan EmbedPlan;
 
 typedef struct {
@@ -61,7 +61,9 @@ void embed_decode(const Carrier *c, const uint32_t *indices,
 
 uint32_t embed_peek_len(const Carrier *c, const uint32_t *indices, uint32_t count);
 
-/* Raw bytes with no length header (the format's 32-bit length uses these).
+/* Raw bytes with no length header (the format no longer uses these, nor
+   embed_encode/embed_decode/embed_peek_len: its length and payload are
+   syndrome-coded, see codec.c; the tests and fuzz_embed still do).
    Return 0, or -1 if len bytes don't fit in count positions. */
 int embed_write_raw(const Carrier *c, const uint32_t *indices, uint32_t count,
                     const uint8_t *data, uint32_t len, EmbedPlan *plan);

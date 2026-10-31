@@ -1719,7 +1719,13 @@ class CliTest(CliBase):
                 if child == 0:
                     os.setpgid(0, 0)
                     exec_or_exit([BINARY, "extract", "-sf", self.cover])
-                os.setpgid(child, child)
+                # Both set the group, whichever runs first; once the child
+                # has exec'd, this one fails with EACCES (CI hit it), but
+                # the child has set its own group by then
+                try:
+                    os.setpgid(child, child)
+                except PermissionError:
+                    pass
                 os.tcsetpgrp(0, child)
                 os.write(wfd, str(child).encode())
                 os.close(wfd)

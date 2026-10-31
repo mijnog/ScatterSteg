@@ -14,7 +14,7 @@ The commands and options are steghide's, for everything ScatterSteg does, so ste
 ## How safe is it?
 
 - **The message itself is well protected.** It is encrypted and authenticated with standard, well-reviewed cryptography (libsodium), and every passphrase guess costs an attacker about 0.2 s and 256 MiB of memory. A changed image fails to decode; it never yields a wrong message.
-- **Hiding that a message exists is harder, and only partly achieved.** The trained detectors measured so far catch ScatterSteg about 50–65% of the time at the payloads tested, against 96–98% for steghide. That is much better than steghide, but it is not invisibility, and stronger detectors would do better. See [Steganalysis results](#steganalysis-results).
+- **Hiding that a message exists is harder, and only partly achieved.** Classic and feature-based detectors catch ScatterSteg 50–65% of the time at the payloads tested, against 96–98% for steghide. But a deep-learning detector (SRNet) trained on images like the cover catches it 87–93% of the time at moderate payloads. Small messages and private covers matter more than anything else. See [Steganalysis results](#steganalysis-results).
 - **Nobody independent has reviewed it.** The code is heavily tested and has had a security audit of its own ([`AUDIT-2026-10-24.md`](AUDIT-2026-10-24.md)), but no outside review. Don't rely on it where your safety is at stake.
 
 [`THREAT_MODEL.md`](THREAT_MODEL.md) says exactly what it protects, against whom, and what it doesn't.
@@ -145,7 +145,14 @@ Detection error against the strongest detectors measured (0.5 means the detector
 
 Payload is message bits per pixel for PNG, and per non-zero AC coefficient for JPEG. steghide's JPEG figures are similar to its BMP ones (0.21, 0.10 and 0.03). The classic detectors (chi-square, sample pair analysis, HCF-COM) barely move.
 
-These are relative results, not a claim of undetectability: the detectors are reimplementations trained on a few hundred images at a known payload, and the published models and deep-learning detectors, not yet run, would do better. [`benchmark/README.md`](benchmark/README.md) has every measurement, a second cover set, the method, and the full list of limitations.
+These detectors are reimplementations of rich models trained on a few hundred images, so read the table as a ranking. A deep-learning detector does far better:
+
+| SRNet, 10,000 BOSSbase images at 256×256 | Payload | Detection error | Caught |
+|---|---|---|---|
+| ScatterSteg, PNG | 0.4 bits per pixel | 0.13 | 87% |
+| ScatterSteg, JPEG | 0.2 bits per non-zero AC coefficient | 0.07 | 93% |
+
+SRNet was trained on 7,000 cover/stego pairs from the same source as the test images, at a known payload: a capable warden's best case, but a realistic one. The lighter payloads are still being measured; until they are, assume that only small messages in private, noisy covers stay hidden. [`benchmark/README.md`](benchmark/README.md) has every measurement, the method, and the full list of limitations.
 
 ## Limitations
 
@@ -156,6 +163,20 @@ These are relative results, not a claim of undetectability: the detectors are re
 - **Not deniable.** There is no decoy message: if you're forced to give up the passphrase, the message is revealed.
 - **Very large images need a lot of memory**, up to several GB for the largest accepted (see A5 in the threat model).
 - **Suspending the program** (Ctrl+Z) at the passphrase prompt can leave the terminal's echo off. Ctrl+C, SIGTERM and SIGHUP are handled.
+
+## Status and plans
+
+ScatterSteg aims to be as hard to detect as current research allows, and built to the standard of security software: tested, fuzzed, audited and documented as it goes. It is pre-release, and until the first release the image format may change.
+
+Next, each measured before it's kept:
+
+- **JPEG: embed in every AC coefficient,** not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Concentrating the changes on fewer coefficients makes them easier to see.
+- **Write files the way the cover was written.** The output is re-encoded with ScatterSteg's own settings (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), which a careful observer can notice without any steganalysis. The fix is to reuse the cover's compression choices.
+- **Ternary embedding,** where the message also chooses the direction of each change, for fewer changes per message.
+- **A payload suggestion that follows the square root law:** the safe message size grows with the square root of the image size, not in proportion to it.
+- **Comparison with the other modern tools** (HStego, phasm) and with Aletheia's detectors, to know where ScatterSteg stands.
+
+Then a first release with a frozen format, and an independent review.
 
 ## Development
 

@@ -6,7 +6,9 @@ modest measurement. Read the limitations before quoting a number.
 
 **Current results** (HILL costs for PNG, UERD for JPEG) are in
 [HILL](#content-adaptive-costs-hill), [UERD](#content-adaptive-jpeg-costs-uerd),
-[BOSSbase](#second-cover-set-bossbase) and [Classic detectors](#classic-detectors).
+[BOSSbase](#second-cover-set-bossbase), [SRNet](#deep-learning-detector-srnet)
+and [Classic detectors](#classic-detectors). SRNet, a deep network, is by far
+the strongest detector run; read the rest as rankings.
 The tables before the HILL section are the original measurements, from
 before content-adaptive costs, kept as the baseline the later ones are
 compared to.
@@ -281,6 +283,41 @@ of the time at 0.05 and 78% at 0.4 (uniform costs: 69% and 92%; LSB matching
 and 0.078 against the published 0.315, 0.225, 0.149 and 0.079, and LSB
 matching is unchanged, so the harness is the same.
 
+## Deep-learning detector (SRNet)
+
+SRNet (Boroumand, Chen and Fridrich, 2019), the reference deep network for
+steganalysis, reimplemented in PyTorch (`dl/`; raw output in
+`results-srnet.txt`). BOSSbase 1.01's 10,000 images, resized to 256×256 as in
+the paper, grayscale, as PNG and as JPEG at quality 75 (`dl/prepare.py`);
+7,000 cover/stego pairs to train, 1,000 to validate, 2,000 to test, the test
+images touched once at the end. Trained from scratch for 40 epochs, with
+batches of pairs of the same image, flipped and rotated alike. Builds of
+`cd98771`. P_E as above, with its standard error over the test pairs:
+
+| Set | Payload | P_E | AUC | Caught at 5% false alarms |
+|---|---|---|---|---|
+| ScatterSteg PNG, HILL | 0.4 bits per pixel | **0.129** ± 0.008 | 0.954 | 76% |
+| ScatterSteg JPEG, UERD | 0.2 bits per non-zero AC | **0.073** ± 0.006 | 0.981 | 89% |
+
+This is far stronger than the rich models. On BOSSbase (512×512 there, so
+not the same images) the SRM-style detector's P_E for HILL at 0.4 was 0.22;
+SRNet's is 0.13, catching 87% of PNGs. JPEG, which DCTR barely separated at
+0.2 (P_E 0.39 on Wikimedia), is caught 93% of the time. The JPEG test leaves
+out 45 of its 2,000 images, and 171 training images, whose cover couldn't
+hold the message: ScatterSteg only embeds in coefficients of magnitude 2 or
+more, which in a small, smooth JPEG may not be enough.
+
+So against a strong, well-trained detector, payloads of 0.2 to 0.4 are not
+hidden. The lighter payloads (0.05 to 0.2), S-UNIWARD and J-UNIWARD are
+still being trained; their rows go here. This setting favours the warden:
+one cover source for training and test, the payload known, and small
+images, where a given rate is easier to detect.
+
+    python3 dl/prepare.py BOSSbase_1.01.zip DIR
+    SCATTERSTEG=... python3 dl/embed.py DIR png hill 0.4    # and jpg uerd 0.2
+    python3 dl/train.py DIR png hill_0.4 DIR/runs/hill_0.4 --epochs 40
+    python3 dl/summarize.py DIR
+
 ## Classic detectors
 
 Measured on the 480 benchmark photographs (512×512 RGB; `classic.py` and `hcf.py`; raw output in `results-classic.txt`) at 0.05 to 0.4 bits per pixel, against the classic detectors for LSB steganography, with builds of `ca1a139` (uniform costs) and `83603fa` (HILL, current). The baselines write the message bits directly: LSB replacement from the first pixel on (sequential) or at scattered positions, and LSB matching at scattered positions.
@@ -317,12 +354,12 @@ Reproduce:
 
 ## Limitations
 
-- **The detectors are not the state of the art.** The SRM-style detector above
-  is stronger than SPAM and showed the SPAM numbers were optimistic. The
-  published SRM, GFR and deep (SRNet) detectors, trained on far more images,
-  would detect everything more easily still. The ranking has held so far; the
-  absolute numbers will be worse. JPEG was tested with the compact feature set
-  and a DCTR-style one (the latter reimplemented here).
+- **The rich models are not the state of the art; SRNet is closer.** The
+  SRM-style detector is stronger than SPAM and showed the SPAM numbers were
+  optimistic, and SRNet showed the rich-model numbers were too. Read the
+  rich-model tables as rankings, and the SRNet section for how a capable
+  warden would do. JPEG was tested with the compact feature set, a DCTR-style
+  one (reimplemented here) and SRNet.
 - **Two cover sources.** Downsampled Wikimedia JPEGs, and BOSSbase (grayscale,
   one camera pipeline). Neither is a collection of what real users would use;
   cover noise matters a great deal to detectability.

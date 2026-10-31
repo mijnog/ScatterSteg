@@ -1,0 +1,7 @@
+SRNet benchmark (benchmark/dl), 2026-10-31. Builds of cd98771 (HILL, UERD); BOSSbase 1.01 at 256x256,
+7000/1000/2000 train/validation/test; 40 epochs from scratch. Still running or queued: hill_0.2, suniward_0.4,
+juniward_0.2, hill_0.1, uerd_0.1, suniward_0.2, juniward_0.1, uerd_0.05.
+
+set             kind     n    P_E     ±    AUC  P_D@5%FP
+uerd_0.2        jpg   1955  0.073 0.006  0.981     0.892
+hill_0.4        png   2000  0.129 0.008  0.954     0.756

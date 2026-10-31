@@ -171,7 +171,7 @@ ScatterSteg aims to be as hard to detect as current research allows, and built t
 Next, each measured before it's kept:
 
 - **JPEG: embed in every AC coefficient,** not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Concentrating the changes on fewer coefficients makes them easier to see.
-- **Write files the way the cover was written.** The output is re-encoded with ScatterSteg's own settings (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), which a careful observer can notice without any steganalysis. The fix is to reuse the cover's compression choices.
+- **Write files the way the cover was written.** Done for PNG: the output keeps the cover's row filters, data chunk sizes and zlib settings, so a cover saved unchanged comes back identical. Still to do for JPEG, which libjpeg rewrites with its own scan order and Huffman tables (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), something a careful observer can notice without any steganalysis.
 - **Ternary embedding,** where the message also chooses the direction of each change, for fewer changes per message.
 - **A payload suggestion that follows the square root law:** the safe message size grows with the square root of the image size, not in proportion to it.
 - **Comparison with the other modern tools** (HStego, phasm) and with Aletheia's detectors, to know where ScatterSteg stands.

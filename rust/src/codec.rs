@@ -14,9 +14,10 @@
 //!            256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
 //!            and 2 of master, context KDF_CONTEXT
 //!   order    prng::permutation(scatter key) with the salt pixels removed
-//!   payload  [nonce 24 | secretbox]: its 32-bit little-endian length in the
-//!            first 32 samples in that order, then its bits as the STC
-//!            syndrome of the samples after them (see payload_carriers)
+//!   payload  [nonce 24 | secretbox]: its 32-bit little-endian length as the
+//!            STC syndrome of the first length_samples samples in that
+//!            order, then its bits as the STC syndrome of the samples after
+//!            them (see payload_carriers), both with the same costs
 //!   message  the secretbox's plaintext: [encoding 1 | body], the body raw
 //!            DEFLATE (encoding 1) of the record if that made it shorter,
 //!            else the record as is (0); the record is [name length 1 | file
@@ -34,6 +35,8 @@ use zeroize::Zeroizing;
 
 /// The salt region, in samples, when the image allows
 const SALT_SAMPLES: u32 = 8192;
+/// The length's, in samples, when the image allows: the salt's density
+const LENGTH_SAMPLES: usize = 2048;
 // The labels are part of the format; "v2" is history, not a version
 const SALT_LABEL: &[u8] = b"ScatterSteg v2 salt positions";
 const KDF_CONTEXT: &[u8; 8] = b"ScatStg2";
@@ -57,6 +60,7 @@ fn salt_carriers(k: u32, channels: u32) -> usize {
     stc::carriers(k as usize * channels as usize, SALT_BYTES * 8)
 }
 
+/// The fewest positions a payload order needs: one sample per length bit
 pub fn header_pixels(channels: u32) -> u32 {
     32u32.div_ceil(channels)
 }
@@ -131,17 +135,51 @@ fn payload_order(scatter_key: &[u8; 32], count: u32, salt_px: &[u32]) -> Option<
 }
 
 // The payload's layout over n positions of ch samples, shared by encode and
-// decode so it can't drift between them: the 32-bit length goes straight into the
-// first 32 samples, and the payload's bits are the STC syndrome of samples
-// from 32 on.
+// decode so it can't drift between them: the 32-bit length is the STC
+// syndrome of the first length_samples samples, and the payload's bits the
+// STC syndrome of the samples after them. Writing the length straight into 32
+// samples' bits would change about 16 of them wherever they fall, whatever
+// their cost: in a JPEG mostly zeros in flat blocks, which an off-the-shelf
+// detector (Aletheia's ALASKA2 J-MiPOD model) picked up on its own, in every
+// file. As C's codec.c.
 
-/// Samples after the length header; 0 if the header doesn't fit
-fn payload_samples(n: u32, ch: u32) -> usize {
-    if n < header_pixels(ch) { 0 } else { n as usize * ch as usize - 32 }
+/// Samples carrying the length: LENGTH_SAMPLES, at most 1/16 of the n
+/// positions' samples, never fewer than one per length bit
+fn length_samples(n: u32, ch: u32) -> usize {
+    (n as usize * ch as usize / 16).clamp(32, LENGTH_SAMPLES)
 }
 
-/// How many samples from 32 on carry a len-byte payload's syndrome (and
-/// 8 * len message bits); 0 if it doesn't fit
+/// Samples after the length's; 0 if the length doesn't fit
+fn payload_samples(n: u32, ch: u32) -> usize {
+    (n as usize * ch as usize).saturating_sub(length_samples(n, ch))
+}
+
+/// The length, from the first length_samples samples
+fn read_length(c: &Carrier, order: &[u32], n: u32) -> u32 {
+    let used = stc::carriers(length_samples(n, c.channels()), 32);
+    let mut y = vec![0u8; used];
+    let mut m = [0u8; 32];
+    embed::get_bits(c, order, 0, &mut y);
+    stc::extract(&y, 32, used, &mut m);
+    (0..32).fold(0u32, |len, i| len | (m[i] as u32) << i)
+}
+
+/// Records the changes that make the first length_samples samples carry len
+fn write_length(c: &Carrier, order: &[u32], n: u32, len: u32, plan: &mut EmbedPlan) -> Result<(), ()> {
+    let used = stc::carriers(length_samples(n, c.channels()), 32);
+    let m: [u8; 32] = std::array::from_fn(|i| ((len >> i) & 1) as u8);
+    let mut x = vec![0u8; used];
+    let mut y = vec![0u8; used];
+    let mut costs = vec![0f32; used];
+    embed::get_bits(c, order, 0, &mut x);
+    embed::costs(c, order, 0, &mut costs);
+    stc::embed(&x, &costs, &m, 32, used, &mut y)?;
+    embed::set_bits(c, order, 0, &y, plan);
+    Ok(())
+}
+
+/// How many samples after the length's carry a len-byte payload's syndrome
+/// (and 8 * len message bits); 0 if it doesn't fit
 fn payload_carriers(n: u32, ch: u32, len: u32) -> (usize, usize) {
     let mlen = len as usize * 8;
     (stc::carriers(payload_samples(n, ch), mlen), mlen)
@@ -151,14 +189,14 @@ fn payload_carriers(n: u32, ch: u32, len: u32) -> (usize, usize) {
 /// a wrong passphrase.
 fn read_payload(c: &Carrier, order: &[u32], n: u32) -> Option<Vec<u8>> {
     if n < header_pixels(c.channels()) { return None; }
-    let len = embed::peek_len(c, order, n);
+    let len = read_length(c, order, n);
     let (used, mlen) = payload_carriers(n, c.channels(), len);
     if (len as usize) < BOX_OVERHEAD || used == 0 { return None; }
 
     let mut y = vec![0u8; used];
     let mut m = vec![0u8; mlen];
     let mut payload = vec![0u8; len as usize];
-    embed::get_bits(c, order, 32, &mut y);
+    embed::get_bits(c, order, length_samples(n, c.channels()), &mut y);
     stc::extract(&y, mlen, used, &mut m);
     for i in 0..mlen { payload[i / 8] |= m[i] << (i % 8); }
     Some(payload)
@@ -184,16 +222,17 @@ fn embed_payload(c: &Carrier, order: &[u32], n: u32, payload: &[u8], plan: &mut 
     let len = payload.len() as u32;
     let (used, mlen) = payload_carriers(n, c.channels(), len);
     if used == 0 { return Err(EmbedError::TooLong); }
-    embed::write_raw(c, order, n, &len.to_le_bytes(), plan).map_err(|_| EmbedError::TooLong)?;
+    write_length(c, order, n, len, plan).map_err(|_| EmbedError::Alloc)?;
+    let start = length_samples(n, c.channels());
 
     let m: Vec<u8> = (0..mlen).map(|i| (payload[i / 8] >> (i % 8)) & 1).collect();
     let mut x = vec![0u8; used];
     let mut y = vec![0u8; used];
     let mut costs = vec![0f32; used];
-    embed::get_bits(c, order, 32, &mut x);
-    embed::costs(c, order, 32, &mut costs);
+    embed::get_bits(c, order, start, &mut x);
+    embed::costs(c, order, start, &mut costs);
     stc::embed(&x, &costs, &m, mlen, used, &mut y).map_err(|_| EmbedError::Alloc)?;
-    embed::set_bits(c, order, 32, &y, plan);
+    embed::set_bits(c, order, start, &y, plan);
     Ok(())
 }
 
@@ -256,7 +295,7 @@ pub fn too_small(c: &Carrier) -> bool {
 }
 
 /// The longest message that fits stored as is, with no file name, after the
-/// k salt pixels: one payload bit per sample after the 32-bit header, less
+/// k salt pixels: one payload bit per sample after the length's, less
 /// the box, the encoding byte and the name length
 fn max_message(count: u32, k: u32, ch: u32) -> usize {
     (payload_samples(count - k, ch) / 8).saturating_sub(BOX_OVERHEAD + 2)

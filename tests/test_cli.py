@@ -486,6 +486,12 @@ def stc_solve(x, m, n):
 # -- the format
 
 SALT_SAMPLES = 8192
+LENGTH_SAMPLES = 2048
+
+
+def length_samples(n, ch):
+    """Samples of an n-position payload order carrying the 32-bit length"""
+    return max(min(n * ch // 16, LENGTH_SAMPLES), 32)
 
 
 def salt_region_pixels(count, ch):
@@ -527,23 +533,29 @@ def forge(src, dst, message, passphrase, plaintext=None, name=b""):
     scatter_key, enc_key = keys(pw, salt)
     order = payload_order(scatter_key, w * h, salt_px)
     box = seal(pack(message, name) if plaintext is None else plaintext, enc_key)
-    set_bits(rows, w, order, 0, [(len(box) >> b) & 1 for b in range(32)], ch)
-    n = stc_carriers(len(order) * ch - 32, len(box) * 8)
+    k = length_samples(len(order), ch)
+    used = stc_carriers(k, 32)
+    x = [read_bits(rows, w, order, i, 1, ch) for i in range(used)]
+    set_bits(rows, w, order, 0, stc_solve(x, [(len(box) >> b) & 1 for b in range(32)], used), ch)
+    n = stc_carriers(len(order) * ch - k, len(box) * 8)
     assert n, "message too long"
-    x = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
-    set_bits(rows, w, order, 32, stc_solve(x, to_bits(box), n), ch)
+    x = [read_bits(rows, w, order, k + i, 1, ch) for i in range(n)]
+    set_bits(rows, w, order, k, stc_solve(x, to_bits(box), n), ch)
     write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
 
 
 def read_box(rows, w, order, ch, enc_key):
-    """The payload: a 32-bit length, then the box as an STC syndrome"""
-    length = read_bits(rows, w, order, 0, 32, ch)
-    samples = len(order) * ch - 32
+    """The payload: a 32-bit length, then the box, each as an STC syndrome"""
+    k = length_samples(len(order), ch)
+    used = stc_carriers(k, 32)
+    m = stc_extract([read_bits(rows, w, order, i, 1, ch) for i in range(used)], 32, used)
+    length = sum(m[b] << b for b in range(32))
+    samples = len(order) * ch - k
     if not (BOX_OVERHEAD <= length and length * 8 <= samples):
         return None
     mlen = length * 8
     n = stc_carriers(samples, mlen)
-    y = [read_bits(rows, w, order, 32 + i, 1, ch) for i in range(n)]
+    y = [read_bits(rows, w, order, k + i, 1, ch) for i in range(n)]
     m = stc_extract(y, mlen, n)
     box = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(length))
     return open_box(box, enc_key)
@@ -563,7 +575,8 @@ def reveal(src, passphrase, name=False):
 def capacity(w, h, ch=3):
     """Largest message embed accepts for a w x h cover, stored as is with no
     file name (one that compresses can be longer; a name takes its length)"""
-    return ((w * h - salt_region_pixels(w * h, ch)) * ch - 32) // 8 - BOX_OVERHEAD - 2
+    n = w * h - salt_region_pixels(w * h, ch)
+    return (n * ch - length_samples(n, ch)) // 8 - BOX_OVERHEAD - 2
 
 
 SUGGESTED_UNITS_PER_BYTE = 160  # 0.05 bits per pixel, the lightest payload measured
@@ -917,17 +930,18 @@ class CliTest(CliBase):
 
     def test_near_capacity(self):
         # 64x64: 4096 - 256 salt-region pixels (1/16 of the image) = 3840
-        # px * 3 bits; minus the 32-bit header -> 1436 payload bytes; minus
-        # nonce 24 + MAC 16, the encoding byte and the name length = 1394
-        self.assertEqual(capacity(64, 64), 1394)
+        # px * 3 bits; minus the length's 11520 / 16 = 720 -> 1350 payload
+        # bytes; minus nonce 24 + MAC 16, the encoding byte and the name
+        # length = 1308
+        self.assertEqual(capacity(64, 64), 1308)
         out = self.path("full.png")
-        msg = noise(1394)
+        msg = noise(1308)
         code, log = self.embed(msg, out)
         self.assertEqual(code, 0, log)
         self.assertEqual(self.extract_bytes(out), msg)
-        code, log = self.embed(noise(1395), self.path("over.png"))
+        code, log = self.embed(noise(1309), self.path("over.png"))
         self.assertEqual(code, 1, log)
-        self.assertIn("message too long for this image, which holds 1394 bytes", log)
+        self.assertIn("message too long for this image, which holds 1308 bytes", log)
 
     def test_info(self):
         # The capacity, with no passphrase asked: exactly what embed takes
@@ -1101,8 +1115,9 @@ class CliTest(CliBase):
     def test_gray_capacity(self):
         gray = self.path("gray.png")
         write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)
-        cap = capacity(40, 40, 1)  # salt region 128 px: (1600 - 128 - 32) / 8 - 40 - 2 = 138
-        self.assertEqual(cap, 138)
+        # salt region 128 px, length 1472 / 16 = 92 samples: (1600 - 128 - 92) / 8 - 40 - 2 = 130
+        cap = capacity(40, 40, 1)
+        self.assertEqual(cap, 130)
         out = self.path("steg.png")
         self.assertEqual(self.embed(noise(cap), out, src=gray)[0], 0)
         self.assertEqual(self.extract_bytes(out), noise(cap))
@@ -1366,7 +1381,7 @@ class CliTest(CliBase):
         _, _, before = read_png(self.cover)
         _, _, after = read_png(out)
         changed = sum(a != b for ra, rb in zip(before, after) for a, b in zip(ra, rb))
-        direct = (len(msg) + BOX_OVERHEAD) * 8 // 2 + 16 + 64  # payload, header, salt
+        direct = (len(msg) + BOX_OVERHEAD) * 8 // 2 + 16 + 64  # payload, length, salt
         self.assertLess(changed, direct * 0.5, (changed, direct))
         self.assertEqual(reveal(out, "correct horse"), msg)
 
@@ -1567,7 +1582,7 @@ class CliTest(CliBase):
         w, h, rows = read_png(out)
         rows = [bytearray(r) for r in rows]
         _, order, _ = layout(rows, w, h, b"correct horse")
-        pos = 32 + (NONCE + MAC + 3) * 8  # a bit of the 4th plaintext byte
+        pos = length_samples(len(order), 3) + (NONCE + MAC + 3) * 8  # a bit of the 4th plaintext byte
         p = order[pos // 3]
         rows[p // w][(p % w) * 3 + pos % 3] ^= 1
         write_png(out, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])

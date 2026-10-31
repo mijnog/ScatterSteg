@@ -24,9 +24,10 @@
               256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
               and 2 of master, context KDF_CONTEXT
      order    prng_permutation(scatter key) with the salt pixels removed
-     payload  [nonce 24 | secretbox]: its 32-bit little-endian length in
-              the first 32 samples in that order, then its bits as the STC
-              syndrome of the samples after them (see payload_carriers)
+     payload  [nonce 24 | secretbox]: its 32-bit little-endian length as
+              the STC syndrome of the first length_samples samples in that
+              order, then its bits as the STC syndrome of the samples after
+              them (see payload_carriers), both with the same costs
      message  the secretbox's plaintext: [encoding 1 | body], the body raw
               DEFLATE (encoding 1) of the record if that made it shorter,
               else the record as is (0); the record is [name length 1 |
@@ -38,6 +39,7 @@
 
 #define SALT_BYTES      crypto_pwhash_SALTBYTES             /* 16 */
 #define SALT_SAMPLES    8192  /* the salt region, when the image allows */
+#define LENGTH_SAMPLES  2048  /* the length's, when the image allows: the salt's density */
 /* The labels are part of the format; "v2" is history, not a version */
 #define SALT_LABEL      "ScatterSteg v2 salt positions"
 #define KDF_CONTEXT     "ScatStg2"                          /* exactly 8 chars */
@@ -92,6 +94,7 @@ static int write_salt(const Carrier *c, const uint32_t *salt_px, uint32_t k,
     return r;
 }
 
+/* The fewest positions a payload order needs: one sample per length bit */
 static uint32_t header_pixels(uint32_t channels) {
     return (32 + channels - 1) / channels;
 }
@@ -179,20 +182,68 @@ static uint32_t *payload_order(const uint8_t *scatter_key, uint32_t count,
 }
 
 /* The payload's layout over n positions of ch samples, shared by encode
-   and decode so it can't drift between them: the 32-bit length goes straight
-   into the first 32 samples, and the payload's bits are the STC syndrome
-   of samples from 32 on. */
+   and decode so it can't drift between them: the 32-bit length is the STC
+   syndrome of the first length_samples samples, and the payload's bits
+   the STC syndrome of the samples after them. Writing the length straight
+   into 32 samples' bits would change about 16 of them wherever they fall,
+   whatever their cost: in a JPEG mostly zeros in flat blocks, which an
+   off-the-shelf detector (Aletheia's ALASKA2 J-MiPOD model) picked up on
+   its own, in every file. */
 
-/* Samples after the length header; 0 if the header doesn't fit */
-static size_t payload_samples(uint32_t n, uint32_t ch) {
-    return n < header_pixels(ch) ? 0 : (size_t)n * ch - 32;
+/* Samples carrying the length: LENGTH_SAMPLES, at most 1/16 of the n
+   positions' samples, never fewer than one per length bit */
+static size_t length_samples(uint32_t n, uint32_t ch) {
+    size_t k = (size_t)n * ch / 16;
+    if (k > LENGTH_SAMPLES) k = LENGTH_SAMPLES;
+    return k > 32 ? k : 32;
 }
 
-/* How many samples from 32 on carry a len-byte payload's syndrome (*mlen
-   = 8 * len message bits); 0 if it doesn't fit */
+/* Samples after the length's; 0 if the length doesn't fit */
+static size_t payload_samples(uint32_t n, uint32_t ch) {
+    size_t total = (size_t)n * ch, k = length_samples(n, ch);
+    return total < k ? 0 : total - k;
+}
+
+/* How many samples after the length's carry a len-byte payload's syndrome
+   (*mlen = 8 * len message bits); 0 if it doesn't fit */
 static size_t payload_carriers(uint32_t n, uint32_t ch, uint32_t len, size_t *mlen) {
     *mlen = (size_t)len * 8;
     return stc_carriers(payload_samples(n, ch), *mlen);
+}
+
+/* The length, from the first length_samples samples. 0, or -1 if out of
+   memory. */
+static int read_length(const Carrier *c, const uint32_t *order, uint32_t n, uint32_t *len) {
+    size_t used = stc_carriers(length_samples(n, carrier_channels(c)), 32);
+    uint8_t *y = malloc(used), m[32];
+    if (!y) return -1;
+    embed_get_bits(c, order, 0, used, y);
+    stc_extract(y, 32, used, m);
+    *len = 0;
+    for (int i = 0; i < 32; i++) *len |= (uint32_t)m[i] << i;
+    free(y);
+    return 0;
+}
+
+/* Records the changes that make the first length_samples samples carry
+   len. 0, or -1 if out of memory. */
+static int write_length(const Carrier *c, const uint32_t *order, uint32_t n, uint32_t len,
+                        EmbedPlan *plan) {
+    size_t used = stc_carriers(length_samples(n, carrier_channels(c)), 32);
+    uint8_t *x = malloc(used), *y = malloc(used), m[32];
+    float *costs = malloc(used * sizeof(float));
+    int r = -1;
+    if (x && y && costs) {
+        for (int i = 0; i < 32; i++) m[i] = (len >> i) & 1;
+        embed_get_bits(c, order, 0, used, x);
+        embed_costs(c, order, 0, used, costs);
+        if (stc_embed(x, costs, m, 32, used, y) == 0) {
+            embed_set_bits(c, order, 0, used, y, plan);
+            r = 0;
+        }
+    }
+    free(x); free(y); free(costs);
+    return r;
 }
 
 /* The payload (see payload_samples). NO_MATCH if the length doesn't fit,
@@ -200,7 +251,10 @@ static size_t payload_carriers(uint32_t n, uint32_t ch, uint32_t len, size_t *ml
 static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
                         uint8_t **payload, uint32_t *len) {
     if (n < header_pixels(carrier_channels(c))) return NO_MATCH;
-    *len = embed_peek_len(c, order, n);
+    if (read_length(c, order, n, len) != 0) {
+        fprintf(stderr, "Error: allocation failed\n");
+        return FAILED;
+    }
     size_t mlen;
     size_t used = *len < BOX_OVERHEAD ? 0 : payload_carriers(n, carrier_channels(c), *len, &mlen);
     if (!used) return NO_MATCH;
@@ -213,7 +267,7 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    embed_get_bits(c, order, 32, used, y);
+    embed_get_bits(c, order, length_samples(n, carrier_channels(c)), used, y);
     stc_extract(y, mlen, used, m);
     for (size_t i = 0; i < mlen; i++) (*payload)[i / 8] |= (uint8_t)(m[i] << (i % 8));
     free(y);
@@ -231,18 +285,18 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     size_t used = payload_carriers(n, carrier_channels(c), len, &mlen);
     if (!used) return -1;
 
-    uint8_t header[4] = {(uint8_t)len, (uint8_t)(len >> 8), (uint8_t)(len >> 16), (uint8_t)(len >> 24)};
-    embed_write_raw(c, order, n, header, sizeof(header), plan);
+    if (write_length(c, order, n, len, plan) != 0) return -2;
 
+    size_t start = length_samples(n, carrier_channels(c));
     uint8_t *x = malloc(used), *y = malloc(used), *m = malloc(mlen);
     float *costs = malloc(used * sizeof(float));
     int r = -2;
     if (x && y && m && costs) {
         for (size_t i = 0; i < mlen; i++) m[i] = (payload[i / 8] >> (i % 8)) & 1;
-        embed_get_bits(c, order, 32, used, x);
-        embed_costs(c, order, 32, used, costs);
+        embed_get_bits(c, order, start, used, x);
+        embed_costs(c, order, start, used, costs);
         if (stc_embed(x, costs, m, mlen, used, y) == 0) {
-            embed_set_bits(c, order, 32, used, y, plan);
+            embed_set_bits(c, order, start, used, y, plan);
             r = 0;
         }
     }
@@ -478,7 +532,7 @@ int codec_too_small(const Carrier *c) {
 }
 
 /* The longest message that fits stored as is, with no file name, after the
-   k salt pixels: one payload bit per sample after the 32-bit header, less
+   k salt pixels: one payload bit per sample after the length's, less
    the box, the encoding byte and the name length. Under 2^32, as
    positions are 32-bit and 3 samples each at most. */
 static size_t max_message(uint32_t count, uint32_t k, uint32_t ch) {

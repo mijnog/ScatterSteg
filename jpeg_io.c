@@ -104,6 +104,9 @@ struct JpegImage {
     uint8_t *header;
     size_t header_len;
     int scans;            /* how many the cover has */
+    /* Each scan's components, spectral range and successive-approximation
+       bits, as the cover had them, for write_cover_scans */
+    jpeg_scan_info script[JPEG_MAX_SCANS];
 };
 
 static uint16_t be16(const uint8_t *p) {
@@ -151,6 +154,7 @@ typedef struct {
     struct jpeg_progress_mgr pub;
     int scan;         /* the scan last counted */
     uint64_t blocks;  /* blocks the scans so far visit */
+    jpeg_scan_info *script;  /* where each scan's header goes */
 } Progress;
 
 /* Called before each step of reading, so at least once per scan, after
@@ -162,9 +166,17 @@ static void limit_scans(j_common_ptr cinfo) {
     if (d->input_scan_number > JPEG_MAX_SCANS) cinfo->err->error_exit(cinfo);
     if (d->input_scan_number != p->scan) {
         p->scan = d->input_scan_number;
-        for (int i = 0; i < d->comps_in_scan; i++)
+        jpeg_scan_info *info = &p->script[p->scan - 1];
+        info->comps_in_scan = d->comps_in_scan;
+        info->Ss = d->Ss;
+        info->Se = d->Se;
+        info->Ah = d->Ah;
+        info->Al = d->Al;
+        for (int i = 0; i < d->comps_in_scan; i++) {
+            info->component_index[i] = d->cur_comp_info[i]->component_index;
             p->blocks += (uint64_t)d->cur_comp_info[i]->width_in_blocks *
                          d->cur_comp_info[i]->height_in_blocks;
+        }
         if (p->blocks > JPEG_MAX_SCAN_BLOCKS) cinfo->err->error_exit(cinfo);
     }
 }
@@ -300,7 +312,7 @@ JpegImage *jpeg_read(FILE *fp) {
         return NULL;
     }
 
-    Progress progress = {.pub.progress_monitor = limit_scans};
+    Progress progress = {.pub.progress_monitor = limit_scans, .script = j->script};
     j->src.err = jpeg_std_error(&j->err.pub);
     j->err.pub.error_exit = error_exit;
     j->err.pub.output_message = silent;
@@ -439,9 +451,9 @@ static int is_marker(const jpeg_saved_marker_ptr m, int code, const char *tag, u
 enum { TABLES_LIBJPEG, TABLES_COVER, TABLES_OPTIMIZED };
 
 /* Encodes the coefficients and markers to fp, with the tables `tables`
-   says. With the cover's tables it doesn't fail if they lack a code the
+   says, in the cover's scans if cover_scans, else libjpeg's. With the cover's tables it doesn't fail if they lack a code the
    coefficients now need: libjpeg-turbo writes a code of no bits. */
-static int encode(JpegImage *j, FILE *fp, int tables) {
+static int encode(JpegImage *j, FILE *fp, int tables, int cover_scans) {
     struct jpeg_compress_struct dst;
     ErrorJump err;
     dst.err = jpeg_std_error(&err.pub);
@@ -462,7 +474,12 @@ static int encode(JpegImage *j, FILE *fp, int tables) {
     dst.write_Adobe_marker = j->src.saw_Adobe_marker;
     dst.arith_code = j->src.arith_code;
     dst.restart_interval = j->src.restart_interval;
-    if (j->src.progressive_mode) jpeg_simple_progression(&dst);
+    if (cover_scans) {
+        dst.scan_info = j->script;
+        dst.num_scans = j->scans;
+    } else if (j->src.progressive_mode) {
+        jpeg_simple_progression(&dst);
+    }
     /* A changed coefficient may need a Huffman code an optimized table
        lacks, so the cover's own tables can't be reused. Keep the standard
        tables if it had them, else optimize like its encoder did. */
@@ -638,7 +655,7 @@ static int write_like_cover(JpegImage *j, FILE *fp, int tables) {
     size_t len = 0;
     FILE *mem = open_memstream(&buf, &len);
     if (!mem) return -1;
-    int r = encode(j, mem, tables);
+    int r = encode(j, mem, tables, 0);
     if (fclose(mem) != 0) r = -1;  /* also sets buf and len */
     size_t sos = r == 0 ? find_sos((uint8_t *)buf, len) : 0;
     size_t cover_sos = find_sos(j->header, j->header_len);
@@ -667,12 +684,37 @@ static int write_like_cover(JpegImage *j, FILE *fp, int tables) {
     return r;
 }
 
+/* A progressive or multi-scan cover in its own scans: libjpeg would
+   write its fixed progression (or one interleaved scan) instead, while
+   encoders differ (mozjpeg picks a script per image). libjpeg refuses a
+   script that leaves coefficients out (a truncated cover's), so this
+   encodes to memory, checks the result decodes to j's coefficients, and
+   returns -1 having written nothing if not; -2 if writing to fp failed. */
+static int write_cover_scans(JpegImage *j, FILE *fp) {
+    if (!j->src.progressive_mode && j->scans <= 1) return -1;
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *mem = open_memstream(&buf, &len);
+    if (!mem) return -1;
+    int r = encode(j, mem, TABLES_LIBJPEG, 1);
+    if (fclose(mem) != 0) r = -1;  /* also sets buf and len */
+    if (r == 0 && decodes_to(j, (uint8_t *)buf, len)) {
+        errno = 0;
+        r = fwrite(buf, 1, len, fp) == len ? 0 : -2;
+    } else {
+        r = -1;
+    }
+    free(buf);
+    return r;
+}
+
 /* Like the cover if it can be, else libjpeg's way. -1 on failure. */
 static int write_coefficients(JpegImage *j, FILE *fp) {
     int r = write_like_cover(j, fp, TABLES_COVER);
     if (r == -1) r = write_like_cover(j, fp, TABLES_OPTIMIZED);
+    if (r == -1) r = write_cover_scans(j, fp);
     if (r == -2) return -1;  /* a write failed part way */
-    return r == 0 ? 0 : encode(j, fp, TABLES_LIBJPEG);
+    return r == 0 ? 0 : encode(j, fp, TABLES_LIBJPEG, 0);
 }
 
 int jpeg_write(JpegImage *j, FILE *fp) {

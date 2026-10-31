@@ -11,6 +11,10 @@
      manyscans    progressive with 568 scans (each AC coefficient of each
                   component refined bit by bit): a valid but slow-to-read
                   file, past the 500-scan limit jpeg_load enforces
+     mozscans     progressive with the 9 scans mozjpeg picked for a photo:
+                  not libjpeg's script (5 for grayscale)
+     noninterleaved  sequential, one scan per component, where libjpeg
+                  writes one scan for all
 
    The picture is a gradient with deterministic texture, so it has plenty
    of non-zero AC coefficients like a photograph. */
@@ -26,7 +30,7 @@ int main(int argc, char **argv) {
     }
     int w = atoi(argv[2]), h = atoi(argv[3]), comps = atoi(argv[4]), quality = atoi(argv[5]);
     int progressive = 0, optimize = 0, arith = 0, restart = 0, markers = 0, full = 0, many = 0;
-    int nojfif = 0, flat = 0;
+    int nojfif = 0, flat = 0, moz = 0, separate = 0;
     for (int i = 6; i < argc; i++) {
         progressive |= !strcmp(argv[i], "progressive");
         optimize    |= !strcmp(argv[i], "optimize");
@@ -37,6 +41,8 @@ int main(int argc, char **argv) {
         many        |= !strcmp(argv[i], "manyscans");
         nojfif      |= !strcmp(argv[i], "nojfif");
         flat        |= !strcmp(argv[i], "flat");  /* plain gray but for one column of blocks */
+        moz         |= !strcmp(argv[i], "mozscans");
+        separate    |= !strcmp(argv[i], "noninterleaved");
     }
 
     FILE *fp = fopen(argv[1], "wb");
@@ -75,6 +81,39 @@ int main(int argc, char **argv) {
                 }
         c.scan_info = scans;
         c.num_scans = n;
+    }
+    static jpeg_scan_info script[9];
+    if (moz) {
+        /* DC for all components; luma AC split at 2/3 with 2 bits held
+           back, refined in two passes; chroma AC split at 2/3, in full */
+        static const int scan[9][5] = {{-1, 0, 0, 0, 0}, {0, 1, 2, 0, 2}, {0, 3, 63, 0, 2},
+                                       {0, 1, 63, 2, 1}, {0, 1, 63, 1, 0}, {1, 1, 2, 0, 0},
+                                       {1, 3, 63, 0, 0}, {2, 1, 2, 0, 0}, {2, 3, 63, 0, 0}};
+        int n = 0;
+        for (int i = 0; i < 9; i++) {
+            if (scan[i][0] >= comps) continue;
+            script[n].comps_in_scan = scan[i][0] < 0 ? comps : 1;
+            for (int k = 0; k < script[n].comps_in_scan; k++)
+                script[n].component_index[k] = scan[i][0] < 0 ? k : scan[i][0];
+            script[n].Ss = scan[i][1];
+            script[n].Se = scan[i][2];
+            script[n].Ah = scan[i][3];
+            script[n].Al = scan[i][4];
+            n++;
+        }
+        c.scan_info = script;
+        c.num_scans = n;
+    }
+    if (separate) {
+        for (int k = 0; k < comps; k++) {
+            script[k].comps_in_scan = 1;
+            script[k].component_index[0] = k;
+            script[k].Ss = 0;
+            script[k].Se = 63;
+            script[k].Ah = script[k].Al = 0;
+        }
+        c.scan_info = script;
+        c.num_scans = comps;
     }
     c.optimize_coding = optimize;
     c.arith_code = arith;

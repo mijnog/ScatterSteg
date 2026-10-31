@@ -84,6 +84,30 @@ def camera_layout(src, dst):
         f.write(b"\xff\xd8" + head + data[scan_at:])
 
 
+def scan_script(path):
+    """Each scan's (components, Ss, Se, Ah/Al byte), from its SOS segment"""
+    with open(path, "rb") as f:
+        data = f.read()
+    out, pos = [], 2
+    while pos + 4 <= len(data):
+        if data[pos] != 0xFF:
+            pos += 1
+            continue
+        marker = data[pos + 1]
+        if marker in (0x00, 0xFF) or 0xD0 <= marker <= 0xD7:  # stuffing, fill, restarts
+            pos += 1 if marker == 0xFF else 2
+            continue
+        if marker == 0xD9:
+            break
+        length = int.from_bytes(data[pos + 2:pos + 4], "big")
+        if marker == 0xDA:
+            n = data[pos + 4]
+            comps = tuple(data[pos + 5 + 2 * k] for k in range(n))
+            out.append((comps, *data[pos + 5 + 2 * n:pos + 8 + 2 * n]))
+        pos += 2 + length
+    return out
+
+
 def header_layout(path):
     """The header's segments, with only which tables each DHT defines"""
     out = []
@@ -2312,6 +2336,21 @@ class JpegTest(CliBase):
             self.assertEqual(header_layout(out), header_layout(src), opts)
             if not opts:
                 self.assertEqual(jpeg_segments(out), jpeg_segments(src))
+
+    def test_keeps_cover_scans(self):
+        # A progressive cover keeps its own scan script (mozjpeg picks one
+        # per image, not libjpeg's), and a sequential one its scan per
+        # component: libjpeg would write its own progression, or one scan
+        for opts in (("mozscans",), ("mozscans", "arith"), ("mozscans", "restart"),
+                     ("progressive",), ("noninterleaved",), ("noninterleaved", "optimize")):
+            for comps in (1, 3):
+                with self.subTest(opts=opts, comps=comps):
+                    src, out = self.path("cover.jpg"), self.path("steg.jpg")
+                    make_jpeg(src, 256, 192, comps, 85, *opts)
+                    code, log = self.embed(b"in its own scans", out, src=src)
+                    self.assertEqual(code, 0, log)
+                    self.assertDecodes(out, "in its own scans")
+                    self.assertEqual(scan_script(out), scan_script(src))
 
     def test_flat_jpeg(self):
         # Mostly flat: most blocks and their neighbours have no AC energy,

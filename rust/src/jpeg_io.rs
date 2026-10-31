@@ -103,6 +103,10 @@ struct Progress {
     scan: c_int,
     /// blocks the scans so far visit
     blocks: u64,
+    /// Each scan's components, spectral range and successive-approximation
+    /// bits, as the cover had them, for `write_cover_scans` (plain data, so
+    /// the zeroed Box is a valid start)
+    script: [jpeg_scan_info; MAX_SCANS as usize],
 }
 
 /// Called before each step of reading, so at least once per scan, after its
@@ -115,8 +119,15 @@ unsafe extern "C-unwind" fn limit_scans(cinfo: j_common_ptr) {
         if (*d).input_scan_number > MAX_SCANS { error_exit(cinfo); }
         if (*d).input_scan_number != p.scan {
             p.scan = (*d).input_scan_number;
+            let info = &mut p.script[p.scan as usize - 1];
+            info.comps_in_scan = (*d).comps_in_scan;
+            info.Ss = (*d).Ss;
+            info.Se = (*d).Se;
+            info.Ah = (*d).Ah;
+            info.Al = (*d).Al;
             for i in 0..(*d).comps_in_scan as usize {
                 let comp = (*d).cur_comp_info[i];
+                info.component_index[i] = (*comp).component_index;
                 p.blocks += (*comp).width_in_blocks as u64 * (*comp).height_in_blocks as u64;
             }
             if p.blocks > MAX_SCAN_BLOCKS { error_exit(cinfo); }
@@ -187,7 +198,7 @@ struct Component {
 pub struct JpegImage {
     src: Box<jpeg_decompress_struct>,
     _err: Box<jpeg_error_mgr>,
-    _progress: Box<Progress>,
+    progress: Box<Progress>,
     /// The file, which libjpeg reads from for as long as `src` lives
     _data: Vec<u8>,
     virt: *mut jvirt_barray_ptr,
@@ -270,7 +281,7 @@ impl JpegImage {
         };
 
         let mut img = JpegImage {
-            src, _err: err, _progress: progress,
+            src, _err: err, progress,
             virt, comps: Vec::new(), coefs: Vec::new(), costs: Vec::new(),
             nonzero_ac: 0,
             trailing_data: false,
@@ -476,7 +487,8 @@ impl JpegImage {
         self.sync_to_libjpeg();
         self.write_like_cover(Tables::Cover)
             .or_else(|| self.write_like_cover(Tables::Optimized))
-            .or_else(|| self.encode_with(Tables::Libjpeg))
+            .or_else(|| self.write_cover_scans())
+            .or_else(|| self.encode_with(Tables::Libjpeg, false))
     }
 
     /// A cover with one sequential, Huffman-coded scan (as cameras and phones
@@ -497,7 +509,7 @@ impl JpegImage {
             || s.comps_in_scan != s.num_components {
             return None;
         }
-        let out = self.encode_with(tables)?;
+        let out = self.encode_with(tables, false)?;
         let header = &self._data[..self.header_len];
         let sos = find_sos(&out)?;
         let cover_sos = find_sos(header)?;
@@ -510,6 +522,18 @@ impl JpegImage {
         };
         joined.extend_from_slice(&out[sos + sos_len..]);
         self.decodes_to(&joined).then_some(joined)
+    }
+
+    /// A progressive or multi-scan cover in its own scans: libjpeg would
+    /// write its fixed progression (or one interleaved scan) instead, while
+    /// encoders differ (mozjpeg picks a script per image). libjpeg refuses a
+    /// script that leaves coefficients out (a truncated cover's), so the
+    /// result is decoded and checked; None if that fails. As C's
+    /// write_cover_scans.
+    fn write_cover_scans(&mut self) -> Option<Vec<u8>> {
+        if self.src.progressive_mode == 0 && self.scans <= 1 { return None; }
+        let out = self.encode_with(Tables::Libjpeg, true)?;
+        self.decodes_to(&out).then_some(out)
     }
 
     /// Does this JPEG decode cleanly, with no warning, to our coefficients?
@@ -549,8 +573,9 @@ impl JpegImage {
         matches!(same, Ok(true)) && err.num_warnings == 0
     }
 
-    /// The coefficients and markers as a JPEG, with the tables `tables` says
-    fn encode_with(&mut self, tables: Tables) -> Option<Vec<u8>> {
+    /// The coefficients and markers as a JPEG, with the tables `tables` says,
+    /// in the cover's scans if `cover_scans`, else libjpeg's
+    fn encode_with(&mut self, tables: Tables, cover_scans: bool) -> Option<Vec<u8>> {
         let mut err: Box<jpeg_error_mgr> = zeroed_box();
         let mut dst: Box<jpeg_compress_struct> = zeroed_box();
         unsafe {
@@ -574,6 +599,7 @@ impl JpegImage {
             buf: Vec::new(),
         });
         let virt = self.virt;
+        let (script, scans) = (self.progress.script.as_ptr(), self.scans);
         let done = guarded(|| unsafe {
             (*d).dest = &mut dest.mgr;
 
@@ -586,7 +612,12 @@ impl JpegImage {
             (*d).write_Adobe_marker = (*s).saw_Adobe_marker;
             (*d).arith_code = (*s).arith_code;
             (*d).restart_interval = (*s).restart_interval;
-            if (*s).progressive_mode != 0 { jpeg_simple_progression(d); }
+            if cover_scans {
+                (*d).scan_info = script;
+                (*d).num_scans = scans;
+            } else if (*s).progressive_mode != 0 {
+                jpeg_simple_progression(d);
+            }
             // A changed coefficient may need a Huffman code an optimized
             // table lacks, so the cover's own tables can't be reused. Keep
             // the standard tables if it had them, else optimize like its

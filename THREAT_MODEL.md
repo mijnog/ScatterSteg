@@ -21,6 +21,8 @@ Someone who sees many images (a censor, a platform, a border check) and runs det
 - **Known-position test:** the salt must sit at public positions, so a warden can look exactly there. An earlier design wrote it straight in (about 64 changes in 128 known samples), and a targeted test of prediction error at those positions detected it slightly above chance: AUC 0.56 over 500 ALASKA2 images, 9% detected at 5% false alarms. The salt is now carried as an STC syndrome over a public region of ~8192 samples (about 18 sparse changes); the same test, and the same test over the whole region, are at chance (AUC 0.49–0.50).
 - **Content credentials: refused.** Some phones and cameras now sign their photos (C2PA, in a JPEG's APP11 segments): the signature covers a hash of the image data, so a kept credential would show any change as tampering to whoever checks it, with no steganalysis at all. `embed` refuses a JPEG that carries one. A PNG's credential (`caBX`) is not safe to copy, so it is dropped, like every chunk the PNG spec doesn't let an editor keep: the output just has no credential.
 - **File structure: not hidden.** The pixels or coefficients are all a detector needs to look at, but the file around them is written anew, not copied from the cover. A PNG is recompressed: the C build with libpng's default settings, the Rust build with its own compressor and 64 KiB data chunks, so the two builds' outputs differ from each other as well as from the cover. A JPEG is rewritten by libjpeg: a progressive one gets libjpeg's standard scan order rather than the camera's, and non-standard Huffman tables are rebuilt. None of this shows a message is present, but a warden who knows how the camera, phone or editor writes its files can tell this one was rewritten by something else, and may recognise ScatterSteg (or which build) from the details. Against a careful warden, prefer a cover that a program already rewrote the same way (a PNG saved with libpng's default settings, for the C build; a JPEG already re-encoded by libjpeg) over one straight from a camera or phone.
+- **Many images add up.** Every figure here is for one image. A warden who sees everything one person sends can pool the evidence: images that are each only slightly suspicious become, together, close to certain (Ker, "Batch steganography and pooled steganalysis", 2006). Regular use is riskier than any single result suggests; send as few images as the messages need.
+- **How the files travel.** Platforms recompress uploads (A4), so a message has to go as a file: an original-size photo sent as a document, perhaps to the same person again and again. That pattern can stand out to a warden who never looks at the pixels.
 - **Limits:** detectability rises with payload, falls with cover noise, and every detector here is public. A warden with a detector trained specifically on ScatterSteg output would do better than these: that hasn't been tested.
 
 ### A2 — The guesser: has the image, tries passphrases offline
@@ -33,6 +35,7 @@ Someone who sees many images (a censor, a platform, a border check) and runs det
 ### A3 — The comparer: has the image and the original cover
 
 - **Not protected against.** Comparing the two shows which samples changed, so that a message is present (not what it says), whatever the format. Never use a cover someone else has or could find (one you have posted or sent, a stock or downloaded image), never encode twice from the same cover (two outputs compared show the same), and delete the cover after use.
+- **Copies you didn't make.** Deleting the cover may not be enough. A phone's photo backup (Google Photos, iCloud and the like) may already have uploaded it, and the provider then holds the original. File managers and image viewers keep thumbnails of what they show (on Linux, `~/.cache/thumbnails`), which can be enough to show an image was changed. Prefer a cover that never reached a synced folder, and clear thumbnails after use.
 
 ### A4 — The meddler: changes images in transit
 
@@ -62,6 +65,16 @@ Images may come from anyone, so the decoder parses hostile input.
 - **Side channels: not protected against, and not tested.** An attacker running code on the same CPU while ScatterSteg runs could in principle learn something from cache timing: Argon2id's second half reads memory at passphrase-dependent addresses (by design, as in all Argon2id), the shuffle that gives the secret order swaps at key-dependent positions, the trellis search's work depends on the message, and so do compression's memory accesses (DEFLATE looks back for repeated text). No constant-time or cache-timing analysis has been done. Run it on a machine you trust, not a shared host.
 - **Not protected against:** root, a keylogger, a compromised terminal or a malicious build of ScatterSteg or its libraries. The message is also read from stdin and printed to stdout, so wherever those go (shell history, files, pipes) is outside its control.
 
+### A7 — The seizer: has your computer or phone
+
+Someone who takes or searches a device used with ScatterSteg (at a border, in a raid, or by theft).
+
+- **Not protected against,** beyond A6's memory protections while it runs. What a device can give away after the fact:
+  - the original covers, and their copies in backups and thumbnail caches (A3), which turn the outputs into A3's comparison;
+  - the message itself: the file given to `embed -ef`, and the file `extract` writes, are plaintext on disk until deleted, and deleting a file doesn't reliably erase it, least of all on an SSD;
+  - the tool: the binary, shell history, and the output files next to their covers (see "Hiding the tool" below).
+- **Advice:** pipe the message in and out (`embed` without `-ef`, `extract -xf -`) rather than through files; keep covers and messages on encrypted storage; use full-disk encryption, and switch the device off before it can be taken.
+
 ## Explicit non-goals
 
 - **Deniability under coercion.** There's no decoy message or hidden second passphrase: if you're forced to give up the passphrase, the message is revealed.
@@ -74,6 +87,7 @@ Images may come from anyone, so the decoder parses hostile input.
 - The operating system's random number generator is sound (libsodium's `randombytes`).
 - libsodium's primitives are sound: XSalsa20-Poly1305, Argon2id, BLAKE2b, ChaCha20, and `crypto_kdf`.
 - The terminal the passphrase is typed into is trusted.
+- Sender and recipient agreed the passphrase over a channel the warden can't read, before any image is sent. ScatterSteg doesn't provide one. The recipient's device faces A6 and A7 as much as the sender's.
 
 ## Cryptographic design, in brief
 

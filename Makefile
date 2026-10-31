@@ -55,7 +55,7 @@ cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault $(TEST_DIR)/jpeg
 		JPEG_FIXTURE=$(TEST_DIR)/jpeg_fixture \
 		python3 tests/test_cli.py
 
-$(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
+$(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h tests/embed_bytes.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lz -lsodium -lm
 
 $(TEST_DIR)/test_stc: tests/test_stc.c stc.c stc.h tests/test.h | $(TEST_DIR)
@@ -67,7 +67,7 @@ $(TEST_DIR)/test_prng: tests/test_prng.c prng.c tests/test.h $(HDRS) | $(TEST_DI
 $(TEST_DIR)/test_png_io: tests/test_png_io.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_png_io.c png_io.c atomic_write.c -o $@ -lpng -lz
 
-$(TEST_DIR)/test_jpeg_io: tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c distortion.c tests/test.h $(HDRS) | $(TEST_DIR)
+$(TEST_DIR)/test_jpeg_io: tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c distortion.c tests/test.h tests/embed_bytes.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c distortion.c -o $@ -ljpeg -lsodium -lm
 
 $(TEST_DIR)/test_distortion: tests/test_distortion.c distortion.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
@@ -137,7 +137,7 @@ $(FUZZ_DIR)/fuzz_jpeg_load: tests/fuzz/fuzz_jpeg_load.c jpeg_io.c embed.c atomic
 $(FUZZ_DIR)/fuzz_stc: tests/fuzz/fuzz_stc.c stc.c stc.h | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_stc.c stc.c -o $@ -lm
 
-$(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c $(HDRS) | $(FUZZ_DIR)
+$(FUZZ_DIR)/fuzz_embed: tests/fuzz/fuzz_embed.c embed.c prng.c tests/embed_bytes.h $(HDRS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_embed.c embed.c prng.c -o $@ -lsodium
 
 # Built with Argon2id swapped for BLAKE2b (see codec.c), never for real use

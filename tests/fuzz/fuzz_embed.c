@@ -5,6 +5,7 @@
    decoding a garbage image (as decode does with a wrong passphrase) stays
    in bounds. */
 #include "embed.h"
+#include "../embed_bytes.h"
 #include "prng.h"
 #include <sodium.h>
 #include <stdlib.h>

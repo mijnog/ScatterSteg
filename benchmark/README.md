@@ -324,10 +324,11 @@ batches of pairs of the same image, flipped and rotated alike. Builds of
 | ScatterSteg PNG, HILL | 0.2 bits per pixel | **0.256** ± 0.010 | 0.842 | 42% |
 | ScatterSteg JPEG, UERD, every AC coefficient | 0.2 bits per non-zero AC | **0.077** ± 0.006 | 0.979 | 89% |
 | ScatterSteg PNG, S-UNIWARD (benchmark build) | 0.4 bits per pixel | **0.095** ± 0.007 | 0.976 | 85% |
+| ScatterSteg JPEG, J-UNIWARD, every AC coefficient (benchmark build) | 0.2 bits per non-zero AC | **0.080** ± 0.006 | 0.977 | 88% |
 
-The last three rows were trained for 15 epochs, starting from the detector
-of `hill_0.4` (the PNG rows) or the first JPEG row, with build `b702512`
-for the every-AC row. A head start favours the detector, so they are if anything
+The last four rows were trained for 15 epochs, starting from the detector
+of `hill_0.4` (the PNG rows), the first JPEG row, or the every-AC UERD row
+(the J-UNIWARD one), with build `b702512` for the every-AC rows. A head start favours the detector, so they are if anything
 pessimistic for the user.
 
 This is far stronger than the rich models. On BOSSbase (512×512 there, so
@@ -363,9 +364,11 @@ this only by refusing the smoothest covers as too small.
 
 So against a strong, well-trained detector, payloads of 0.2 to 0.4 are not
 hidden. S-UNIWARD is caught more often than HILL at 0.4 (P_E 0.095 against
-0.129), though it makes fewer changes, so HILL stays the PNG default. The
-lighter payloads (0.05 to 0.2) and J-UNIWARD are still being trained; their
-rows go here. This setting favours the warden:
+0.129), though it makes fewer changes, so HILL stays the PNG default.
+J-UNIWARD and UERD are level for JPEG at 0.2 (0.080 against 0.077, within
+one standard error), so UERD, much cheaper to compute, stays the default.
+The lighter payloads (0.05 to 0.2) are still being trained; their rows go
+here. This setting favours the warden:
 one cover source for training and test, the payload known, and small
 images, where a given rate is easier to detect.
 

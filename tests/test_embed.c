@@ -2,6 +2,7 @@
    Copyright (C) 2026 Maxime de Montbron */
 #include "test.h"
 #include "embed.h"
+#include "embed_bytes.h"
 #include <sodium.h>
 #include <math.h>
 #include <stdlib.h>

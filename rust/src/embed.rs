@@ -284,80 +284,8 @@ pub fn apply(c: &mut Carrier, plan: &mut EmbedPlan) -> EmbedStats {
     EmbedStats { changes: n, exchanged: 2 * pairs }
 }
 
-/// A 32-bit length, then the data. Err if it doesn't fit in `count` positions.
-#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
-pub fn encode(c: &Carrier, indices: &[u32], count: u32, data: &[u8], plan: &mut EmbedPlan) -> Result<(), ()> {
-    let bits_needed = 32 + data.len() as u64 * 8;
-    if bits_needed > count as u64 * c.channels as u64 { return Err(()); }
-    let len = data.len() as u32;
-    let mut pos = 0;
-    for b in 0..32 {
-        plan.write_bit(c, indices, pos, ((len >> b) & 1) as u8);
-        pos += 1;
-    }
-    for &byte in data {
-        for b in 0..8 {
-            plan.write_bit(c, indices, pos, (byte >> b) & 1);
-            pos += 1;
-        }
-    }
-    Ok(())
-}
-
-/// Reads up to `out.len()` bytes of a length-prefixed payload
-pub fn decode(c: &Carrier, indices: &[u32], count: u32, out: &mut [u8]) {
-    let ch = c.channels;
-    let mut pos = 0u32;
-    let mut data_len = 0u32;
-    for b in 0..32 {
-        if pos / ch >= count { return; }
-        data_len |= (c.read_bit(indices, pos) as u32) << b;
-        pos += 1;
-    }
-    let data_len = (data_len as usize).min(out.len());
-    for byte in out.iter_mut().take(data_len) {
-        let mut v = 0u8;
-        for b in 0..8 {
-            if pos / ch >= count { break; }
-            v |= c.read_bit(indices, pos) << b;
-            pos += 1;
-        }
-        *byte = v;
-    }
-}
-
-pub fn peek_len(c: &Carrier, indices: &[u32], count: u32) -> u32 {
-    let ch = c.channels;
-    let mut data_len = 0u32;
-    for b in 0..32u32 {
-        if b / ch >= count { return 0; }
-        data_len |= (c.read_bit(indices, b) as u32) << b;
-    }
-    data_len
-}
-
-/// Raw bytes with no length header. Err if they don't fit in `count` positions.
-#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
-pub fn write_raw(c: &Carrier, indices: &[u32], count: u32, data: &[u8], plan: &mut EmbedPlan) -> Result<(), ()> {
-    if data.len() as u64 * 8 > count as u64 * c.channels as u64 { return Err(()); }
-    for pos in 0..data.len() as u32 * 8 {
-        plan.write_bit(c, indices, pos, (data[(pos / 8) as usize] >> (pos % 8)) & 1);
-    }
-    Ok(())
-}
-
-#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
-pub fn read_raw(c: &Carrier, indices: &[u32], count: u32, out: &mut [u8]) -> Result<(), ()> {
-    if out.len() as u64 * 8 > count as u64 * c.channels as u64 { return Err(()); }
-    out.fill(0);
-    for pos in 0..out.len() as u32 * 8 {
-        out[(pos / 8) as usize] |= c.read_bit(indices, pos) << (pos % 8);
-    }
-    Ok(())
-}
-
-// For syndrome coding (format v3). Sample k is the one bit position k of
-// data written in `indices` order goes to, as above.
+// For syndrome coding. Sample k is the one bit position k of data written
+// in `indices` order goes to.
 
 /// The LSBs of samples start .. start+n-1
 pub fn get_bits(c: &Carrier, indices: &[u32], start: usize, bits: &mut [u8]) {

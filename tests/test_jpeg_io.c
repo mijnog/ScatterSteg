@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L  /* mkdtemp */
 #include "test.h"
 #include "jpeg_io.h"
+#include "embed_bytes.h"
 #include "distortion.h"
 #include <jpeglib.h>
 #include <math.h>

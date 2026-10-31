@@ -61,5 +61,5 @@ The file format isn't frozen: nobody uses ScatterSteg yet, so a format change ne
 - Progressive JPEG headers: the scans are now the cover's, but tables are written libjpeg's way (one DQT/DHT segment per table; mozjpeg packs them). Copying the cover's header, as `write_like_cover` does for one-scan files, would need the per-scan DHT segments matched too. mozjpeg 4.1.1 is built in `~/bench/ext/mozjpeg-src/build`; test covers in `~/bench/mozjpeg-covers`.
 - JPEG encoder quirks not copied: 0xFF fill bytes before EOI (Reconyx), restart-interval padding bits other than libjpeg's 1s (`xmp_BlueSquare` in `ianare/exif-samples`).
 - PNG: uncompressed (level-0) covers' stored blocks can't always be reproduced (they depend on the writer's buffer size).
-- `tests/test_cli.py`'s camera-layout test repacks a fixture; real camera files (`ianare/exif-samples`, 106 MB) were only used by hand, from the scratchpad. A small vetted subset as fixtures would make that permanent.
-- `CLAUDE.md` is turning into a lab notebook: move the result paragraphs above into `benchmark/README.md` and keep a short plan here.
+- `tests/test_cli.py`'s camera-layout test repacks a fixture; real camera files (`ianare/exif-samples`, 106 MB) were only used by hand, from the scratchpad. A small vetted subset as fixtures would make that permanent (branch `notes-alaska2` does it).
+- Lab notes live in `benchmark/NOTES.md` and results in `benchmark/README.md`; keep this file a short plan.

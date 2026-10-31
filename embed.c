@@ -260,6 +260,28 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
         write_bit(c, indices, (uint32_t)(start + i), bits[i], plan);
 }
 
+void embed_get_values(const Carrier *c, const uint32_t *indices, size_t start,
+                      size_t n, int32_t *values) {
+    int kind = c->img ? KIND_U8 : KIND_COEF;
+    for (size_t i = 0; i < n; i++)
+        values[i] = value_of(kind, sample_at(c, indices, (uint32_t)(start + i)));
+}
+
+void embed_value_range(const Carrier *c, int32_t *lo, int32_t *hi) {
+    *lo = c->img ? 0 : -1023;
+    *hi = c->img ? 255 : 1023;
+}
+
+void embed_add(const Carrier *c, const uint32_t *indices, size_t start,
+               size_t n, const int8_t *delta) {
+    int kind = c->img ? KIND_U8 : KIND_COEF;
+    for (size_t i = 0; i < n; i++) {
+        if (!delta[i]) continue;
+        void *s = sample_at(c, indices, (uint32_t)(start + i));
+        set_value(kind, s, value_of(kind, s) + delta[i]);
+    }
+}
+
 /* PNG: HILL (see embed_hill_costs), or uniform if the carrier has no cost
    map. HILL makes about 30-40% more changes than uniform but puts them
    where the image is busy; against the rich-model detector in benchmark/

@@ -79,6 +79,14 @@ void embed_get_bits(const Carrier *c, const uint32_t *indices, size_t start,
 /* Record the changes that give those samples these LSBs */
 void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
                     size_t n, const uint8_t *bits, EmbedPlan *plan);
+/* For ternary embedding (codec.c, STC_TERNARY builds): the values of
+   samples start .. start+n-1, the range a sample may take, and adding
+   delta[i] (-1, 0 or +1) to each, at once and unpaired */
+void embed_get_values(const Carrier *c, const uint32_t *indices, size_t start,
+                      size_t n, int32_t *values);
+void embed_value_range(const Carrier *c, int32_t *lo, int32_t *hi);
+void embed_add(const Carrier *c, const uint32_t *indices, size_t start,
+               size_t n, const int8_t *delta);
 /* How costly a change to each of those samples would be to hide: low where
    the cover is busy, high where a change would stand out */
 void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,

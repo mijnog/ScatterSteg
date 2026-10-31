@@ -363,6 +363,10 @@ static int keep_chunk(const png_byte *name) {
        newer refuses the file, so writing one back would make an image
        built here unreadable elsewhere. */
     if (name[2] & 0x20) return 0;
+    /* Uppercase 1st letter: critical. libpng reads an unknown one (it keeps
+       them all), but a viewer must understand it to show the image, so it
+       can't be copied; Rust's parse_chunks drops it too. */
+    if (!(name[0] & 0x20)) return 0;
     if (name[3] & 0x20) return 1;  /* lowercase 4th letter: safe to copy */
     for (size_t i = 0; i < sizeof(kept_chunks) / sizeof(kept_chunks[0]); i++)
         if (memcmp(name, kept_chunks[i], 4) == 0) return 1;
@@ -650,7 +654,8 @@ static int write_chunk(FILE *fp, const void *name, const uint8_t *data, size_t n
     uLong c = crc32(0, head + 4, 4);
     if (n) c = crc32(c, data, (uInt)n);  /* with no data, zlib's crc32 restarts */
     put32(crc, (uint32_t)c);
-    return fwrite(head, 1, 8, fp) == 8 && fwrite(data, 1, n, fp) == n && fwrite(crc, 1, 4, fp) == 4 ? 0 : -1;
+    return fwrite(head, 1, 8, fp) == 8 && (n == 0 || fwrite(data, 1, n, fp) == n) &&
+           fwrite(crc, 1, 4, fp) == 4 ? 0 : -1;
 }
 
 /* The cover's ancillary chunks that come before the image data, or after

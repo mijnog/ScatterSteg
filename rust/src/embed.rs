@@ -282,6 +282,7 @@ pub fn apply(c: &mut Carrier, plan: &mut EmbedPlan) -> EmbedStats {
 }
 
 /// A 32-bit length, then the data. Err if it doesn't fit in `count` positions.
+#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn encode(c: &Carrier, indices: &[u32], count: u32, data: &[u8], plan: &mut EmbedPlan) -> Result<(), ()> {
     let bits_needed = 32 + data.len() as u64 * 8;
     if bits_needed > count as u64 * c.channels as u64 { return Err(()); }
@@ -333,6 +334,7 @@ pub fn peek_len(c: &Carrier, indices: &[u32], count: u32) -> u32 {
 }
 
 /// Raw bytes with no length header. Err if they don't fit in `count` positions.
+#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn write_raw(c: &Carrier, indices: &[u32], count: u32, data: &[u8], plan: &mut EmbedPlan) -> Result<(), ()> {
     if data.len() as u64 * 8 > count as u64 * c.channels as u64 { return Err(()); }
     for pos in 0..data.len() as u32 * 8 {
@@ -341,6 +343,7 @@ pub fn write_raw(c: &Carrier, indices: &[u32], count: u32, data: &[u8], plan: &m
     Ok(())
 }
 
+#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn read_raw(c: &Carrier, indices: &[u32], count: u32, out: &mut [u8]) -> Result<(), ()> {
     if out.len() as u64 * 8 > count as u64 * c.channels as u64 { return Err(()); }
     out.fill(0);

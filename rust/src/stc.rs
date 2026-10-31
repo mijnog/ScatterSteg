@@ -60,6 +60,7 @@ fn chunk_bits(mlen: usize, n: usize) -> usize {
 /// next STC_H rows; choosing y = 1 for a carrier XORs its column in. After a
 /// block, its row is complete and must equal its message bit; the window
 /// then shifts down a row. x, costs and y start at block a's first carrier.
+#[allow(clippy::too_many_arguments)] // the pieces of one chunk of the Viterbi search
 fn embed_chunk(x: &[u8], costs: &[f32], m: &[u8], a: usize, b: usize, mlen: usize, n: usize,
                cols: &[u32], y: &mut [u8]) -> Result<(), ()> {
     let base = block_start(a, mlen, n);
@@ -93,8 +94,9 @@ fn embed_chunk(x: &[u8], costs: &[f32], m: &[u8], a: usize, b: usize, mlen: usiz
             std::mem::swap(&mut cost, &mut next);
         }
         // Row i is done: keep states whose low bit is m[i], and shift
+        #[allow(clippy::needless_range_loop)] // s also picks the cost entry, as in the C code
         for s in 0..STATES / 2 { next[s] = cost[(s << 1) | m[i] as usize]; }
-        for s in STATES / 2..STATES { next[s] = f64::INFINITY; }
+        next[STATES / 2..].fill(f64::INFINITY);
         std::mem::swap(&mut cost, &mut next);
     }
 
@@ -117,6 +119,7 @@ fn embed_chunk(x: &[u8], costs: &[f32], m: &[u8], a: usize, b: usize, mlen: usiz
 /// Finds stego bits y (n of them, from `carriers`) with syndrome m,
 /// minimizing the sum of costs[i] over the i where y[i] != x[i]. Costs must
 /// be positive. Err if out of memory.
+#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn embed(x: &[u8], costs: &[f32], m: &[u8], mlen: usize, n: usize, y: &mut [u8]) -> Result<(), ()> {
     let widest = n / mlen + 1;
     let mut cols = vec![0u32; widest];
@@ -143,6 +146,7 @@ pub fn extract(y: &[u8], mlen: usize, n: usize, m: &mut [u8]) {
     submatrix(widest, &mut cols);
     let per = chunk_bits(mlen, n);
     let mut state = 0u32;
+    #[allow(clippy::needless_range_loop)] // i is the row number, not just an index into m
     for i in 0..mlen {
         if i % per == 0 { state = 0; } // each run starts afresh
         let from = block_start(i, mlen, n);

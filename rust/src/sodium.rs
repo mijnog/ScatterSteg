@@ -15,6 +15,7 @@ pub const NONCE_BYTES: usize = 24;
 pub const MAC_BYTES: usize = 16;
 pub const KDF_KEY_BYTES: usize = 32;
 
+#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn init() -> Result<(), ()> {
     // SAFETY: sodium_init has no preconditions; <0 means failure
     if unsafe { sys::sodium_init() } < 0 { Err(()) } else { Ok(()) }
@@ -91,6 +92,7 @@ pub enum PwhashStrength {
 /// A fuzzing build (`--cfg fuzzing`, which cargo fuzz sets) swaps in keyed
 /// BLAKE2b, as the C fuzz builds do, so the fuzzer gets past key derivation
 /// in microseconds; such a build must never handle a real secret.
+#[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn pwhash(out: &mut [u8], passphrase: &[u8], salt: &[u8; SALT_BYTES], strength: PwhashStrength)
     -> Result<(), ()> {
     if crate::fault::should_fail("crypto_pwhash") { return Err(()); }

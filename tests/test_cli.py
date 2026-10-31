@@ -2352,6 +2352,21 @@ class JpegTest(CliBase):
                     self.assertDecodes(out, "in its own scans")
                     self.assertEqual(scan_script(out), scan_script(src))
 
+    def test_real_camera_files(self):
+        # Real files from nine cameras (tests/fixtures/camera, see its
+        # README): embedding keeps each one's header layout, and the
+        # message comes back
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "camera")
+        names = sorted(n for n in os.listdir(d) if n.endswith(".jpg"))
+        self.assertTrue(names)
+        for name in names:
+            with self.subTest(name):
+                src, out = os.path.join(d, name), self.path("steg.jpg")
+                code, log = self.embed(b"hi", out, src=src)
+                self.assertEqual(code, 0, log)
+                self.assertDecodes(out, "hi")
+                self.assertEqual(header_layout(out), header_layout(src))
+
     def test_flat_jpeg(self):
         # Mostly flat: most blocks and their neighbours have no AC energy,
         # where UERD's cost is q / 0. Once every AC coefficient became a

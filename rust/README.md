@@ -17,9 +17,9 @@ On purpose:
 - **Allocation failure aborts.** A failed heap allocation ends the process
   instead of printing "allocation failed" and exiting 1. Secrets still live in
   libsodium memory, and core dumps are disabled.
-- **PNG output bytes differ.** The Rust PNG writer (its own filter choice and
-  zlib) gives a file about 12% larger than libpng's, with the same pixels,
-  interlacing and ancillary chunks. JPEG output differs by a few bytes.
+- **JPEG output differs by a few bytes.** PNG output is the same: both
+  builds copy the cover's filters, zlib settings and IDAT sizes, and compress
+  with the system zlib.
 - **Files are read whole.** The input is buffered, after its first bytes match
   a PNG or JPEG signature and up to 1 GiB + 64 MiB, where C streamed it. A
   JPEG's coefficients are held twice (libjpeg's and a copy), so its working

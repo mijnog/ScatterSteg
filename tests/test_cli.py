@@ -1167,6 +1167,46 @@ class CliTest(CliBase):
         self.assertEqual(self.embed(b"m", out, src=src)[0], 0)
         self.assertIn((b"sRGB", bytes([0])), png_chunks(out))
 
+    def test_written_like_the_cover(self):
+        # The output is compressed the way the cover was: each row's filter,
+        # zlib's settings (found by reproducing the cover's data) and the
+        # IDAT chunks' size, so its structure doesn't give ScatterSteg away
+        w, h, src, out = 96, 80, self.path("zl9.png"), self.path("steg.png")
+        pixels = noise(w * h * 3, seed=3)
+
+        def filtered(px, types):
+            rows = []
+            for y in range(h):
+                row, prev = px[y * w * 3:(y + 1) * w * 3], px[(y - 1) * w * 3:y * w * 3] if y else bytes(w * 3)
+                t, f = types[y], bytearray([types[y]])
+                for i in range(w * 3):
+                    a, b, c = (row[i - 3] if i >= 3 else 0), prev[i], (prev[i - 3] if i >= 3 else 0)
+                    p = a + b - c
+                    paeth = a if abs(p - a) <= abs(p - b) and abs(p - a) <= abs(p - c) else b if abs(p - b) <= abs(p - c) else c
+                    f.append((row[i] - (0, a, b, (a + b) // 2, paeth)[t]) & 0xFF)
+                rows.append(bytes(f))
+            return b"".join(rows)
+
+        def compress(raw):
+            z = zlib.compressobj(9, zlib.DEFLATED, 15, 9, zlib.Z_DEFAULT_STRATEGY)
+            return z.compress(raw) + z.flush()
+
+        types = [y * 3 % 5 for y in range(h)]
+        data = compress(filtered(pixels, types))
+        with open(src, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                    + b"".join(_chunk(b"IDAT", data[i:i + 3000]) for i in range(0, len(data), 3000))
+                    + _chunk(b"IEND", b""))
+        self.assertEqual(self.embed(b"like the cover", out, src=src)[0], 0)
+        self.assertDecodes(out, "like the cover")
+
+        sizes = [len(d) for k, d in png_chunks(out) if k == b"IDAT"]
+        self.assertTrue(all(n == 3000 for n in sizes[:-1]) and 0 < sizes[-1] <= 3000, sizes)
+        _, _, rows = read_png(out)
+        got = b"".join(d for k, d in png_chunks(out) if k == b"IDAT")
+        self.assertNotEqual(got, data)  # the pixels did change
+        self.assertEqual(got, compress(filtered(b"".join(rows), types)))
+
     def test_odd_text_chunk_copied_verbatim(self):
         # libpng reads a tEXt chunk with an empty keyword but won't write one
         # it made itself (found by fuzzing); copied as raw bytes, it is kept

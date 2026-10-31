@@ -6,11 +6,13 @@ edition = "2024"
 
 [dependencies]
 crc32fast = "1.5.3"
-flate2 = "1.1.10"
 libc = "0.2.191"
 libsodium-sys-stable = { version = "1.24.3", features = ["use-pkg-config"] }
 png = "0.17"
 zeroize = "1.9.1"
+
+[dev-dependencies]
+flate2 = "1.1.10"
 
 [build-dependencies]
 bindgen = "0.73.2"

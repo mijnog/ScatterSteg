@@ -538,7 +538,6 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "crc32fast",
- "flate2",
  "libc",
  "libsodium-sys-stable",
  "pkg-config",

@@ -3,7 +3,8 @@
 //!  - what C loads, Rust loads, with the same pixels (Rust may load more:
 //!    it doesn't check the zlib Adler-32, and ignores a reserved-bit chunk
 //!    name that newer libpng refuses);
-//!  - what C saves, Rust reads back with the same pixels, and the reverse.
+//!  - what C saves, Rust reads back with the same pixels, and the reverse;
+//!  - and both save it as the same bytes.
 #![no_main]
 mod c_api;
 use c_api::CPng;
@@ -77,6 +78,9 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!((back.width(), back.height(), back.channels()), (r.width, r.height, r.channels));
             assert!(back.pixels() == r.pixels, "C reads different pixels from Rust's output");
             assert!(back.unsuitable().is_none());
+            if c.as_ref().is_some_and(|c| c.unsuitable().is_none()) {
+                assert!(std::fs::read(c_out).unwrap() == std::fs::read(r_out).unwrap(), "C and Rust write different bytes");
+            }
         }
     }
 });

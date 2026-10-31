@@ -6,7 +6,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* The cover's ancillary chunks, kept by png_load for png_save to write back */
+/* The cover's ancillary chunks and compressed image data, kept by png_load
+   for png_save to write back and to compress the new pixels the same way */
 typedef struct PngMeta PngMeta;
 
 typedef struct {
@@ -30,7 +31,7 @@ typedef struct {
 Image *png_load(const char *path);
 void   image_free(Image *img);
 
-int  png_save(const Image *img, const char *path);  /* returns 0 on success, -1 on failure with errno set (0 if libpng failed internally) */
+int  png_save(const Image *img, const char *path);  /* returns 0 on success, -1 on failure with errno set (0 for an image of zero width or height) */
 /* The same on a stream, not atomically. png_read closes fp. */
 Image *png_read(FILE *fp);
 int    png_write(const Image *img, FILE *fp);

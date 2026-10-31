@@ -56,7 +56,7 @@ cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault $(TEST_DIR)/jpeg
 		python3 tests/test_cli.py
 
 $(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lsodium -lm
+	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lz -lsodium -lm
 
 $(TEST_DIR)/test_stc: tests/test_stc.c stc.c stc.h tests/test.h | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_stc.c stc.c -o $@ -lm
@@ -71,14 +71,14 @@ $(TEST_DIR)/test_jpeg_io: tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c 
 	$(CC) $(TEST_CFLAGS) tests/test_jpeg_io.c jpeg_io.c embed.c atomic_write.c distortion.c -o $@ -ljpeg -lsodium -lm
 
 $(TEST_DIR)/test_distortion: tests/test_distortion.c distortion.c embed.c png_io.c atomic_write.c tests/test.h $(HDRS) | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_distortion.c distortion.c embed.c png_io.c atomic_write.c -o $@ -lpng -lsodium -lm
+	$(CC) $(TEST_CFLAGS) tests/test_distortion.c distortion.c embed.c png_io.c atomic_write.c -o $@ -lpng -lz -lsodium -lm
 
 # Writes test JPEGs (no sanitizers: it's a tool, not code under test)
 $(TEST_DIR)/jpeg_fixture: tests/jpeg_fixture.c | $(TEST_DIR)
 	$(CC) $(CFLAGS) tests/jpeg_fixture.c -o $@ -ljpeg
 
 $(TEST_DIR)/test_faults: tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o tests/test.h | $(TEST_DIR)
-	$(CC) $(TEST_CFLAGS) tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o -o $@ -lpng
+	$(CC) $(TEST_CFLAGS) tests/test_faults.c $(FAULT_DIR)/png_io.o $(FAULT_DIR)/atomic_write.o $(FAULT_DIR)/fault.o -o $@ -lpng -lz
 
 $(TEST_DIR)/scattersteg: $(SRCS) $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) $(SRCS) -o $@ $(LIBS)
@@ -145,7 +145,7 @@ $(FUZZ_DIR)/fuzz_codec: tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c dis
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $(COSTS_FLAGS) -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION tests/fuzz/fuzz_codec.c codec.c embed.c prng.c stc.c distortion.c -o $@ -lsodium -lz -lm
 
 $(FUZZ_DIR)/fuzz_png_roundtrip: tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c $(HDRS) | $(FUZZ_DIR)
-	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c -o $@ -lpng
+	$(FUZZ_CC) $(FUZZ_CFLAGS) tests/fuzz/fuzz_png_roundtrip.c png_io.c atomic_write.c -o $@ -lpng -lz
 
 # Line coverage over the whole suite, fault sweeps included. All binaries
 # link the same instrumented objects so their counts add up.
@@ -155,12 +155,12 @@ COV_OBJS    = $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sod
 
 coverage: $(COV_OBJS) | $(COV_DIR)
 	rm -f $(COV_DIR)/*.gcda
-	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lsodium -lm
+	$(CC) $(COV_CFLAGS) tests/test_embed.c $(COV_DIR)/embed.o $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_embed -lpng -lz -lsodium -lm
 	$(CC) $(COV_CFLAGS) tests/test_stc.c $(COV_DIR)/stc.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_stc -lm
 	$(CC) $(COV_CFLAGS) tests/test_prng.c $(COV_DIR)/prng.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_prng -lsodium
 	$(CC) $(COV_CFLAGS) tests/test_png_io.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_png_io -lpng -lz
 	$(CC) $(COV_CFLAGS) tests/test_jpeg_io.c $(COV_DIR)/jpeg_io.o $(COV_DIR)/embed.o $(COV_DIR)/atomic_write.o $(COV_DIR)/distortion.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_jpeg_io -ljpeg -lsodium -lm
-	$(CC) $(COV_CFLAGS) tests/test_faults.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_faults -lpng
+	$(CC) $(COV_CFLAGS) tests/test_faults.c $(COV_DIR)/png_io.o $(COV_DIR)/atomic_write.o $(COV_DIR)/fault.o -o $(COV_DIR)/test_faults -lpng -lz
 	$(CC) $(COV_CFLAGS) $(SRCS:%.c=$(COV_DIR)/%.o) $(COV_DIR)/fault.o $(COV_DIR)/fault_sodium.o -o $(COV_DIR)/scattersteg $(LIBS)
 	$(MAKE) --no-print-directory $(TEST_DIR)/jpeg_fixture
 	for t in test_embed test_stc test_prng test_png_io test_jpeg_io test_faults; do $(COV_DIR)/$$t > /dev/null 2>&1 || exit 1; done

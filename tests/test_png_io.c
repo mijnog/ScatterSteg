@@ -491,6 +491,82 @@ static void test_save_keeps_interlacing(void) {
     remove(dst);
 }
 
+/* An 8-bit RGB image written by libpng with the given settings */
+static void write_libpng(const char *path, int interlace, int level, int strategy, size_t zbuf, int filters) {
+    const uint32_t w = 300, h = 200;
+    FILE *fp = fopen(path, "wb");
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    png_infop info = png_create_info_struct(png);
+    png_init_io(png, fp);
+    png_set_compression_level(png, level);
+    png_set_compression_strategy(png, strategy);
+    png_set_compression_buffer_size(png, zbuf);
+    png_set_filter(png, 0, filters);
+    png_set_IHDR(png, info, w, h, 8, PNG_COLOR_TYPE_RGB, interlace,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_text text = {PNG_TEXT_COMPRESSION_NONE, "Comment", "kept", 4, 0, NULL, NULL};
+    png_set_text(png, info, &text, 1);
+    png_write_info(png, info);
+    png_set_interlace_handling(png);
+    uint8_t *row = malloc(w * 3);
+    uint32_t seed = 1;
+    for (int pass = 0; pass < (interlace ? 7 : 1); pass++)
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t i = 0; i < w * 3; i++) {
+                seed = seed * 1103515245 + 12345;
+                row[i] = (uint8_t)(i / 3 + y + (seed >> 28));  /* a gradient, with noise */
+            }
+            png_write_row(png, row);
+        }
+    png_write_end(png, info);
+    png_destroy_write_struct(&png, &info);
+    fclose(fp);
+    free(row);
+}
+
+static int same_file(const char *a, const char *b) {
+    FILE *fa = fopen(a, "rb"), *fb = fopen(b, "rb");
+    int same = fa && fb;
+    for (int ca = 0, cb = 0; same && ca != EOF; ) {
+        ca = fgetc(fa);
+        cb = fgetc(fb);
+        same = ca == cb;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
+
+static void test_save_writes_like_the_cover(void) {
+    /* The cover's filters, zlib settings and IDAT sizes are kept: saving
+       an unchanged libpng-written cover gives back the very same file. Not
+       for level 0 (no compression): zlib's stored blocks depend on the
+       writer's output buffer, which the file doesn't show. */
+    static const struct { int interlace, level, strategy; size_t zbuf; int filters; } cases[] = {
+        {PNG_INTERLACE_NONE,  6, Z_FILTERED,         8192,  PNG_ALL_FILTERS},
+        {PNG_INTERLACE_NONE,  9, Z_DEFAULT_STRATEGY, 1000,  PNG_ALL_FILTERS},
+        {PNG_INTERLACE_NONE,  1, Z_DEFAULT_STRATEGY, 65536, PNG_FILTER_SUB},
+        {PNG_INTERLACE_NONE,  3, Z_RLE,              4096,  PNG_FILTER_PAETH},
+        {PNG_INTERLACE_ADAM7, 6, Z_FILTERED,         8192,  PNG_ALL_FILTERS},
+    };
+    const char *src = "like-cover.png", *dst = "like-out.png";
+    char a[512];
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        snprintf(a, sizeof(a), "%s", path_in_dir(src));
+        write_libpng(a, cases[i].interlace, cases[i].level, cases[i].strategy, cases[i].zbuf, cases[i].filters);
+        Image *img = png_load(a);
+        CHECK(img != NULL);
+        if (!img) continue;
+        CHECK(png_save(img, path_in_dir(dst)) == 0);
+        int same = same_file(a, path_in_dir(dst));
+        CHECK(same);
+        if (!same) fprintf(stderr, "    (case %zu)\n", i);
+        image_free(img);
+        remove(a);
+        remove(path_in_dir(dst));
+    }
+}
+
 static void test_save_leaves_fifo_alone(void) {
     /* rename would replace the FIFO with a regular file */
     const char *p = path_in_dir("fifo.png");
@@ -663,8 +739,8 @@ static void test_save_unwritable_dir(void) {
 }
 
 static void test_save_libpng_failure_keeps_existing(void) {
-    /* A zero-width image makes libpng fail mid-save, after the temp file
-       exists: the old output must survive and the temp file must go. */
+    /* A zero-width image can't be written: png_write fails after the temp
+       file exists, so the old output must survive and the temp file go. */
     const char *p = path_in_dir("keep.png");
     write_bytes(p, "precious", 8);
     Image *img = make_image(0, 4);
@@ -744,6 +820,7 @@ int main(void) {
     RUN(test_save_roundtrip);
     RUN(test_save_gray_roundtrip);
     RUN(test_save_keeps_interlacing);
+    RUN(test_save_writes_like_the_cover);
     RUN(test_save_leaves_fifo_alone);
     RUN(test_save_overwrites);
     RUN(test_save_mode_follows_umask);

@@ -23,6 +23,10 @@
    The chunk limit above isn't enough on its own: how libpng honours it
    depends on the version and build, and Ubuntu's 1.6.43 still allocated
    a 1.3 GB tEXt buffer from a 290-byte file (found by CI's fuzzer). */
+/* The most file bytes a load reads: rust/src/fault.rs's MAX_FILE_BYTES */
+#ifndef PNG_MAX_FILE_BYTES
+#define PNG_MAX_FILE_BYTES (((size_t)1 << 30) + ((size_t)64 << 20))
+#endif
 #define PNG_MAX_LIB_ALLOC ((png_alloc_size_t)64 << 20)
 
 /* Largest total libpng may hold at once. The per-chunk and per-allocation
@@ -84,15 +88,23 @@ typedef struct {
     uint8_t *buf;
     size_t len, cap;
     int lost;  /* out of memory: the copy is incomplete */
+    int too_large;  /* past PNG_MAX_FILE_BYTES: refused, even in read_end */
 } Tee;
 
 static void tee_read(png_structp png, png_bytep out, size_t n) {
     Tee *t = png_get_io_ptr(png);
     if (fread(out, 1, n, t->fp) != n) png_error(png, "Read Error");
+    /* libpng reads on through chunks it discards, so without a limit the
+       copy would grow with the file; Rust refuses files this big as well */
+    if (n > PNG_MAX_FILE_BYTES - t->len) {
+        t->too_large = 1;
+        png_error(png, "file too large");
+    }
     if (t->lost) return;
     if (n > t->cap - t->len) {
         size_t cap = t->cap ? t->cap : 1 << 16;
         while (cap < t->len + n && cap <= SIZE_MAX / 2) cap *= 2;
+        if (cap > PNG_MAX_FILE_BYTES) cap = PNG_MAX_FILE_BYTES;  /* len + n fits: checked above */
         uint8_t *buf = cap >= t->len + n ? realloc(t->buf, cap) : NULL;
         if (!buf) { t->lost = 1; return; }
         t->buf = buf;
@@ -181,6 +193,19 @@ static void read_end(png_structp png, png_infop info) {
     memcpy(png_jmpbuf(png), saved, sizeof(saved));
 }
 
+/* libpng's own messages: the caller says what failed, in the words the
+   Rust build uses too, and a warning about a damaged chunk is no reason to
+   print anything */
+static void quiet_error(png_structp png, png_const_charp msg) {
+    (void)msg;
+    png_longjmp(png, 1);
+}
+
+static void quiet_warning(png_structp png, png_const_charp msg) {
+    (void)png;
+    (void)msg;
+}
+
 Image *png_load(const char *path) {
     FILE *fp = fopen(path, "rb");
     return fp ? png_read(fp) : NULL;
@@ -194,7 +219,7 @@ Image *png_read(FILE *fp) {
     if (!tee) { free(budget); fclose(fp); return NULL; }
     tee->fp = fp;
 
-    png_structp png = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL,
+    png_structp png = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, NULL, quiet_error, quiet_warning,
                                                budget, capped_malloc, capped_free);
     if (!png) { free(tee); free(budget); fclose(fp); return NULL; }
     png_infop info = png_create_info_struct(png);
@@ -312,6 +337,8 @@ Image *png_read(FILE *fp) {
     // Read the pixel data (png_read_image)
     png_read_image(png, img->rows);
     read_end(png, info);
+    /* read_end forgives a damaged tail, but not one past the size limit */
+    if (tee->too_large) png_error(png, "file too large");
     fclose(fp);
 
     /* Covers the output would give away: an animation it would stop, or

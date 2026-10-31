@@ -24,7 +24,8 @@ static void sync_dir_of(const char *dest) {
     close(fd);
 }
 
-static int write_and_rename(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
+static int write_and_rename(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx,
+                            int private) {
     /* Write through a symlink to the file it points to rather than replacing
        the link itself. A new path, or a dangling link, is used as is. */
     char *target = realpath(path, NULL);
@@ -66,7 +67,9 @@ static int write_and_rename(const char *path, int (*write)(FILE *fp, const void 
     /* Replacing a file: keep its permissions and group, so a private image
        stays private and a shared one stays shared. If its group can't be
        kept (we're not a member), don't grant its group bits to another.
-       A new file gets the usual umask-based mode (mkstemp makes it 0600). */
+       A new file gets the usual umask-based mode (mkstemp makes it 0600),
+       or 0600 for a private one: a decrypted message, which other users
+       of the machine shouldn't read (AUDIT-2026-10-31, 3). */
     mode_t mode;
     if (replacing) {
         mode = existing.st_mode & 0777;
@@ -77,7 +80,7 @@ static int write_and_rename(const char *path, int (*write)(FILE *fp, const void 
     } else {
         mode_t mask = umask(0);
         umask(mask);
-        mode = 0666 & ~mask;
+        mode = (private ? 0600 : 0666) & ~mask;
     }
     if (fchmod(fd, mode) != 0) goto fail;
 
@@ -119,7 +122,8 @@ fail:
    been renamed into place or removed; one that arrived meanwhile is
    delivered then. The CLI writes from memory, so this holds them for the
    write and fsync alone. */
-int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
+static int hold_signals_and_write(const char *path, int (*write)(FILE *fp, const void *ctx),
+                                  const void *ctx, int private) {
     sigset_t hold, old;
     sigemptyset(&hold);
     sigaddset(&hold, SIGINT);
@@ -127,9 +131,17 @@ int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), cons
     sigaddset(&hold, SIGTERM);
     sigaddset(&hold, SIGHUP);
     sigprocmask(SIG_BLOCK, &hold, &old);
-    int r = write_and_rename(path, write, ctx);
+    int r = write_and_rename(path, write, ctx, private);
     int err = errno;
     sigprocmask(SIG_SETMASK, &old, NULL);
     errno = err;
     return r;
+}
+
+int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
+    return hold_signals_and_write(path, write, ctx, 0);
+}
+
+int atomic_write_private(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx) {
+    return hold_signals_and_write(path, write, ctx, 1);
 }

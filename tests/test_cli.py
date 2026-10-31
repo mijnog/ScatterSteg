@@ -321,9 +321,16 @@ RECORD_MAX = MESSAGE_MAX + 1 + NAME_MAX
 
 
 def name_ok(name):
-    """A file name a record may carry: a bare name"""
-    return (0 < len(name) <= NAME_MAX and name not in (b".", b"..")
-            and not any(b == 0x2F or b < 0x20 or b == 0x7F for b in name))
+    """A file name a record may carry: a bare name of UTF-8, not starting
+    with '.', with no '/', control characters (C0, DEL, C1) or bidi
+    controls"""
+    try:
+        text = name.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    bad = {0x2F, 0x61C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A),
+           *range(0x20), *range(0x7F, 0xA0)}
+    return 0 < len(name) <= NAME_MAX and name[:1] != b"." and not any(ord(c) in bad for c in text)
 
 
 def pack(message, name=b"", level=9):
@@ -792,6 +799,24 @@ class CliTest(CliBase):
         self.assertEqual(code, 1, log)
         self.assertIn("could not load", log)
 
+    def test_oversized_file_refused(self):
+        # Past 1 GiB + 64 MiB a PNG is refused, even when the excess is a
+        # chunk after the image data, which libpng reads and discards: C
+        # kept a copy of all of it, without limit (AUDIT-2026-10-31, 1).
+        # Sparse, so the 1.1 GB costs no disk.
+        import subprocess
+        src = self.path("huge.png")
+        write_png(src, 64, 64, cover_pixel)
+        with open(src, "r+b") as f:
+            f.seek(-12, os.SEEK_END)  # before IEND
+            size = (1 << 30) + (64 << 20)
+            f.write(struct.pack(">I", size) + b"prVt")
+            f.seek(size, os.SEEK_CUR)
+            f.write(b"\0\0\0\0" + _chunk(b"IEND", b""))
+        r = subprocess.run([BINARY, "info", src], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(r.stderr, "Error: could not load '%s'\n" % src)
+
     def test_unwritable_stderr_is_not_a_crash(self):
         # A diagnostic that can't be printed must not turn into a panic (101)
         import subprocess
@@ -856,12 +881,16 @@ class CliTest(CliBase):
         # Never over an existing file, unless -f
         with open(restored, "wb") as f:
             f.write(b"mine")
-        code, log = run(["extract", "-sf", out], passphrases=["correct horse"], cwd=here)
-        self.assertEqual(code, 1, log)
-        self.assertIn("'secret.txt' already exists; use -f", log)
-        with open(restored, "rb") as f:
-            self.assertEqual(f.read(), b"mine")
-        code, log = run(["extract", "-sf", out, "-f"], passphrases=["correct horse"], cwd=here)
+        # and -f doesn't replace a file the image named, only one named
+        # with -xf: the sender chose that name (AUDIT-2026-10-31, 2)
+        for flags in ([], ["-f"]):
+            code, log = run(["extract", "-sf", out] + flags, passphrases=["correct horse"], cwd=here)
+            self.assertEqual(code, 1, log)
+            self.assertIn("'secret.txt' already exists; -xf chooses another name, "
+                          "or -xf 'secret.txt' -f replaces it", log)
+            with open(restored, "rb") as f:
+                self.assertEqual(f.read(), b"mine")
+        code, log = run(["extract", "-sf", out, "-xf", "secret.txt", "-f"], passphrases=["correct horse"], cwd=here)
         self.assertEqual(code, 0, log)
         with open(restored, "rb") as f:
             self.assertEqual(f.read(), b"the file itself\n")
@@ -900,16 +929,51 @@ class CliTest(CliBase):
 
     def test_unstorable_file_name(self):
         # A name extract couldn't print or create safely isn't stored: -N
-        odd = self.path("bad\nname.txt")
-        with open(odd, "wb") as f:
-            f.write(b"x")
         out = self.path("steg.png")
-        code, log = run(["embed", "-cf", self.cover, "-ef", odd, "-sf", out], passphrases=["correct horse"] * 2)
-        self.assertEqual(code, 1, log)
-        self.assertIn("rename it, or use -N", log)
-        self.assertNotIn("Passphrase", log)
-        code, log = run(["embed", "-cf", self.cover, "-ef", odd, "-sf", out, "-N"], passphrases=["correct horse"] * 2)
+        for bad in ("bad\nname.txt", ".profile", "gpj\u202eexe.txt"):
+            with self.subTest(name=bad):
+                odd = self.path(bad)
+                with open(odd, "wb") as f:
+                    f.write(b"x")
+                code, log = run(["embed", "-cf", self.cover, "-ef", odd, "-sf", out, "-f"],
+                                passphrases=["correct horse"] * 2)
+                self.assertEqual(code, 1, log)
+                self.assertIn("(UTF-8, at most 255 bytes, not starting with '.', no control characters); "
+                              "rename it, or use -N", log)
+                self.assertNotIn("Passphrase", log)
+                code, log = run(["embed", "-cf", self.cover, "-ef", odd, "-sf", out, "-f", "-N"],
+                                passphrases=["correct horse"] * 2)
+                self.assertEqual(code, 0, log)
+        # Anything else printable is fine, accents and all
+        ok = self.path("café notes.txt")
+        with open(ok, "wb") as f:
+            f.write(b"x")
+        code, log = run(["embed", "-cf", self.cover, "-ef", ok, "-sf", out, "-f"], passphrases=["correct horse"] * 2)
         self.assertEqual(code, 0, log)
+        self.assertEqual(reveal(out, "correct horse", name=True), ("café notes.txt".encode(), b"x"))
+
+    def test_extracted_file_is_private(self):
+        # A new file holding the message is 0600 (less the umask), not 0644:
+        # other users of the machine mustn't read it (AUDIT-2026-10-31, 3).
+        # A file it replaces keeps its mode.
+        out = self.path("steg.png")
+        old = os.umask(0o022)
+        try:
+            code, log = self.embed(b"secret", out)
+            self.assertEqual(code, 0, log)
+            for name in ("new.txt", "stored.txt"):
+                dest = self.path(name)
+                if name == "stored.txt":
+                    with open(dest, "wb") as f:
+                        f.write(b"old")
+                    os.chmod(dest, 0o640)
+                code, log = run(["extract", "-sf", out, "-xf", dest, "-f"], passphrases=["correct horse"])
+                self.assertEqual(code, 0, log)
+                self.assertEqual(os.stat(dest).st_mode & 0o777, 0o600 if name == "new.txt" else 0o640)
+        finally:
+            os.umask(old)
+        # The image itself is meant to be sent: the usual mode
+        self.assertEqual(os.stat(out).st_mode & 0o777, 0o644)
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
     def test_forged_file_names_refused(self):
@@ -918,7 +982,9 @@ class CliTest(CliBase):
         here = self.path("restore")
         os.mkdir(here)
         out = self.path("forged.png")
-        for name in (b"../escaped", b"sub/dir", b"/etc/passwd", b".", b"..", b"esc\x1b[31m", b"line\nbreak"):
+        for name in (b"../escaped", b"sub/dir", b"/etc/passwd", b".", b"..", b"esc\x1b[31m", b"line\nbreak",
+                     b".bash_login", b"csi\xc2\x9b31m", b"gpj\xe2\x80\xaeexe", b"bad\xffutf8",
+                     b"overlong\xc0\xaf", b"surrogate\xed\xa0\x80"):
             with self.subTest(name=name):
                 forge(self.cover, out, b"payload", "correct horse", name=name)
                 code, log = run(["extract", "-sf", out, "-f"], passphrases=["correct horse"], cwd=here)

@@ -32,6 +32,22 @@ pub fn atomic_write<F>(path: &Path, write: F) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
+    hold_signals_and_write(path, write, false)
+}
+
+/// The same, but a new file is created 0600 (less the umask), not 0666: for
+/// a decrypted message. Replacing a file keeps its mode either way.
+pub fn atomic_write_private<F>(path: &Path, write: F) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
+    hold_signals_and_write(path, write, true)
+}
+
+fn hold_signals_and_write<F>(path: &Path, write: F, private: bool) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
     // SAFETY: plain signal-mask calls on sigset_ts we own
     let old = unsafe {
         let mut hold: libc::sigset_t = std::mem::zeroed();
@@ -41,7 +57,7 @@ where
         libc::pthread_sigmask(libc::SIG_BLOCK, &hold, &mut old);
         old
     };
-    let result = write_and_rename(path, write);
+    let result = write_and_rename(path, write, private);
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
     result
 }
@@ -57,7 +73,7 @@ fn sync_dir_of(dest: &Path) {
     if let Ok(d) = File::open(dir) { let _ = d.sync_all(); }
 }
 
-fn write_and_rename<F>(path: &Path, write: F) -> io::Result<()>
+fn write_and_rename<F>(path: &Path, write: F, private: bool) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
@@ -86,7 +102,9 @@ where
         // Replacing a file: keep its permissions and group, so a private
         // image stays private and a shared one stays shared. If its group
         // can't be kept (we're not a member), don't grant its group bits to
-        // another. A new file gets the usual umask-based mode.
+        // another. A new file gets the usual umask-based mode, or 0600 for a
+        // private one: a decrypted message, which other users of the machine
+        // shouldn't read (AUDIT-2026-10-31, 3).
         let mode = match &existing {
             Some(m) => {
                 let mut mode = m.mode() & 0o777;
@@ -96,7 +114,7 @@ where
             None => {
                 let mask = unsafe { libc::umask(0) };
                 unsafe { libc::umask(mask) };
-                0o666 & !(mask as u32)
+                (if private { 0o600 } else { 0o666 }) & !(mask as u32)
             }
         };
         if unsafe { libc::fchmod(fd, mode as libc::mode_t) } != 0 { return Err(io::Error::last_os_error()); }

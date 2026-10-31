@@ -3,7 +3,7 @@
 
 use scattersteg::codec::{self, EmbedError};
 use scattersteg::compress;
-use scattersteg::atomic_write::atomic_write;
+use scattersteg::atomic_write::atomic_write_private;
 use scattersteg::cover::{Cover, SaveError};
 use scattersteg::sodium::{self, Secret};
 use scattersteg::jpeg_io;
@@ -587,8 +587,8 @@ fn embed(o: &Options) -> ExitCode {
         let path = ef.as_bytes();
         name = if o.no_name { &[] } else { &path[path.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1)..] };
         if !o.no_name && !compress::name_ok(name) {
-            scattersteg::errln!("Error: the file's name can't be stored with it (at most {} bytes, no control \
-                       characters); rename it, or use -N", compress::NAME_MAX);
+            scattersteg::errln!("Error: the file's name can't be stored with it (UTF-8, at most {} bytes, not \
+                       starting with '.', no control characters); rename it, or use -N", compress::NAME_MAX);
             return ExitCode::FAILURE;
         }
     }
@@ -761,10 +761,14 @@ fn extract(o: &Options) -> ExitCode {
         }
         return ExitCode::SUCCESS;
     };
-    if o.extract_file.is_none() && refuse_existing(dest, o.force, ", or -xf to choose another name") {
+    // The image chose this name, so -f doesn't replace it: only a file the
+    // user names with -xf
+    if o.extract_file.is_none() && std::fs::symlink_metadata(dest).is_ok() {
+        scattersteg::errln!("Error: '{}' already exists; -xf chooses another name, or -xf '{}' -f replaces it",
+                            dest.display(), dest.display());
         return ExitCode::FAILURE;
     }
-    if let Err(e) = atomic_write(dest, |f| f.write_all(&found.plaintext)) {
+    if let Err(e) = atomic_write_private(dest, |f| f.write_all(&found.plaintext)) {
         scattersteg::errln!("Error: could not write '{}': {}", dest.display(), errno_message(&e));
         return ExitCode::FAILURE;
     }

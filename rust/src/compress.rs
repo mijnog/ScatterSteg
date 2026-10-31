@@ -46,11 +46,20 @@ fn stream() -> z::z_stream {
 }
 
 /// A file name a record may carry: a bare name, which extract can create in
-/// the current directory and print safely. 1 to NAME_MAX bytes, no '/' or
-/// control characters, not "." or "..".
+/// the current directory and print safely. 1 to NAME_MAX bytes of UTF-8;
+/// not starting with '.' (no ".", "..", or hidden file such as .profile
+/// that a sender could plant); no '/', no control characters (C0, DEL, C1)
+/// and no bidirectional controls, which could make the name print as
+/// something it isn't. As FORMAT.md and codec.c.
 pub fn name_ok(name: &[u8]) -> bool {
-    !name.is_empty() && name.len() <= NAME_MAX && name != b"." && name != b".."
-        && !name.iter().any(|&b| b == b'/' || b < 0x20 || b == 0x7f)
+    let Ok(s) = std::str::from_utf8(name) else { return false };
+    !name.is_empty() && name.len() <= NAME_MAX && name[0] != b'.'
+        && s.chars().all(|c| {
+            let c = c as u32;
+            c >= 0x20 && c != u32::from(b'/') && !(0x7f..=0x9f).contains(&c) && c != 0x61c
+                && c != 0x200e && c != 0x200f && !(0x202a..=0x202e).contains(&c)
+                && !(0x2066..=0x2069).contains(&c)
+        })
 }
 
 /// The secretbox's plaintext for a message, `[encoding 1 | body]`: the body

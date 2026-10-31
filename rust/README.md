@@ -18,7 +18,8 @@ On purpose:
   instead of printing "allocation failed" and exiting 1. Secrets still live in
   libsodium memory, and core dumps are disabled.
 - **Files are read whole.** The input is buffered, after its first bytes match
-  a PNG or JPEG signature and up to 1 GiB + 64 MiB, where C streamed it. A
+  a PNG or JPEG signature and up to 1 GiB + 64 MiB, where C streams a JPEG
+  (and keeps a PNG's bytes as it reads them, under the same cap). A
   JPEG's coefficients are held twice (libjpeg's and a copy), so its working
   memory is up to about double the 1 GiB cap. Checking the output, embed
   holds its bytes twice while it reads them back (C holds them once).

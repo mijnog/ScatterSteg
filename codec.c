@@ -324,13 +324,33 @@ static void secret_free(voidpf opaque, voidpf p) {
 #define RECORD_MAX ((size_t)CODEC_MESSAGE_MAX + 1 + CODEC_NAME_MAX)
 
 /* A file name a record may carry: a bare name, which extract can create in
-   the current directory and print safely. 1 to CODEC_NAME_MAX bytes, no
-   '/' or control characters, not "." or "..". */
+   the current directory and print safely. 1 to CODEC_NAME_MAX bytes of
+   UTF-8; not starting with '.' (no ".", "..", or hidden file such as
+   .profile that a sender could plant); no '/', no control characters (C0,
+   DEL, C1) and no bidirectional controls, which could make the name print
+   as something it isn't. As FORMAT.md and rust/src/compress.rs. */
+static int name_char_ok(uint32_t c) {
+    return c >= 0x20 && c != '/' && !(c >= 0x7f && c <= 0x9f) && c != 0x61c &&
+           c != 0x200e && c != 0x200f && !(c >= 0x202a && c <= 0x202e) &&
+           !(c >= 0x2066 && c <= 0x2069);
+}
+
 static int name_ok(const uint8_t *s, size_t n) {
-    if (n == 0 || n > CODEC_NAME_MAX) return 0;
-    if ((n == 1 && s[0] == '.') || (n == 2 && s[0] == '.' && s[1] == '.')) return 0;
-    for (size_t i = 0; i < n; i++)
-        if (s[i] == '/' || s[i] < 0x20 || s[i] == 0x7f) return 0;
+    if (n == 0 || n > CODEC_NAME_MAX || s[0] == '.') return 0;
+    for (size_t i = 0; i < n;) {
+        uint8_t b = s[i];
+        size_t len = b < 0x80 ? 1 : (b & 0xe0) == 0xc0 ? 2 : (b & 0xf0) == 0xe0 ? 3 : (b & 0xf8) == 0xf0 ? 4 : 0;
+        if (!len || len > n - i) return 0;
+        uint32_t c = len == 1 ? b : len == 2 ? b & 0x1fu : len == 3 ? b & 0x0fu : b & 0x07u;
+        for (size_t k = 1; k < len; k++) {
+            if ((s[i + k] & 0xc0) != 0x80) return 0;
+            c = c << 6 | (s[i + k] & 0x3fu);
+        }
+        static const uint32_t least[5] = {0, 0, 0x80, 0x800, 0x10000};  /* no overlong forms */
+        if (c < least[len] || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff) || !name_char_ok(c))
+            return 0;
+        i += len;
+    }
     return 1;
 }
 

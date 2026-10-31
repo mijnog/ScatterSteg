@@ -676,8 +676,9 @@ static int do_embed(const Options *o) {
         const char *slash = strrchr(o->embed_file, '/');
         name = o->no_name ? NULL : slash ? slash + 1 : o->embed_file;
         if (name && !codec_name_ok(name)) {
-            fprintf(stderr, "Error: the file's name can't be stored with it (at most %d bytes, "
-                            "no control characters); rename it, or use -N\n", CODEC_NAME_MAX);
+            fprintf(stderr, "Error: the file's name can't be stored with it (UTF-8, at most %d "
+                            "bytes, not starting with '.', no control characters); rename it, "
+                            "or use -N\n", CODEC_NAME_MAX);
             close(fd);
             return 1;
         }
@@ -836,11 +837,14 @@ static int do_extract(const Options *o) {
             fprintf(stderr, "Error: could not write the message: %s\n", strerror(errno));
         else
             status = 0;
-    } else if (dest == name && refuse_existing(name, o->force, ", or -xf to choose another name")) {
-        /* nothing written */
+    } else if (dest == name && lstat(name, &(struct stat){0}) == 0) {
+        /* The image chose this name, so -f doesn't replace it: only a file
+           the user names with -xf */
+        fprintf(stderr, "Error: '%s' already exists; -xf chooses another name, "
+                        "or -xf '%s' -f replaces it\n", name, name);
     } else {
         Bytes bytes = {(const char *)plaintext, pt_len};
-        if (atomic_write(dest, write_secret, &bytes) != 0) {
+        if (atomic_write_private(dest, write_secret, &bytes) != 0) {
             fprintf(stderr, "Error: could not write '%s': %s\n", dest,
                     errno ? strerror(errno) : "write failed");
         } else {

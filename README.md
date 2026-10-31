@@ -64,8 +64,8 @@ echo "a short note" | ./scattersteg embed -cf cover.png -sf note.png
 
 - **The passphrase** is always typed at the terminal, with echo off, so it never appears in the process list or your shell history; `-p` is refused for that reason. A new image needs one of at least 12 bytes; `scattersteg passphrase` prints a random one of about 124 bits.
 - **The message** is the file given with `-ef`, or standard input without it (pipe it in, or type it and press Ctrl+D). It is kept byte for byte. An empty message is an error.
-- **The file's name** is stored with it, encrypted, and `extract` restores the file under that name in the current directory; `-N` leaves the name out. `extract -xf <file>` chooses where it goes, and `-xf -` prints it. A message from standard input, or one stored with `-N`, is printed.
-- **Existing files** are never replaced unless you add `-f`. `embed` without `-sf` writes over the cover itself, which is what it's asked to do.
+- **The file's name** is stored with it, encrypted, and `extract` restores the file under that name in the current directory, readable only by you; `-N` leaves the name out. `extract -xf <file>` chooses where it goes, and `-xf -` prints it. A message from standard input, or one stored with `-N`, is printed. A name that starts with `.`, isn't UTF-8, or holds control characters can't be stored (rename the file, or use `-N`): whoever sends you an image shouldn't be able to plant a hidden file like `.profile` in your directory.
+- **Existing files** are never replaced unless you add `-f`, and `-f` doesn't replace a file the image named: only one you named with `-xf`. `embed` without `-sf` writes over the cover itself, which is what it's asked to do.
 - **Compression:** `-z 1`…`-z 9` sets the level (9, the default, is smallest); `-Z` stores the message as it is.
 - **Quiet and verbose:** `-q` drops the progress messages ("Deriving keys...", "Wrote ...", and the prompt to type a message); the passphrase prompts, warnings and errors remain. `-v` also says how much was stored, and whether it was compressed.
 - **The output** has the cover's format and metadata: a progressive JPEG stays progressive, a grayscale PNG stays grayscale, and EXIF, ICC profiles and text are kept.
@@ -99,6 +99,8 @@ The commands are the same: `embed`, `extract`, `info`, `encinfo`, `version`, `li
 | `-e` (choose or turn off encryption), `-K` (no checksum) | refused: the encryption is fixed (XSalsa20-Poly1305, see `encinfo`), and every message is authenticated |
 | `-cf -` or `-sf -` (cover from standard input, output to standard output) | not supported: the cover and the output are files |
 | an existing output file | refused unless `-f`; there is no yes/no question |
+| `extract -f` without `-xf` | doesn't replace a file named by the image: the sender chose that name; `-xf <name> -f` does |
+| the stored file name | can't start with `.` or hold control characters (`-N` stores none) |
 | `info` | says whether the image can be a cover, its capacity, and a suggested most to store. It doesn't offer to look for a message: without the passphrase, nothing can tell. |
 | `passphrase` | an extra command: prints a strong random passphrase |
 

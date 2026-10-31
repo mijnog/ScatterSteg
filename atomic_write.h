@@ -16,5 +16,8 @@
    write returns 0, or -1 leaving errno set (or 0 if the cause has no errno,
    e.g. an encoder's internal error). Returns 0, or -1 with errno likewise. */
 int atomic_write(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx);
+/* The same, but a new file is created 0600 (less the umask), not 0666: for
+   a decrypted message. Replacing a file keeps its mode either way. */
+int atomic_write_private(const char *path, int (*write)(FILE *fp, const void *ctx), const void *ctx);
 
 #endif /* ATOMIC_WRITE_H */

@@ -105,7 +105,12 @@ fn parse_chunks(file: &[u8]) -> Option<(Vec<Chunk>, bool)> {
             if after_idat { break; } // the pixels are in: C stops reading here, keeping what it has
             return None;
         }
-        if name[2] & 0x20 != 0 { continue; }
+        if name[2] & 0x20 != 0 {
+            // Newer libpng refuses it outright; after the image data, C then
+            // stops reading, keeping what it has
+            if after_idat { break; }
+            continue;
+        }
         match &name {
             b"IDAT" => { after_idat = true; continue; }
             b"IEND" => break,

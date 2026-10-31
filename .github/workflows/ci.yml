@@ -98,8 +98,8 @@ jobs:
   # Builds with the other distortion models (distortion.h), which the
   # default builds above never run: the C one with WOW and J-UNIWARD under
   # the sanitizers and fault sweeps, the Rust one with S-UNIWARD and
-  # J-UNIWARD through the CLI tests
-  models:
+  # J-UNIWARD through the CLI tests. Two jobs, since they share nothing
+  models-c:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -112,6 +112,17 @@ jobs:
 
       - name: C with WOW and J-UNIWARD
         run: make test PNG_COSTS=wow JPEG_COSTS=juniward
+
+  models-rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libpng-dev libjpeg-dev zlib1g-dev libclang-dev pkg-config clang python3
+
+      - name: Build the test fixture
+        run: make tests/build/jpeg_fixture
 
       - name: Rust with S-UNIWARD and J-UNIWARD
         env:

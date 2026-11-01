@@ -41,6 +41,10 @@ Needed for compatibility:
   letters, or a bad CRC in a critical chunk, fails the load as in libpng. A
   lowercase third letter (newer libpng refuses it, older accepts it) loads
   but the chunk isn't written back, so we never write one libpng would refuse.
+- After the image data, a chunk with a reserved name (lowercase third letter)
+  ends reading in current libpng (1.6.59), as in Rust, but is accepted by older
+  ones (Ubuntu's 1.6.43): C's output follows the libpng it is built with, so
+  `diff_png` doesn't compare bytes for such files (pixels still must agree).
 - An ancillary chunk with a bad CRC is kept and written back with a valid
   CRC, as libpng keeps it, so both versions write the same chunks.
 - A JPEG's carrier cap uses C's per-carrier size (8-byte pointer included), so

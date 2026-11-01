@@ -47,6 +47,24 @@ fn zlib_stream_damaged(d: &[u8]) -> bool {
     flate2::read::ZlibDecoder::new(&idat[..]).read_to_end(&mut Vec::new()).is_err()
 }
 
+/// A chunk whose name has a lowercase third letter (reserved) after the image
+/// data: current libpng (1.6.59) fails there, so C stops reading and keeps no
+/// later chunk, which Rust copies; older libpng (CI's Ubuntu 1.6.43) accepts
+/// it and goes on. No Rust code can know which libpng C was built with, so the
+/// bytes written may differ by version: pixels still must agree.
+fn reserved_name_after_image_data(d: &[u8]) -> bool {
+    let (mut pos, mut after) = (8, false);
+    while pos + 12 <= d.len() {
+        let len = u32::from_be_bytes(d[pos..pos + 4].try_into().unwrap()) as usize;
+        if len > d.len() - pos - 12 { break; }
+        let name = &d[pos + 4..pos + 8];
+        if after && name.iter().all(u8::is_ascii_alphabetic) && name[2] & 0x20 != 0 { return true; }
+        after |= name == b"IDAT";
+        pos += 12 + len;
+    }
+    false
+}
+
 fuzz_target!(|data: &[u8]| {
     let [input, c_out, r_out] = paths();
     let mut buf = data.to_vec();
@@ -78,7 +96,7 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!((back.width(), back.height(), back.channels()), (r.width, r.height, r.channels));
             assert!(back.pixels() == r.pixels, "C reads different pixels from Rust's output");
             assert!(back.unsuitable().is_none());
-            if c.as_ref().is_some_and(|c| c.unsuitable().is_none()) {
+            if c.as_ref().is_some_and(|c| c.unsuitable().is_none()) && !reserved_name_after_image_data(&buf) {
                 assert!(std::fs::read(c_out).unwrap() == std::fs::read(r_out).unwrap(), "C and Rust write different bytes");
             }
         }

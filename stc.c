@@ -161,8 +161,9 @@ static void *run_chunks(void *arg) {
 }
 
 /* Threads to use: one per online CPU, at most STC_THREADS_MAX and one per
-   chunk. One under fault injection and fuzzing, whose builds count calls
-   and must see them in a fixed order. */
+   chunk. One in fault-injection builds, which count calls and must see
+   them in a fixed order, and in the codec fuzzer's (whose inputs are small:
+   threads would only cost time). */
 static size_t thread_count(size_t chunks) {
 #if defined(FAULT_H) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
     (void)chunks;

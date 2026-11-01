@@ -497,8 +497,11 @@ gains most where quantization is fine). One seed, and the pool caps differ
 other in DCTR and in changes made, which hasn't been checked for PNG). So ternary replaces the exchange
 embedding for PNG too. The payload is now coded ternary in both builds, with
 the pool cap at 1,024 samples per bit (`FORMAT.md`); the merged coder differs
-from the prototype only where layer A can't carry its share (a cover of
-mostly 0s or 255s), which the prototype failed on.
+from the prototype in picking the split from a sample of 65,536 costs (the
+decoder reads it, so it only has to be about right), and in giving layer A
+less where it can't carry its share (a half, a quarter, then none: a cover
+of mostly 0s or 255s, which the prototype failed on, or a message near
+capacity).
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

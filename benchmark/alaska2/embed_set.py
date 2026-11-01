@@ -1,6 +1,7 @@
 """Embeds a random message of PAYLOAD bits per nonzero AC coefficient into every
-cover in cover/, with BINARY (a ScatterSteg build, or "steghide"), into NAME/.
-Usage: embed_set.py BINARY NAME PAYLOAD   (DUMPCOEF=path to ../dumpcoef; STEGHIDE=path)"""
+cover in cover/, with BINARY (a ScatterSteg build, "steghide", or "hstego"), into NAME/.
+Usage: embed_set.py BINARY NAME PAYLOAD   (DUMPCOEF=path to ../dumpcoef; STEGHIDE=path;
+HSTEGO_PY=the Python of HStego's environment, for ../hstego_embed.py)"""
 import base64, os, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +23,10 @@ def job(f):
         r = subprocess.run([os.environ.get("STEGHIDE", "steghide"), "embed", "-cf", src, "-ef", dst + ".msg",
                             "-sf", tmp, "-p", PW, "-Z", "-q", "-f"], capture_output=True)
         os.remove(dst + ".msg"); ok = r.returncode == 0
+    elif binary == "hstego":
+        r = subprocess.run([os.environ["HSTEGO_PY"], "-I", os.path.join(HERE, "..", "hstego_embed.py"), src, tmp, str(n)],
+                           capture_output=True)
+        ok = r.returncode == 0
     else:
         code, log = T.run(["embed", "-cf", src, "-sf", tmp, "-Z", "-f"], message=m, passphrases=[PW, PW], binary=binary)
         ok = code == 0

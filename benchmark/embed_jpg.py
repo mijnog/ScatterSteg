@@ -1,7 +1,9 @@
 """ScatterSteg JPEG embeds only: embed_all's covers and message sizes (bits
 per non-zero AC coefficient). Usage: embed_jpg.py N TOOLNAME
-(stego/TOOLNAME_jpg_<bp>/); payloads from BPNZ, default 0.05,0.1,0.2."""
-import glob, os, sys
+(stego/TOOLNAME_jpg_<bp>/); payloads from BPNZ, default 0.05,0.1,0.2.
+SCATTERSTEG=hstego embeds with HStego instead (hstego_embed.py, run by
+HSTEGO_PY, the Python of HStego's environment)."""
+import glob, os, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 import embed_all as E
 
@@ -17,6 +19,13 @@ def main():
         os.makedirs(os.path.dirname(out), exist_ok=True)
         if os.path.exists(out): return True
         tmp = out + ".tmp.jpg"
+        if E.SS == "hstego":
+            n = int(bp * nz[base] / 8)
+            r = subprocess.run([os.environ["HSTEGO_PY"], "-I", os.path.join(E.HERE, "hstego_embed.py"),
+                                f"cover/{base}.jpg", tmp, str(n)], capture_output=True, text=True)
+            if r.returncode != 0 or not os.path.exists(tmp):
+                print("FAIL", base, bp, (r.stderr.strip().splitlines() or ["?"])[-1][:100], flush=True); return False
+            os.rename(tmp, out); return True
         rc, log = E.T.run(["embed", "-cf", f"cover/{base}.jpg", "-sf", tmp, "-Z", "-f"],  # -Z: the payload exactly as sized (compression would shrink it)
                           message=E.msg(int(bp * nz[base] / 8)), passphrases=[E.PW, E.PW], binary=E.SS)
         if rc != 0: print("FAIL", base, bp, log.strip().splitlines()[-1][:100], flush=True); return False

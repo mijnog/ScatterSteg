@@ -167,7 +167,7 @@ SRNet was trained on 7,000 cover/stego pairs from the same source as the test im
 - **Trained detectors catch it often**, more so as the message grows; see above.
 - **Lossy processing destroys the message.** Most platforms recompress or resize uploads. Send the file itself.
 - **Big messages are much easier to detect.** Near capacity, the coding has little freedom left.
-- **Not deniable.** There is no decoy message: if you're forced to give up the passphrase, the message is revealed.
+- **Not deniable.** There is no decoy message: if you're forced to give up the passphrase, the message is revealed. Decoys may come after the first release; the [threat model](THREAT_MODEL.md#explicit-non-goals) says why they aren't there yet.
 - **Very large images need a lot of memory**, up to several GB for the largest accepted (see A5 in the threat model).
 - **Suspending the program** (Ctrl+Z) at the passphrase prompt can leave the terminal's echo off. Ctrl+C, SIGTERM and SIGHUP are handled.
 

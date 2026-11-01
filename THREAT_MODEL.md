@@ -77,7 +77,13 @@ Someone who takes or searches a device used with ScatterSteg (at a border, in a 
 
 ## Explicit non-goals
 
-- **Deniability under coercion.** There's no decoy message or hidden second passphrase: if you're forced to give up the passphrase, the message is revealed.
+- **Deniability under coercion.** There's no decoy message or second passphrase: if you're forced to give up the passphrase, the message is revealed. This is a choice, for three reasons:
+  - ScatterSteg is open source. If it could hide decoys, a coercer who knows the tool would keep demanding "the other passphrase", and a user who really has only one couldn't prove it.
+  - Each extra message means more changes in the image, and not being detected comes first.
+  - Not being detected is the first line of deniability: coercion only matters once detection has failed.
+
+  Decoys (further messages under other passphrases) may be added after the first release, designed so that an image with decoys can't be told from one without. The format is meant to leave room for them, so that adding them breaks no older image; that is to be checked before the format is frozen.
+- **Telling members of a group apart.** Authentication shows that a message was written by someone who knows the passphrase, not by whom. If a group shares one passphrase, any member can write a message as if it came from any other. Use one passphrase per pair of people if that matters.
 - **Robustness** to lossy processing (A4).
 - **Hiding the tool.** Having ScatterSteg installed, or in shell history, may itself be telling.
 - **Sanitizing metadata.** The output deliberately keeps the cover's metadata (EXIF and so on) so it looks like the same file; if that metadata identifies you or your camera, choose another cover.

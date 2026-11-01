@@ -16,6 +16,17 @@ ScatterSteg competes with steghide, so its command line uses steghide's commands
   - Messages are always byte-exact (no newline added or removed).
 - **Both front ends:** `main.c` (C) and `rust/src/main.rs` (Rust) must behave identically, wording included. `tests/test_cli.py` runs against each (`SCATTERSTEG=<binary>`).
 
+## Writing docs
+
+Docs drift when numbers are written from memory, copied into several files, or written before a result is final. So:
+
+- **Every number from its source, at write time.** Re-read the results file, script or code for each figure (`benchmark/results-*.txt`, `~/bench/*/results-*.txt`, the queue scripts for which build and settings a set used). Compute derived figures (caught = 1 − P_E, shares, overhead) instead of recalling or rounding them. Never take a figure from a context summary without checking it.
+- **One home per number.** Measurements live in `benchmark/README.md` (and the raw `results-*.txt`); README, THREAT_MODEL, 5_LEVELS and CLAUDE.md quote only what they need and link there. When a number changes, `grep -rn` every copy (Markdown, code comments, help text, test comments) and fix them all in the same commit.
+- **Say which case a figure covers.** A JPEG result isn't a PNG result; one cover source, payload, build or seed isn't all of them. Name it ("JPEG, BOSSbase 256×256, SRNet, seed 0").
+- **Mark what's provisional.** A result still running or a plan not yet done says so with a date ("as of 2026-11-01", "running"), and the handoff lists it, so it gets revisited when it lands.
+- **Comments state what the code does.** When a constant or formula changes, re-read the comment beside it (and its twin in the other build); where a comment makes a checkable claim (a bound, a total), add a test for it.
+- **Verify before committing docs.** Before each docs commit, list every claim the diff adds or changes and check each against its source; say in the reply which were checked. After a long session or a context summary, re-verify rather than trust earlier text.
+
 ## Handoff (2026-11-01): resume here
 
 **State.** `main` is at `659aea2`: step 4 (the payload suggestion and the nonce, below), audit findings 1–8 fixed, the Rust PNG fixes diff_png found, the byte-embed cleanups, progressive/multi-scan JPEG covers keep their scan script (`test_keeps_cover_scans`), real camera fixtures (`tests/fixtures/camera`, `test_real_camera_files`), lab notes in `benchmark/NOTES.md`. The light-payload SRNet runs are in the tables. diff_png doesn't compare bytes for a reserved-name chunk after the image data, where libpng's version decides C's output (`rust/README.md`).

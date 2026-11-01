@@ -27,7 +27,11 @@ Docs drift when numbers are written from memory, copied into several files, or w
 - **Comments state what the code does.** When a constant or formula changes, re-read the comment beside it (and its twin in the other build); where a comment makes a checkable claim (a bound, a total), add a test for it.
 - **Verify before committing docs.** Before each docs commit, list every claim the diff adds or changes and check each against its source; say in the reply which were checked. After a long session or a context summary, re-verify rather than trust earlier text.
 
-## Handoff (2026-11-01): resume here
+## Handoff (paused 2026-11-01): resume on branch `ternary`
+
+**The current handoff is in `CLAUDE.md` on branch `ternary`** (`git checkout ternary`): the ternary port's speed results and the owner's pending PNG decision, the checklist before it merges (after `eoi-fill`), and the prepared HStego SRNet run. What follows here is older.
+
+## Handoff (2026-11-01, earlier)
 
 **State.** `main` is at `659aea2`: step 4 (the payload suggestion and the nonce, below), audit findings 1–8 fixed, the Rust PNG fixes diff_png found, the byte-embed cleanups, progressive/multi-scan JPEG covers keep their scan script (`test_keeps_cover_scans`), real camera fixtures (`tests/fixtures/camera`, `test_real_camera_files`), lab notes in `benchmark/NOTES.md`. The light-payload SRNet runs are in the tables. diff_png doesn't compare bytes for a reserved-name chunk after the image data, where libpng's version decides C's output (`rust/README.md`).
 

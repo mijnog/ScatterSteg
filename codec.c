@@ -376,36 +376,23 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
 }
 
 /* A large finite cost (as jpeg_io's wet carriers): the trellis avoids it
-   unless it has no other way, and embed_payload checks it didn't */
+   unless it has no other way, and embed_layers checks it didn't */
 #define TERNARY_WET 1e13f
 
-/* Makes the payload's changes (see ternary_split) at once, and records
-   the length's in plan. Returns 0, -1 if it doesn't fit, or -2 if out of
-   memory or the layers couldn't agree. */
-static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
-                         const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
-    uint32_t ch = carrier_channels(c);
-    size_t mlen = (size_t)len * 8, avail = payload_samples(n, ch);
-    if (mlen == 0 || mlen > avail) return -1;
-    size_t u = ternary_samples(avail, mlen), start = length_samples(n, ch);
-    if (!u) return -1;
-
-    int32_t *v = malloc(u * sizeof(int32_t)), lo, hi;
-    float *rho = malloc(u * sizeof(float)), *cost = malloc(u * sizeof(float));
-    uint8_t *x = malloc(u), *ya = malloc(u), *yb = malloc(u), *m = malloc(mlen);
-    int8_t *delta = calloc(u, 1);
-    int r = -2;
-    if (!v || !rho || !cost || !x || !ya || !yb || !m || !delta) goto out;
-    for (size_t i = 0; i < mlen; i++) m[i] = (payload[i / 8] >> (i % 8)) & 1;
-    embed_get_values(c, order, start, u, v);
-    embed_costs(c, order, start, u, rho);
-    embed_value_range(c, &lo, &hi);
-
-    double lambda;
-    size_t ma = ternary_split(rho, u, mlen, &lambda), mb = mlen - ma;
+/* Both layers, with ma of the mlen bits in layer A: the changes into
+   delta. 0, 1 if they can't be made by +-1 (the trellis had to pay a wet
+   cost, or found no path), or -2 if out of memory. */
+static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo, int32_t hi,
+                        double lambda, const uint8_t *m, size_t mlen, size_t ma, int8_t *delta) {
+    size_t mb = mlen - ma;
     size_t na = ma ? stc_carriers(u, ma) : 0, nb = mb ? stc_carriers(u, mb) : 0;
-    if ((ma && !na) || (mb && !nb)) { r = -1; goto out; }
-    if (write_length(c, order, n, len, (uint32_t)ma, plan) != 0) goto out;
+    if ((ma && !na) || (mb && !nb)) return 1;
+    float *cost = malloc(u * sizeof(float));
+    uint8_t *x = malloc(u), *ya = calloc(u, 1), *yb = malloc(u);
+    int r = -2;
+    if (!cost || !x || !ya || !yb) goto out;
+    r = 1;
+    memset(delta, 0, u);
 
     /* Layer A: second bits; flipping one takes +1 from odd, -1 from even */
     for (size_t i = 0; i < na; i++) {
@@ -436,14 +423,11 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     if (mb && stc_embed(x, cost, m + ma, mb, nb, yb) != 0) goto out;
 
     /* The changes; a wet cost the trellis had to pay means no +-1 change
-       gives both layers' bits, so give up rather than change by 2 */
+       gives both layers' bits: no change by 2, the caller tries again */
     for (size_t i = 0; i < u; i++) {
         int a = i < na && ya[i];
         int b = i < nb && yb[i] != (uint8_t)(v[i] & 1);
-        if (a && i < nb && !b) {
-            fprintf(stderr, "Error: ternary layers disagree\n");
-            goto out;
-        }
+        if (a && i < nb && !b) goto out;
         if (a) delta[i] = (v[i] & 1) ? 1 : -1;
         else if (b && i < na) delta[i] = (v[i] & 1) ? -1 : 1;
         else if (b) {
@@ -451,15 +435,53 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
             randombytes_buf(&coin, 1);
             delta[i] = v[i] == lo ? 1 : v[i] == hi ? -1 : (coin & 1) ? 1 : -1;
         }
-        if (v[i] + delta[i] < lo || v[i] + delta[i] > hi) {
-            fprintf(stderr, "Error: ternary change out of range\n");
-            goto out;
-        }
+        if (v[i] + delta[i] < lo || v[i] + delta[i] > hi) goto out;
     }
-    embed_add(c, order, start, u, delta);
     r = 0;
 out:
-    free(v); free(rho); free(cost); free(x); free(ya); free(yb); free(m); free(delta);
+    free(cost); free(x); free(ya); free(yb);
+    return r;
+}
+
+/* Makes the payload's changes (see ternary_split) at once, and records
+   the length's in plan. Returns 0, -1 if it doesn't fit, or -2 if out of
+   memory. Where layer A can't carry its share (a cover of mostly 0s or
+   255s, whose second bit no +-1 change flips), it carries less, halving
+   down to nothing: then layer B alone is plain +-1 embedding, which any
+   cover allows. The split is stored with the length, so decoding needs no
+   change. */
+static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
+                         const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
+    uint32_t ch = carrier_channels(c);
+    size_t mlen = (size_t)len * 8, avail = payload_samples(n, ch);
+    if (mlen == 0 || mlen > avail) return -1;
+    size_t u = ternary_samples(avail, mlen), start = length_samples(n, ch);
+    if (!u) return -1;
+
+    int32_t *v = malloc(u * sizeof(int32_t)), lo, hi;
+    float *rho = malloc(u * sizeof(float));
+    uint8_t *m = malloc(mlen);
+    int8_t *delta = malloc(u);
+    int r = -2;
+    if (!v || !rho || !m || !delta) goto out;
+    for (size_t i = 0; i < mlen; i++) m[i] = (payload[i / 8] >> (i % 8)) & 1;
+    embed_get_values(c, order, start, u, v);
+    embed_costs(c, order, start, u, rho);
+    embed_value_range(c, &lo, &hi);
+
+    double lambda;
+    size_t ma = ternary_split(rho, u, mlen, &lambda);
+    for (;;) {
+        r = embed_layers(v, rho, u, lo, hi, lambda, m, mlen, ma, delta);
+        if (r != 1) break;
+        if (ma == 0) { r = -1; break; }  /* not even +-1 alone: too full */
+        ma /= 2;
+    }
+    if (r != 0) goto out;
+    if (write_length(c, order, n, len, (uint32_t)ma, plan) != 0) { r = -2; goto out; }
+    embed_add(c, order, start, u, delta);
+out:
+    free(v); free(rho); free(m); free(delta);
     return r;
 }
 #else

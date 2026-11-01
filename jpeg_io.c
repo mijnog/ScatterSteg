@@ -65,6 +65,11 @@ static uint64_t bytes_to_end(FILE *fp) {
    into the output; past it, the output gets libjpeg's own */
 #define JPEG_MAX_HEADER ((size_t)16 << 20)
 
+/* Most 0xFF fill bytes before EOI kept to copy (some cameras write a few:
+   Reconyx's; libjpeg skips them on reading and writes none).
+   rust/src/jpeg_io.rs's MAX_EOI_FILL must equal it. */
+#define JPEG_MAX_EOI_FILL 4096
+
 /* What an 8-bit encoder can write: DC in [-1024, 1023] (an all-black block
    at quality 100 is -1024), so block-to-block differences fit its 11 bits;
    AC values that fit 10 bits */
@@ -99,6 +104,7 @@ struct JpegImage {
     uint32_t n_carriers;
     uint64_t nonzero_ac;  /* AC coefficients that aren't 0 */
     int trailing_data;    /* bytes after the EOI marker */
+    uint32_t eoi_fill;    /* 0xFF fill bytes just before it, for write_like_cover */
     /* The cover's header, from SOI to the end of its first SOS segment,
        for write_like_cover; NULL if it couldn't be kept */
     uint8_t *header;
@@ -123,6 +129,24 @@ static size_t find_sos(const uint8_t *d, size_t len) {
         pos += 2 + (size_t)be16(d + pos + 2);
     }
     return 0;
+}
+
+/* The 0xFF fill bytes just before the EOI that ends at end (where libjpeg
+   stopped reading), up to JPEG_MAX_EOI_FILL, read again from fp, which must
+   seek; 0 if the file doesn't end its scan with an EOI there. Entropy-coded
+   data stuffs a 0 after any 0xFF it holds, so an 0xFF right before the
+   marker's own is fill. */
+static uint32_t count_eoi_fill(FILE *fp, long end) {
+    uint8_t b[JPEG_MAX_EOI_FILL + 2];
+    long from = end - (long)sizeof(b);
+    if (end < 2) return 0;
+    if (from < 0) from = 0;
+    size_t n = (size_t)(end - from);
+    if (fseek(fp, from, SEEK_SET) != 0 || fread(b, 1, n, fp) != n) return 0;
+    if (b[n - 2] != 0xFF || b[n - 1] != 0xD9) return 0;
+    uint32_t k = 0;
+    while (k < JPEG_MAX_EOI_FILL && k + 3 <= n && b[n - 3 - k] == 0xFF) k++;
+    return k;
 }
 
 /* Keeps the cover's header: the bytes libjpeg read up to the first scan's
@@ -351,7 +375,9 @@ JpegImage *jpeg_read(FILE *fp) {
         error_exit((j_common_ptr)&j->src);
     j->scans = j->src.input_scan_number;
     /* Reading stops at EOI: anything left, buffered or not, comes after */
+    long here = ftell(fp), eoi_end = here - (long)j->src.src->bytes_in_buffer;
     j->trailing_data = j->src.src->bytes_in_buffer > 0 || fgetc(fp) != EOF;
+    if (here >= 0) j->eoi_fill = count_eoi_fill(fp, eoi_end);
     fclose(fp);
     j->err.pub.error_exit = unexpected_error;
     j->src.progress = NULL;
@@ -642,7 +668,8 @@ static uint8_t *with_new_tables(const JpegImage *j, const uint8_t *out, size_t o
    own tables (TABLES_COVER: the header byte for byte) or, if those lack a
    code the changed coefficients need, with optimized ones in the same
    slots (TABLES_OPTIMIZED: the header with those tables swapped in), as
-   such a cover's encoder optimizes them per image. libjpeg-turbo doesn't
+   such a cover's encoder optimizes them per image. 0xFF fill bytes the
+   cover had before its EOI are written there too. libjpeg-turbo doesn't
    say when a table lacks a code (it writes a code of no bits), so the
    result is decoded and checked. If that fails, or libjpeg's scan header
    doesn't match the cover's, returns -1 having written nothing; -2 if
@@ -665,20 +692,28 @@ static int write_like_cover(JpegImage *j, FILE *fp, int tables) {
         free(buf);
         return -1;
     }
-    size_t data = sos + sos_len, head_len = j->header_len;
+    /* libjpeg ends with EOI: the scan's data is buf[data, end), then the
+       cover's fill bytes, then EOI */
+    size_t data = sos + sos_len;
+    if (len < data + 2 || (uint8_t)buf[len - 2] != 0xFF || (uint8_t)buf[len - 1] != 0xD9) {
+        free(buf);
+        return -1;
+    }
+    size_t end = len - 2, head_len = j->header_len, fill = j->eoi_fill;
     uint8_t *head = tables == TABLES_COVER ? j->header : with_new_tables(j, (uint8_t *)buf, sos, &head_len);
-    /* What it decodes to */
-    uint8_t *joined = head ? malloc(head_len + len - data) : NULL;
+    size_t total = head_len + (end - data) + fill + 2;
+    uint8_t *joined = head ? malloc(total) : NULL;
     int ok = joined != NULL;
     if (ok) {
         memcpy(joined, head, head_len);
-        memcpy(joined + head_len, buf + data, len - data);
-        ok = decodes_to(j, joined, head_len + len - data);
+        memcpy(joined + head_len, buf + data, end - data);
+        memset(joined + head_len + (end - data), 0xFF, fill + 1);
+        joined[total - 1] = 0xD9;
+        ok = decodes_to(j, joined, total);  /* what it decodes to */
     }
-    free(joined);
     errno = 0;
-    r = !ok ? -1 :
-        fwrite(head, 1, head_len, fp) == head_len && fwrite(buf + data, 1, len - data, fp) == len - data ? 0 : -2;
+    r = !ok ? -1 : fwrite(joined, 1, total, fp) == total ? 0 : -2;
+    free(joined);
     if (head != j->header) free(head);
     free(buf);
     return r;

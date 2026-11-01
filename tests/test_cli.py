@@ -2414,6 +2414,28 @@ class JpegTest(CliBase):
         self.assertIn("give it a .png name", log)
         self.assertEqual(sorted(os.listdir(self.dir)), ["cover.jpg", "cover.png"])
 
+    def test_keeps_fill_before_eoi(self):
+        # Some cameras pad the scan with 0xFF fill bytes before the end
+        # marker; libjpeg skips them on reading and writes none, so they're
+        # copied: the output ends as the cover does
+        plain, src, out = self.path("plain.jpg"), self.path("fill.jpg"), self.path("steg.jpg")
+        make_jpeg(plain, 256, 192, 3, 85, "nojfif")
+        camera_layout(plain, src)
+        with open(src, "rb") as f:
+            data = f.read()
+        self.assertEqual(data[-2:], b"\xff\xd9")
+        self.assertNotEqual(data[-3], 0xFF)
+        with open(src, "wb") as f:
+            f.write(data[:-2] + b"\xff" * 3 + b"\xff\xd9")
+        code, log = self.embed(b"filled", out, src=src)
+        self.assertEqual(code, 0, log)
+        self.assertDecodes(out, "filled")
+        with open(out, "rb") as f:
+            got = f.read()
+        self.assertEqual(got[-5:], b"\xff" * 3 + b"\xff\xd9")
+        self.assertNotEqual(got[-6], 0xFF)  # three fill bytes, as the cover had
+        self.assertEqual(header_layout(out), header_layout(src))
+
     def test_written_like_a_camera(self):
         # A cover laid out as a camera writes it keeps that layout: its header
         # is copied, and only the scan is new. With the standard tables (as

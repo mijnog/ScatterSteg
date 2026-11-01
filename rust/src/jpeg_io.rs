@@ -27,6 +27,10 @@ const WET_COST: f32 = 1e13;
 /// Largest header (everything before the first scan's data) kept to copy into
 /// the output; past it, the output gets libjpeg's own. As C's JPEG_MAX_HEADER.
 const MAX_HEADER: usize = 16 << 20;
+/// Most 0xFF fill bytes before EOI kept to copy (some cameras write a few:
+/// Reconyx's; libjpeg skips them on reading and writes none). As C's
+/// JPEG_MAX_EOI_FILL.
+const MAX_EOI_FILL: usize = 4096;
 /// Largest coefficient storage load will allocate (1 GiB)
 const MAX_COEF_BYTES: usize = 1 << 30;
 /// Most carriers load will take. Each costs memory of its own beyond its
@@ -215,6 +219,8 @@ pub struct JpegImage {
     pub nonzero_ac: u64,
     /// Bytes after the EOI marker
     trailing_data: bool,
+    /// 0xFF fill bytes just before it, for `write_like_cover`
+    eoi_fill: usize,
     /// How long the cover's header is (from SOI to the end of its first SOS
     /// segment, the start of `_data`), for `write_like_cover`; 0 if it
     /// couldn't be kept
@@ -285,6 +291,7 @@ impl JpegImage {
             virt, comps: Vec::new(), coefs: Vec::new(), costs: Vec::new(),
             nonzero_ac: 0,
             trailing_data: false,
+            eoi_fill: 0,
             _data: Vec::new(),
             // Whole segments ending with the SOS
             header_len: match find_sos(&data[..header_len.min(data.len())]) {
@@ -298,7 +305,9 @@ impl JpegImage {
         // derived from the Box that holds it)
         let s: *mut jpeg_decompress_struct = &mut *img.src;
         // Reading stops at EOI: anything left in the buffer comes after
-        img.trailing_data = unsafe { (*(*s).src).bytes_in_buffer } > 0;
+        let left = unsafe { (*(*s).src).bytes_in_buffer };
+        img.trailing_data = left > 0;
+        img.eoi_fill = count_eoi_fill(&data[..data.len() - left]);
         img.scans = unsafe { (*s).input_scan_number };
         let collected = guarded(|| img.collect_carriers());
         if !matches!(collected, Ok(true)) { return None; } // dropping img destroys the decompressor
@@ -498,7 +507,8 @@ impl JpegImage {
     /// own tables (`Tables::Cover`: the header byte for byte) or, if those
     /// lack a code the changed coefficients need, with optimized ones in the
     /// same slots (`Tables::Optimized`: the header with those tables swapped
-    /// in), as such a cover's encoder optimizes them per image. libjpeg-turbo
+    /// in), as such a cover's encoder optimizes them per image. 0xFF fill
+    /// bytes the cover had before its EOI are written there too. libjpeg-turbo
     /// doesn't say when a table lacks a code (it writes a code of no bits),
     /// so the result is decoded and checked. None if that fails, or
     /// libjpeg's scan header doesn't match the cover's. As C's
@@ -516,11 +526,16 @@ impl JpegImage {
         let sos_len = 2 + be16(&header[cover_sos + 2..]);
         // The same scan header: the same components, tables and spectral range
         if sos + sos_len > out.len() || out[sos..sos + sos_len] != header[cover_sos..] { return None; }
+        // libjpeg ends with EOI: the scan's data, then the cover's fill
+        // bytes, then EOI
+        if out.len() < sos + sos_len + 2 || out[out.len() - 2..] != [0xFF, 0xD9] { return None; }
         let mut joined = match tables {
             Tables::Cover => header.to_vec(),
             _ => with_new_tables(header, &out[..sos])?,
         };
-        joined.extend_from_slice(&out[sos + sos_len..]);
+        joined.extend_from_slice(&out[sos + sos_len..out.len() - 2]);
+        joined.resize(joined.len() + self.eoi_fill + 1, 0xFF);
+        joined.push(0xD9);
         self.decodes_to(&joined).then_some(joined)
     }
 
@@ -682,6 +697,17 @@ fn be16(b: &[u8]) -> usize { (b[0] as usize) << 8 | b[1] as usize }
 
 /// Where the SOS segment starts in a JPEG's bytes, which must be whole
 /// segments from SOI on; None if there's none
+/// The 0xFF fill bytes just before the EOI that `d` (the file up to where
+/// libjpeg stopped reading) ends with, up to MAX_EOI_FILL; 0 if it doesn't
+/// end with an EOI. Entropy-coded data stuffs a 0 after any 0xFF it holds,
+/// so an 0xFF right before the marker's own is fill. As C's count_eoi_fill.
+fn count_eoi_fill(d: &[u8]) -> usize {
+    let n = d.len();
+    if n < 2 || d[n - 2..] != [0xFF, 0xD9] { return 0; }
+    let window = &d[n.saturating_sub(MAX_EOI_FILL + 2)..n - 2];
+    window.iter().rev().take_while(|&&b| b == 0xFF).count().min(MAX_EOI_FILL)
+}
+
 fn find_sos(d: &[u8]) -> Option<usize> {
     if d.len() < 2 || d[..2] != [0xFF, 0xD8] { return None; }
     let mut pos = 2;

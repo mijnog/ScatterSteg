@@ -195,6 +195,15 @@ void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
         write_bit(c, indices, (uint32_t)(start + i), bits[i], plan);
 }
 
+void embed_get_second_bits(const Carrier *c, const uint32_t *indices, size_t start,
+                           size_t n, uint8_t *bits) {
+    int kind = c->img ? KIND_U8 : KIND_COEF;
+    for (size_t i = 0; i < n; i++) {
+        int32_t v = value_of(kind, sample_at(c, indices, (uint32_t)(start + i)));
+        bits[i] = (uint8_t)(((uint32_t)(v + 2048) >> 1) & 1);  /* floor(v / 2) mod 2, v >= -2048 */
+    }
+}
+
 void embed_get_values(const Carrier *c, const uint32_t *indices, size_t start,
                       size_t n, int32_t *values) {
     int kind = c->img ? KIND_U8 : KIND_COEF;

@@ -301,6 +301,14 @@ pub fn set_bits(c: &Carrier, indices: &[u32], start: usize, bits: &[u8], plan: &
     }
 }
 
+/// The second bits, floor(v / 2) mod 2, of samples start .. start+n-1: what
+/// the ternary payload's layer A reads (codec.rs)
+pub fn get_second_bits(c: &Carrier, indices: &[u32], start: usize, bits: &mut [u8]) {
+    for (i, b) in bits.iter_mut().enumerate() {
+        *b = (c.value(c.flat(indices, (start + i) as u32)).div_euclid(2) & 1) as u8;
+    }
+}
+
 /// For the payload's ternary embedding (codec.rs): the values of samples
 /// start .. start+n-1
 pub fn get_values(c: &Carrier, indices: &[u32], start: usize, values: &mut [i32]) {

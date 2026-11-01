@@ -128,15 +128,45 @@ pub fn embed(x: &[u8], costs: &[f32], m: &[u8], mlen: usize, n: usize, y: &mut [
     let mut cols = vec![0u32; widest];
     submatrix(widest, &mut cols);
     let per = chunk_bits(mlen, n);
+    // The chunks are independent (each starts from state 0 and ends where it
+    // likes), so they can run on several threads at once and give the same
+    // y: each gets its own slice of y, and workers take the next chunk in
+    // turn. As C's stc_embed.
+    let mut jobs = Vec::new();
+    let mut rest = &mut y[..n];
     let mut a = 0;
     while a < mlen {
         let b = if mlen - a < per { mlen } else { a + per };
-        let at = block_start(a, mlen, n);
-        embed_chunk(&x[at..], &costs[at..], m, a, b, mlen, n, &cols, &mut y[at..])?;
+        let (at, end) = (block_start(a, mlen, n), block_start(b, mlen, n));
+        let (mine, tail) = rest.split_at_mut(end - at);
+        jobs.push(std::sync::Mutex::new(Some((a, b, at, mine))));
+        rest = tail;
         a += per;
     }
-    Ok(())
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let work = || {
+        use std::sync::atomic::Ordering::Relaxed;
+        loop {
+            let c = next.fetch_add(1, Relaxed);
+            if c >= jobs.len() || failed.load(Relaxed) { return; }
+            let (a, b, at, mine) = jobs[c].lock().unwrap().take().unwrap();
+            if embed_chunk(&x[at..], &costs[at..], m, a, b, mlen, n, &cols, mine).is_err() {
+                failed.store(true, Relaxed);
+            }
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(THREADS_MAX).min(jobs.len());
+    std::thread::scope(|scope| {
+        for _ in 1..threads { scope.spawn(work); }
+        work();
+    });
+    if failed.into_inner() { Err(()) } else { Ok(()) }
 }
+
+/// Threads embed uses at most: each running chunk holds up to 16 MiB of path.
+/// As C's STC_THREADS_MAX.
+const THREADS_MAX: usize = 8;
 
 /// The syndrome of y (n carriers): the mlen message bits
 pub fn extract(y: &[u8], mlen: usize, n: usize, m: &mut [u8]) {

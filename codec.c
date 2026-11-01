@@ -284,10 +284,17 @@ static double h2(double p) {
     return p <= 0 || p >= 1 ? 0 : -p * log2(p) - (1 - p) * log2(1 - p);
 }
 
-/* q for each sample at lambda, and the ternary entropy sum (bits) */
-static double ternary_bits(const float *rho, size_t n, double lambda, double *first) {
+/* The split is computed from at most this many of the costs, evenly spaced,
+   and scaled up: it only has to be about right (the decoder reads it from
+   the image), and over a whole large image the bisection's passes cost tens
+   of seconds */
+#define SPLIT_SAMPLES 65536
+
+/* q for each sample at lambda, and the ternary entropy sum (bits), over
+   every step-th cost */
+static double ternary_bits(const float *rho, size_t n, size_t step, double lambda, double *first) {
     double total = 0, a = 0;
-    for (size_t i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i += step) {
         double e = exp(-lambda * rho[i]);
         double q = e / (1 + 2 * e);
         if (q <= 0) continue;
@@ -298,16 +305,21 @@ static double ternary_bits(const float *rho, size_t n, double lambda, double *fi
     return total;
 }
 
-/* lambda with ternary_bits = m, by bisection; the first layer's share */
+/* lambda with ternary_bits = m, by bisection; the first layer's share.
+   Over every step-th cost (SPLIT_SAMPLES of them at most), m scaled down
+   to match. */
 static uint32_t ternary_split(const float *rho, size_t n, size_t m, double *lambda) {
+    size_t step = n > SPLIT_SAMPLES ? (n + SPLIT_SAMPLES - 1) / SPLIT_SAMPLES : 1;
+    double used = (double)((n + step - 1) / step), target = (double)m * used / (double)n;
     double lo = 0, hi = 1;
-    while (ternary_bits(rho, n, hi, NULL) > (double)m && hi < 1e30) hi *= 2;
+    while (ternary_bits(rho, n, step, hi, NULL) > target && hi < 1e30) hi *= 2;
     for (int it = 0; it < 60; it++) {
         double mid = (lo + hi) / 2;
-        if (ternary_bits(rho, n, mid, NULL) > (double)m) lo = mid; else hi = mid;
+        if (ternary_bits(rho, n, step, mid, NULL) > target) lo = mid; else hi = mid;
     }
     double a;
-    ternary_bits(rho, n, hi, &a);
+    ternary_bits(rho, n, step, hi, &a);
+    a *= (double)n / used;
     *lambda = hi;
     double share = a / (double)m;  /* about a half at low payloads */
     if (!(share >= 0)) share = 0.5;
@@ -337,22 +349,28 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     size_t na = ma ? stc_carriers(u, ma) : 0, nb = mb ? stc_carriers(u, mb) : 0;
     if (!u || (ma && !na) || (mb && !nb)) return NO_MATCH;
 
-    int32_t *v = malloc(u * sizeof(int32_t));
-    uint8_t *y = malloc(u), *m = malloc(mlen);
+    /* Each layer's bits read straight from the samples, one plane at a
+       time: a byte per sample and one per message bit, the most a wrong
+       passphrase's random length can make it hold (THREAT_MODEL.md, A5) */
+    size_t start = length_samples(n, ch);
+    uint8_t *y = malloc(na > nb ? na : nb), *m = malloc(mlen);
     *payload = calloc(*len, 1);
-    if (!v || !y || !m || !*payload) {
-        free(v); free(y); free(m); free(*payload);
+    if (!y || !m || !*payload) {
+        free(y); free(m); free(*payload);
         *payload = NULL;
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    embed_get_values(c, order, length_samples(n, ch), u, v);
-    for (size_t i = 0; i < na; i++) y[i] = second_bit(v[i]);
-    if (ma) stc_extract(y, ma, na, m);
-    for (size_t i = 0; i < nb; i++) y[i] = (uint8_t)(v[i] & 1);
-    if (mb) stc_extract(y, mb, nb, m + ma);
+    if (ma) {
+        embed_get_second_bits(c, order, start, na, y);
+        stc_extract(y, ma, na, m);
+    }
+    if (mb) {
+        embed_get_bits(c, order, start, nb, y);
+        stc_extract(y, mb, nb, m + ma);
+    }
     for (size_t i = 0; i < mlen; i++) (*payload)[i / 8] |= (uint8_t)(m[i] << (i % 8));
-    free(v); free(y); free(m);
+    free(y); free(m);
     return DECODED;
 }
 
@@ -427,10 +445,11 @@ out:
 /* Makes the payload's changes (see ternary_split) at once, and records
    the length's in plan. Returns 0, -1 if it doesn't fit, or -2 if out of
    memory. Where layer A can't carry its share (a cover of mostly 0s or
-   255s, whose second bit no +-1 change flips), it carries less, halving
-   down to nothing: then layer B alone is plain +-1 embedding, which any
-   cover allows. The split is stored with the length, so decoding needs no
-   change. */
+   255s, whose second bit no +-1 change flips, or a message near capacity),
+   it carries less: a half, a quarter, then nothing, when layer B alone is
+   plain +-1 embedding, which any cover allows. Each try costs two
+   trellises over the samples, so four at most. The split is stored with
+   the length, so decoding needs no change. */
 static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
                          const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
     uint32_t ch = carrier_channels(c);
@@ -452,11 +471,11 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
 
     double lambda;
     size_t ma = ternary_split(rho, u, mlen, &lambda);
-    for (;;) {
+    for (int tries = 1;; tries++) {
         r = embed_layers(v, rho, u, lo, hi, lambda, m, mlen, ma, delta);
         if (r != 1) break;
         if (ma == 0) { r = -1; break; }  /* not even +-1 alone: too full */
-        ma /= 2;
+        ma = tries < 3 ? ma / 2 : 0;
     }
     if (r != 0) goto out;
     if (write_length(c, order, n, len, (uint32_t)ma, plan) != 0) { r = -2; goto out; }

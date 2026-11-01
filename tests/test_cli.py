@@ -1334,6 +1334,23 @@ class CliTest(CliBase):
         _, _, after = read_png(out)
         self.assertTrue(all(abs(a - b) <= 1 for rb, ra in zip(before, after) for a, b in zip(ra, rb)))
 
+    def test_saturated_covers(self):
+        # No +-1 change flips the second bit of a 0 (or of a 255) in the
+        # direction layer A needs, so on a cover of mostly 0s or 255s layer A
+        # can't carry its share: the embedder gives it less, down to none
+        # (plain +-1), rather than fail. The prototype failed on such covers.
+        for name, pixel in (("black", lambda x, y: (0,)), ("white", lambda x, y: (255,)),
+                            ("mostly black", lambda x, y: ((x * y) % 7 * 20 if (x + y) % 10 == 0 else 0,))):
+            for size in (10, 400, capacity(96, 96, 1)):  # light, heavy, full
+                with self.subTest(name, size=size):
+                    cover, out = self.path("sat.png"), self.path("steg.png")
+                    write_png(cover, 96, 96, pixel, channels=1)
+                    msg = noise(size, seed=size)
+                    code, log = self.embed(msg, out, src=cover)
+                    self.assertEqual(code, 0, log)
+                    self.assertEqual(self.extract_bytes(out), msg)
+                    self.assertEqual(reveal(out, "correct horse"), msg)
+
     def test_gray_capacity(self):
         gray = self.path("gray.png")
         write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)

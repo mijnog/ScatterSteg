@@ -2,8 +2,10 @@
    Copyright (C) 2026 Maxime de Montbron */
 #include "stc.h"
 #include <math.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Constraint height: the trellis has 2^STC_H states. 7 is the usual
    trade-off: within a few percent of the best possible embedding
@@ -19,7 +21,8 @@
 #define STC_MAX_W  1024
 /* Message bits per trellis run. The trellis is run in independent chunks so
    the path memory (2^STC_H bits per carrier) stays bounded: a chunk spans at
-   most about 2^20 carriers, i.e. 16 MiB of path bits. */
+   most about 2^20 carriers, i.e. 16 MiB of path bits, and up to
+   STC_THREADS_MAX run at once (stc_embed). */
 #define STC_CHUNK_CARRIERS ((size_t)1 << 20)
 
 size_t stc_carriers(size_t n_avail, size_t mlen) {
@@ -124,6 +127,54 @@ static int embed_chunk(const uint8_t *x, const float *costs, const uint8_t *m,
     return 0;
 }
 
+/* The chunks are independent (each starts from state 0 and ends where it
+   likes), so they can run on several threads at once and give the same y.
+   Workers take the next chunk in turn until none is left, or one fails. */
+#define STC_THREADS_MAX 8  /* each running chunk holds up to 16 MiB of path */
+
+typedef struct {
+    const uint8_t *x, *m;
+    const float *costs;
+    const uint32_t *cols;
+    uint8_t *y;
+    size_t mlen, n, per, chunks, next;
+    int failed;
+    pthread_mutex_t lock;
+} Chunks;
+
+static void *run_chunks(void *arg) {
+    Chunks *j = arg;
+    for (;;) {
+        pthread_mutex_lock(&j->lock);
+        size_t c = j->next++;
+        int stop = j->failed || c >= j->chunks;
+        pthread_mutex_unlock(&j->lock);
+        if (stop) return NULL;
+        size_t a = c * j->per, b = j->mlen - a < j->per ? j->mlen : a + j->per;
+        size_t at = block_start(a, j->mlen, j->n);
+        if (embed_chunk(j->x + at, j->costs + at, j->m, a, b, j->mlen, j->n, j->cols, j->y + at) != 0) {
+            pthread_mutex_lock(&j->lock);
+            j->failed = 1;
+            pthread_mutex_unlock(&j->lock);
+        }
+    }
+}
+
+/* Threads to use: one per online CPU, at most STC_THREADS_MAX and one per
+   chunk. One under fault injection and fuzzing, whose builds count calls
+   and must see them in a fixed order. */
+static size_t thread_count(size_t chunks) {
+#if defined(FAULT_H) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
+    (void)chunks;
+    return 1;
+#else
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    size_t t = cpus > 0 ? (size_t)cpus : 1;
+    if (t > STC_THREADS_MAX) t = STC_THREADS_MAX;
+    return t < chunks ? t : chunks;
+#endif
+}
+
 int stc_embed(const uint8_t *x, const float *costs, const uint8_t *m,
               size_t mlen, size_t n, uint8_t *y) {
     size_t widest = n / mlen + 1;
@@ -131,16 +182,16 @@ int stc_embed(const uint8_t *x, const float *costs, const uint8_t *m,
     if (!cols) return -1;
     submatrix(widest, cols);
     size_t per = chunk_bits(mlen, n);
-    for (size_t a = 0; a < mlen; a += per) {
-        size_t b = mlen - a < per ? mlen : a + per;
-        size_t at = block_start(a, mlen, n);
-        if (embed_chunk(x + at, costs + at, m, a, b, mlen, n, cols, y + at) != 0) {
-            free(cols);
-            return -1;
-        }
-    }
+    Chunks j = {x, m, costs, cols, y, mlen, n, per, (mlen + per - 1) / per, 0, 0,
+                PTHREAD_MUTEX_INITIALIZER};
+    pthread_t workers[STC_THREADS_MAX - 1];
+    size_t extra = thread_count(j.chunks) - 1, started = 0;
+    /* A thread that can't start leaves its share to the others */
+    while (started < extra && pthread_create(&workers[started], NULL, run_chunks, &j) == 0) started++;
+    run_chunks(&j);
+    for (size_t i = 0; i < started; i++) pthread_join(workers[i], NULL);
     free(cols);
-    return 0;
+    return j.failed ? -1 : 0;
 }
 
 void stc_extract(const uint8_t *y, size_t mlen, size_t n, uint8_t *m) {

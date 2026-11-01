@@ -244,10 +244,17 @@ fn h2(p: f64) -> f64 {
     if p <= 0.0 || p >= 1.0 { 0.0 } else { -p * p.log2() - (1.0 - p) * (1.0 - p).log2() }
 }
 
-/// The ternary entropy sum (bits) at lambda, and the first layer's share
-fn ternary_bits(rho: &[f32], lambda: f64) -> (f64, f64) {
+/// The split is computed from at most this many of the costs, evenly spaced,
+/// and scaled up: it only has to be about right (the decoder reads it from
+/// the image), and over a whole large image the bisection's passes cost tens
+/// of seconds. As C's SPLIT_SAMPLES.
+const SPLIT_SAMPLES: usize = 65536;
+
+/// The ternary entropy sum (bits) at lambda, and the first layer's share,
+/// over every step-th cost
+fn ternary_bits(rho: &[f32], step: usize, lambda: f64) -> (f64, f64) {
     let (mut total, mut a) = (0.0, 0.0);
-    for &r in rho {
+    for &r in rho.iter().step_by(step) {
         let e = (-lambda * r as f64).exp();
         let q = e / (1.0 + 2.0 * e);
         if q <= 0.0 { continue; }
@@ -257,15 +264,21 @@ fn ternary_bits(rho: &[f32], lambda: f64) -> (f64, f64) {
     (total, a)
 }
 
-/// lambda with ternary_bits = m, by bisection, and the first layer's share
+/// lambda with ternary_bits = m, by bisection, and the first layer's share.
+/// Over every step-th cost (SPLIT_SAMPLES of them at most), m scaled down to
+/// match.
 fn ternary_split(rho: &[f32], m: usize) -> (usize, f64) {
+    let n = rho.len();
+    let step = if n > SPLIT_SAMPLES { n.div_ceil(SPLIT_SAMPLES) } else { 1 };
+    let used = n.div_ceil(step) as f64;
+    let target = m as f64 * used / n as f64;
     let (mut lo, mut hi) = (0.0f64, 1.0f64);
-    while ternary_bits(rho, hi).0 > m as f64 && hi < 1e30 { hi *= 2.0; }
+    while ternary_bits(rho, step, hi).0 > target && hi < 1e30 { hi *= 2.0; }
     for _ in 0..60 {
         let mid = (lo + hi) / 2.0;
-        if ternary_bits(rho, mid).0 > m as f64 { lo = mid; } else { hi = mid; }
+        if ternary_bits(rho, step, mid).0 > target { lo = mid; } else { hi = mid; }
     }
-    let a = ternary_bits(rho, hi).1;
+    let a = ternary_bits(rho, step, hi).1 * n as f64 / used;
     let mut share = a / m as f64; // about a half at low payloads
     if share.is_nan() || share < 0.0 { share = 0.5; }
     if share > 1.0 { share = 1.0; }
@@ -293,16 +306,19 @@ fn read_payload(c: &Carrier, order: &[u32], n: u32) -> Option<Vec<u8>> {
     let nb = if mb > 0 { stc::carriers(u, mb) } else { 0 };
     if u == 0 || (ma > 0 && na == 0) || (mb > 0 && nb == 0) { return None; }
 
-    let mut v = vec![0i32; u];
-    embed::get_values(c, order, length_samples(n, ch), &mut v);
+    // Each layer's bits read straight from the samples, one plane at a time:
+    // a byte per sample and one per message bit, the most a wrong
+    // passphrase's random length can make it hold (THREAT_MODEL.md, A5)
+    let start = length_samples(n, ch);
+    let mut y = vec![0u8; na.max(nb)];
     let mut m = vec![0u8; mlen];
     if ma > 0 {
-        let y: Vec<u8> = v[..na].iter().map(|&x| second_bit(x)).collect();
-        stc::extract(&y, ma, na, &mut m[..ma]);
+        embed::get_second_bits(c, order, start, &mut y[..na]);
+        stc::extract(&y[..na], ma, na, &mut m[..ma]);
     }
     if mb > 0 {
-        let y: Vec<u8> = v[..nb].iter().map(|&x| (x & 1) as u8).collect();
-        stc::extract(&y, mb, nb, &mut m[ma..]);
+        embed::get_bits(c, order, start, &mut y[..nb]);
+        stc::extract(&y[..nb], mb, nb, &mut m[ma..]);
     }
     let mut payload = vec![0u8; len as usize];
     for i in 0..mlen { payload[i / 8] |= m[i] << (i % 8); }
@@ -394,10 +410,11 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
 
 /// Makes the payload's changes at once, and records the length's in plan.
 /// Where layer A can't carry its share (a cover of mostly 0s or 255s, whose
-/// second bit no +-1 change flips), it carries less, halving down to nothing:
-/// then layer B alone is plain +-1 embedding, which any cover allows. The
-/// split is stored with the length, so decoding needs no change. As C's
-/// embed_payload.
+/// second bit no +-1 change flips, or a message near capacity), it carries
+/// less: a half, a quarter, then nothing, when layer B alone is plain +-1
+/// embedding, which any cover allows. Each try costs two trellises over the
+/// samples, so four at most. The split is stored with the length, so
+/// decoding needs no change. As C's embed_payload.
 fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &mut EmbedPlan)
     -> Result<(), EmbedError> {
     let ch = c.channels();
@@ -416,9 +433,11 @@ fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &
 
     let (mut ma, lambda) = ternary_split(&rho, mlen);
     let mut delta = vec![0i8; u];
+    let mut tries = 1;
     while !embed_layers(&v, &rho, range, lambda, &m, ma, &mut delta).map_err(|_| EmbedError::Alloc)? {
         if ma == 0 { return Err(EmbedError::TooLong); } // not even +-1 alone: too full
-        ma /= 2;
+        ma = if tries < 3 { ma / 2 } else { 0 };
+        tries += 1;
     }
     write_length(c, order, n, len, ma as u32, plan).map_err(|_| EmbedError::Alloc)?;
     embed::add(c, order, start, &delta);

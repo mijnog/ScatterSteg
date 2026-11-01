@@ -1,6 +1,6 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c17 -g $(COSTS_FLAGS)
-LIBS    = -lsodium -lpng -ljpeg -lz -lm
+CFLAGS  = -Wall -Wextra -std=c17 -g -pthread $(COSTS_FLAGS)
+LIBS    = -lsodium -lpng -ljpeg -lz -lm -pthread
 
 # Distortion models (distortion.h), for benchmark builds: PNG_COSTS is hill,
 # wow or suniward, JPEG_COSTS uerd or juniward. Images made with any of them
@@ -99,7 +99,7 @@ $(FAULT_DIR)/fault_sodium.o: tests/fault_sodium.c tests/fault.h | $(FAULT_DIR)
 # parallel; crashing inputs are saved as tests/build/fuzz/crash-*.
 FUZZ_DIR    = $(TEST_DIR)/fuzz
 FUZZ_CC     = clang
-FUZZ_CFLAGS = -g -O1 -I. -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
+FUZZ_CFLAGS = -g -O1 -I. -pthread -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
 FUZZ_TIME  ?= 60
 # Small ASan quarantine: big-but-legal decodes otherwise pile up as RSS.
 # A single allocation over the 1 GiB pixel cap still counts as a failure.

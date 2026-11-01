@@ -20,3 +20,9 @@ hill_0.2, suniward_0.4 and uerdall_0.2: 15 epochs from hill_0.4's (the PNG runs)
 juniwardall_0.2 (build b702512, JPEG_COSTS=juniward): 15 epochs from uerdall_0.2's.
 uerdall_0.2 is the every-AC-coefficient rule (build b702512). On the 1,955 test images
 uerd_0.2 kept: P_E 0.0777 (bootstrap sd 0.0039); on the 45 it left out: 0.022.
+pngbin_0.2 / pngtern_0.2 (PNG HILL 0.2 bpp; e43c20e binary64 / ternary1024, ~/bench/dl/queue6.sh;
+Kaggle notebook qpdbqp/scattersteg-srnet-png-ternary-vs-binary v2, 15 epochs from hill_0.2's, seed 0;
+4 nearly black covers left out of both, n_test 1999):
+pngbin_0.2      png   1999  0.2419  AUC 0.8626  P_D@5%FP 0.4992
+pngtern_0.2     png   1999  0.2659  AUC 0.8359  P_D@5%FP 0.4407
+paired bootstrap (300 resamples of the test pairs): ternary - binary = 0.0237, sd 0.0043.

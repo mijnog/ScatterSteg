@@ -461,9 +461,27 @@ locally:
 detect in every run, by 0.011 to 0.017: 1.2 to 1.8 standard errors each,
 consistent across three runs. Taken together: DCTR and SRNet
 favour ternary at light payloads, the ALASKA2 J-UNIWARD model disfavours it
-at 0.4. Ternary is kept for JPEG (2026-11-01); the PNG comparison against
-binary with exchange embedding is being trained, and the port (with the
-pool cap raised from 64 to 1,024 samples per bit) follows it.
+at 0.4. Ternary is kept for JPEG (2026-11-01).
+
+**SRNet, PNG** HILL at 0.2 bits per pixel, the same builds (binary with
+exchange embedding and 64 samples per bit, `pngbin_0.2`; ternary with 1,024,
+`pngtern_0.2`), 15 epochs from `hill_0.2`'s detector, on Kaggle, seed 0.
+The 4 covers the prototype then couldn't embed in (nearly all black; fixed
+since) are left out of both sets, so 1,999 test pairs:
+
+| | P_E | AUC | Caught at 5% false alarms |
+|---|---|---|---|
+| binary with exchange | 0.242 | 0.863 | 50% |
+| ternary | 0.266 | 0.836 | 44% |
+
+On the same test images, a paired bootstrap puts the difference at 0.024 ±
+0.004: ternary is harder to detect, by 1.4 to 2.2 times the JPEG gaps, as the
+literature expects for the spatial domain (Butora and Fridrich: ternary
+gains most where quantization is fine). One seed, and the pool caps differ
+(64 against 1,024; for JPEG, DCTR saw no difference between binary at 64 and
+1,024, which hasn't been checked for PNG). So ternary replaces the exchange
+embedding for PNG too; the port (with the pool cap raised to 1,024 samples
+per bit) follows.
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

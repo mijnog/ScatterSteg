@@ -28,8 +28,9 @@ enum { DECODED, NO_MATCH, FAILED };
 #define CODEC_SUGGESTED_PNG_BYTES  3
 #define CODEC_SUGGESTED_JPEG_BYTES 1
 /* What every message stores besides its text and file name: salt 16,
-   length 4, MAC 16, encoding 1, name length 1 */
-#define CODEC_FIXED_BYTES 38
+   length region 8 (the length, and layer A's share), MAC 16, encoding 1,
+   name length 1 */
+#define CODEC_FIXED_BYTES 42
 /* A cover this smooth gets no suggestion, as a trained detector finds
    almost any message in it: a mean prediction residual (|4x - the four
    neighbours| / 4 per sample) under 1.7 (PNG: the smoothest fifth of

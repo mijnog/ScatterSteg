@@ -758,6 +758,8 @@ static int do_embed(const Options *o) {
         goto done;
     }
 
+    /* The slow step on a big image: say so, so it doesn't look hung */
+    if (!o->quiet) fprintf(stderr, "Embedding...\n");
     int embedded = codec_embed(prep, &cover.carrier, name, (const uint8_t *)message,
                                (uint32_t)message_len, o->level, &stored);
     prep = NULL;  /* codec_embed freed it */

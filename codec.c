@@ -25,41 +25,30 @@
               256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
               and 2 of master, context KDF_CONTEXT
      order    prng_permutation(scatter key) with the salt pixels removed
-     payload  secretbox, nonce all zeros: its 32-bit little-endian length as
-              the STC syndrome of the first length_samples samples in that
-              order, then its bits as the STC syndrome of the samples after
-              them (see payload_carriers), both with the same costs
+     payload  secretbox, nonce all zeros: its 32-bit little-endian length,
+              and the 32-bit count of its bits in the first ternary layer,
+              as the STC syndrome of the first length_samples samples in
+              that order; then its bits in two layers over the samples after
+              them, the second LSBs then the LSBs (see embed_payload), all
+              with the same costs
      message  the secretbox's plaintext: [encoding 1 | body], the body raw
               DEFLATE (encoding 1) of the record if that made it shorter,
               else the record as is (0); the record is [name length 1 |
               file name | message] (see pack_message, name_ok)
 
-   Every pixel carries one bit per sample (R, G, B, or gray LSBs); a JPEG,
-   one per carrier coefficient. There is no header or version marker,
+   Every sample (R, G, B or gray; a JPEG's carrier coefficients) changes by
+   at most 1. There is no header or version marker,
    which would itself give the image away. */
 
 #define SALT_BYTES      crypto_pwhash_SALTBYTES             /* 16 */
 #define SALT_SAMPLES    8192  /* the salt region, when the image allows */
 #define LENGTH_SAMPLES  2048  /* the length's, when the image allows: the salt's density */
 
-/* The payload's coder. Binary: the box's bits are the syndrome of the
-   samples' LSBs, and each change's direction is free (exchange embedding
-   uses it). Ternary (benchmark builds, `make STC=ternary`; a prototype, its
-   images don't decode with a binary build): two binary layers, the second
-   LSB plane then the LSBs, so the direction of a change carries bits too.
-   The length region then also carries how many bits the first layer holds. */
-#define STC_BINARY  0
-#define STC_TERNARY 1
-#ifndef SCATTERSTEG_STC
-#define SCATTERSTEG_STC STC_BINARY
-#endif
-#if SCATTERSTEG_STC == STC_TERNARY
+/* The payload is coded ternary (see embed_payload): two binary STC layers,
+   the second LSB plane then the LSBs, so the direction of a +-1 change
+   carries bits too. The length region carries the length and how many bits
+   the first layer holds, 32 bits each. */
 #define LENGTH_BITS 64
-#elif SCATTERSTEG_STC == STC_BINARY
-#define LENGTH_BITS 32
-#else
-#error "SCATTERSTEG_STC must be STC_BINARY or STC_TERNARY"
-#endif
 /* The labels are part of the format; "v2" is history, not a version */
 #define SALT_LABEL      "ScatterSteg v2 salt positions"
 #define KDF_CONTEXT     "ScatStg2"                          /* exactly 8 chars */
@@ -228,16 +217,8 @@ static size_t payload_samples(uint32_t n, uint32_t ch) {
     return total < k ? 0 : total - k;
 }
 
-#if SCATTERSTEG_STC == STC_BINARY
-/* How many samples after the length's carry a len-byte payload's syndrome
-   (*mlen = 8 * len message bits); 0 if it doesn't fit */
-static size_t payload_carriers(uint32_t n, uint32_t ch, uint32_t len, size_t *mlen) {
-    *mlen = (size_t)len * 8;
-    return stc_carriers(payload_samples(n, ch), *mlen);
-}
-#endif
 
-/* The length (and, for ternary, the first layer's bit count), from the
+/* The length and the first layer's bit count (split), from the
    first length_samples samples. 0, or -1 if out of memory. */
 static int read_length(const Carrier *c, const uint32_t *order, uint32_t n, uint32_t *len,
                        uint32_t *split) {
@@ -262,7 +243,6 @@ static int write_length(const Carrier *c, const uint32_t *order, uint32_t n, uin
     uint8_t *x = malloc(used), *y = malloc(used), m[LENGTH_BITS];
     float *costs = malloc(used * sizeof(float));
     int r = -1;
-    (void)split;
     if (x && y && costs) {
         for (int i = 0; i < 32; i++) m[i] = (len >> i) & 1;
         for (int i = 32; i < LENGTH_BITS; i++) m[i] = (split >> (i - 32)) & 1;
@@ -277,7 +257,6 @@ static int write_length(const Carrier *c, const uint32_t *order, uint32_t n, uin
     return r;
 }
 
-#if SCATTERSTEG_STC == STC_TERNARY
 /* Ternary embedding by two binary STC layers (Filler, Judas and Fridrich
    2011, the multi-layered construction). A +-1 change flips a value's LSB
    either way, and its second bit (floor(v / 2) mod 2) in exactly one
@@ -337,13 +316,11 @@ static uint32_t ternary_split(const float *rho, size_t n, size_t m, double *lamb
 }
 
 /* Samples the layers run over, from the n_avail after the length's: as
-   many as a layer of half the message can use (64 per bit, STC_MAX_W) */
+   many as a layer of half the message can use (STC_MAX_W per bit) */
 static size_t ternary_samples(size_t n_avail, size_t mlen) {
     return stc_carriers(n_avail, (mlen + 1) / 2);
 }
-#endif
 
-#if SCATTERSTEG_STC == STC_TERNARY
 /* The payload, from both layers (see ternary_split). NO_MATCH if the
    length or split doesn't fit, as for a wrong passphrase. */
 static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
@@ -488,67 +465,6 @@ out:
     free(v); free(rho); free(m); free(delta);
     return r;
 }
-#else
-/* The payload (see payload_samples). NO_MATCH if the length doesn't fit,
-   as for a wrong passphrase. */
-static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
-                        uint8_t **payload, uint32_t *len) {
-    if (n < header_pixels(carrier_channels(c))) return NO_MATCH;
-    uint32_t split;
-    if (read_length(c, order, n, len, &split) != 0) {
-        fprintf(stderr, "Error: allocation failed\n");
-        return FAILED;
-    }
-    size_t mlen;
-    size_t used = *len < BOX_OVERHEAD ? 0 : payload_carriers(n, carrier_channels(c), *len, &mlen);
-    if (!used) return NO_MATCH;
-
-    uint8_t *y = malloc(used), *m = malloc(mlen);
-    *payload = calloc(*len, 1);
-    if (!y || !m || !*payload) {
-        free(y); free(m); free(*payload);
-        *payload = NULL;
-        fprintf(stderr, "Error: allocation failed\n");
-        return FAILED;
-    }
-    embed_get_bits(c, order, length_samples(n, carrier_channels(c)), used, y);
-    stc_extract(y, mlen, used, m);
-    for (size_t i = 0; i < mlen; i++) (*payload)[i / 8] |= (uint8_t)(m[i] << (i % 8));
-    free(y);
-    free(m);
-    return DECODED;
-}
-
-/* Records the changes for payload (see payload_samples) in plan: the
-   STC picks, among all sample bits with the right syndrome, the set
-   cheapest to reach under embed_costs. Returns 0, -1 if it doesn't fit,
-   or -2 if out of memory. */
-static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
-                         const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
-    size_t mlen;
-    size_t used = payload_carriers(n, carrier_channels(c), len, &mlen);
-    if (!used) return -1;
-
-    if (write_length(c, order, n, len, 0, plan) != 0) return -2;
-
-    size_t start = length_samples(n, carrier_channels(c));
-    uint8_t *x = malloc(used), *y = malloc(used), *m = malloc(mlen);
-    float *costs = malloc(used * sizeof(float));
-    int r = -2;
-    if (x && y && m && costs) {
-        for (size_t i = 0; i < mlen; i++) m[i] = (payload[i / 8] >> (i % 8)) & 1;
-        embed_get_bits(c, order, start, used, x);
-        embed_costs(c, order, start, used, costs);
-        if (stc_embed(x, costs, m, mlen, used, y) == 0) {
-            embed_set_bits(c, order, start, used, y, plan);
-            r = 0;
-        }
-    }
-    free(x); free(y); free(m); free(costs);
-    return r;
-}
-
-#endif
 
 /* The message is compressed when that makes it shorter: fewer bits to
    hide, so fewer changes. zlib's buffers hold the message, so they come

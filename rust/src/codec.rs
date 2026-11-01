@@ -14,17 +14,19 @@
 //!            256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
 //!            and 2 of master, context KDF_CONTEXT
 //!   order    prng::permutation(scatter key) with the salt pixels removed
-//!   payload  secretbox, nonce all zeros: its 32-bit little-endian length as the
-//!            STC syndrome of the first length_samples samples in that
-//!            order, then its bits as the STC syndrome of the samples after
-//!            them (see payload_carriers), both with the same costs
+//!   payload  secretbox, nonce all zeros: its 32-bit little-endian length,
+//!            and the 32-bit count of its bits in the first ternary layer,
+//!            as the STC syndrome of the first length_samples samples in
+//!            that order; then its bits in two layers over the samples after
+//!            them, the second LSBs then the LSBs (see embed_payload), all
+//!            with the same costs
 //!   message  the secretbox's plaintext: [encoding 1 | body], the body raw
 //!            DEFLATE (encoding 1) of the record if that made it shorter,
 //!            else the record as is (0); the record is [name length 1 | file
 //!            name | message] (see compress.rs)
 //!
-//! Every pixel carries one bit per sample (R, G, B, or gray LSBs); a JPEG,
-//! one per carrier coefficient. There is no header or version marker, which
+//! Every sample (R, G, B or gray; a JPEG's carrier coefficients) changes by at
+//! most 1. There is no header or version marker, which
 //! would itself give the image away.
 
 use crate::embed::{self, Carrier, EmbedPlan};
@@ -37,6 +39,9 @@ use zeroize::Zeroizing;
 const SALT_SAMPLES: u32 = 8192;
 /// The length's, in samples, when the image allows: the salt's density
 const LENGTH_SAMPLES: usize = 2048;
+/// The length region's bits: the box's length, then how many of its bits the
+/// first ternary layer holds, 32 bits each. As C's LENGTH_BITS.
+const LENGTH_BITS: usize = 64;
 // The labels are part of the format; "v2" is history, not a version
 const SALT_LABEL: &[u8] = b"ScatterSteg v2 salt positions";
 const KDF_CONTEXT: &[u8; 8] = b"ScatStg2";
@@ -55,8 +60,9 @@ const ZERO_NONCE: [u8; NONCE_BYTES] = [0; NONCE_BYTES];
 pub const SUGGESTED_PNG_BYTES: u64 = 3;
 pub const SUGGESTED_JPEG_BYTES: u64 = 1;
 /// What every message stores besides its text and file name: salt 16,
-/// length 4, MAC 16, encoding 1, name length 1
-pub const FIXED_BYTES: u64 = 38;
+/// length region 8 (the length, and layer A's share), MAC 16, encoding 1,
+/// name length 1
+pub const FIXED_BYTES: u64 = 42;
 /// A cover this smooth gets no suggestion, as a trained detector finds almost
 /// any message in it: a mean prediction residual (|4x - the four neighbours|
 /// / 4 per sample) under 1.7 (PNG: the smoothest fifth of BOSSbase, caught
@@ -89,7 +95,7 @@ fn salt_carriers(k: u32, channels: u32) -> usize {
 
 /// The fewest positions a payload order needs: one sample per length bit
 pub fn header_pixels(channels: u32) -> u32 {
-    32u32.div_ceil(channels)
+    (LENGTH_BITS as u32).div_ceil(channels)
 }
 
 /// The salt, read from the region's sample bits
@@ -162,7 +168,7 @@ fn payload_order(scatter_key: &[u8; 32], count: u32, salt_px: &[u32]) -> Option<
 }
 
 // The payload's layout over n positions of ch samples, shared by encode and
-// decode so it can't drift between them: the 32-bit length is the STC
+// decode so it can't drift between them: the length region is the STC
 // syndrome of the first length_samples samples, and the payload's bits the
 // STC syndrome of the samples after them. Writing the length straight into 32
 // samples' bits would change about 16 of them wherever they fall, whatever
@@ -173,7 +179,7 @@ fn payload_order(scatter_key: &[u8; 32], count: u32, salt_px: &[u32]) -> Option<
 /// Samples carrying the length: LENGTH_SAMPLES, at most 1/16 of the n
 /// positions' samples, never fewer than one per length bit
 fn length_samples(n: u32, ch: u32) -> usize {
-    (n as usize * ch as usize / 16).clamp(32, LENGTH_SAMPLES)
+    (n as usize * ch as usize / 16).clamp(LENGTH_BITS, LENGTH_SAMPLES)
 }
 
 /// Samples after the length's; 0 if the length doesn't fit
@@ -181,50 +187,124 @@ fn payload_samples(n: u32, ch: u32) -> usize {
     (n as usize * ch as usize).saturating_sub(length_samples(n, ch))
 }
 
-/// The length, from the first length_samples samples
-fn read_length(c: &Carrier, order: &[u32], n: u32) -> u32 {
-    let used = stc::carriers(length_samples(n, c.channels()), 32);
+/// The length and the first layer's bit count (split), from the first
+/// length_samples samples
+fn read_length(c: &Carrier, order: &[u32], n: u32) -> (u32, u32) {
+    let used = stc::carriers(length_samples(n, c.channels()), LENGTH_BITS);
     let mut y = vec![0u8; used];
-    let mut m = [0u8; 32];
+    let mut m = [0u8; LENGTH_BITS];
     embed::get_bits(c, order, 0, &mut y);
-    stc::extract(&y, 32, used, &mut m);
-    (0..32).fold(0u32, |len, i| len | (m[i] as u32) << i)
+    stc::extract(&y, LENGTH_BITS, used, &mut m);
+    let word = |from: usize| (0..32).fold(0u32, |w, i| w | (m[from + i] as u32) << i);
+    (word(0), word(32))
 }
 
 /// Records the changes that make the first length_samples samples carry len
-fn write_length(c: &Carrier, order: &[u32], n: u32, len: u32, plan: &mut EmbedPlan) -> Result<(), ()> {
-    let used = stc::carriers(length_samples(n, c.channels()), 32);
-    let m: [u8; 32] = std::array::from_fn(|i| ((len >> i) & 1) as u8);
+/// and split
+fn write_length(c: &Carrier, order: &[u32], n: u32, len: u32, split: u32, plan: &mut EmbedPlan)
+    -> Result<(), ()> {
+    let used = stc::carriers(length_samples(n, c.channels()), LENGTH_BITS);
+    let m: [u8; LENGTH_BITS] = std::array::from_fn(|i| {
+        let w = if i < 32 { len } else { split };
+        ((w >> (i % 32)) & 1) as u8
+    });
     let mut x = vec![0u8; used];
     let mut y = vec![0u8; used];
     let mut costs = vec![0f32; used];
     embed::get_bits(c, order, 0, &mut x);
     embed::costs(c, order, 0, &mut costs);
-    stc::embed(&x, &costs, &m, 32, used, &mut y)?;
+    stc::embed(&x, &costs, &m, LENGTH_BITS, used, &mut y)?;
     embed::set_bits(c, order, 0, &y, plan);
     Ok(())
 }
 
-/// How many samples after the length's carry a len-byte payload's syndrome
-/// (and 8 * len message bits); 0 if it doesn't fit
-fn payload_carriers(n: u32, ch: u32, len: u32) -> (usize, usize) {
-    let mlen = len as usize * 8;
-    (stc::carriers(payload_samples(n, ch), mlen), mlen)
+// Ternary embedding by two binary STC layers (Filler, Judas and Fridrich
+// 2011, the multi-layered construction). A +-1 change flips a value's LSB
+// either way, and its second bit (floor(v / 2) mod 2) in exactly one
+// direction: +1 from an odd value, -1 from an even one. So layer A carries mA
+// bits as the syndrome of the second bits, and layer B the rest as the
+// syndrome of the LSBs, where a sample whose second bit flipped must flip its
+// LSB too, and any other can still change the other way, flipping its LSB
+// alone. Both run over the same samples; layer A first, so every sample can
+// carry it (the other order would leave layer B only the few samples layer A
+// changed).
+//
+// With symmetric costs rho, the changes that minimize distortion for m bits
+// change each sample by +1 and by -1 with probability q = e / (1 + 2e) each,
+// e = exp(-lambda rho), lambda set so the ternary entropies add up to m.
+// Layer A then flips a second bit with probability q (cost
+// ln(1 + exp(lambda rho)), mA = sum of h(q)), layer B an LSB alone with
+// q / (1 - q) (cost lambda rho). As C's codec.c: the split needn't match C's
+// to the bit, as it is stored, but the arithmetic is the same.
+
+/// floor(v / 2) mod 2
+fn second_bit(v: i32) -> u8 { (v.div_euclid(2) & 1) as u8 }
+
+fn h2(p: f64) -> f64 {
+    if p <= 0.0 || p >= 1.0 { 0.0 } else { -p * p.log2() - (1.0 - p) * (1.0 - p).log2() }
 }
 
-/// The payload (see payload_samples). None if the length doesn't fit, as for
-/// a wrong passphrase.
-fn read_payload(c: &Carrier, order: &[u32], n: u32) -> Option<Vec<u8>> {
-    if n < header_pixels(c.channels()) { return None; }
-    let len = read_length(c, order, n);
-    let (used, mlen) = payload_carriers(n, c.channels(), len);
-    if (len as usize) < BOX_OVERHEAD || used == 0 { return None; }
+/// The ternary entropy sum (bits) at lambda, and the first layer's share
+fn ternary_bits(rho: &[f32], lambda: f64) -> (f64, f64) {
+    let (mut total, mut a) = (0.0, 0.0);
+    for &r in rho {
+        let e = (-lambda * r as f64).exp();
+        let q = e / (1.0 + 2.0 * e);
+        if q <= 0.0 { continue; }
+        total += -2.0 * q * q.log2() - (1.0 - 2.0 * q) * (1.0 - 2.0 * q).log2();
+        a += h2(q);
+    }
+    (total, a)
+}
 
-    let mut y = vec![0u8; used];
+/// lambda with ternary_bits = m, by bisection, and the first layer's share
+fn ternary_split(rho: &[f32], m: usize) -> (usize, f64) {
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    while ternary_bits(rho, hi).0 > m as f64 && hi < 1e30 { hi *= 2.0; }
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if ternary_bits(rho, mid).0 > m as f64 { lo = mid; } else { hi = mid; }
+    }
+    let a = ternary_bits(rho, hi).1;
+    let mut share = a / m as f64; // about a half at low payloads
+    if share.is_nan() || share < 0.0 { share = 0.5; }
+    if share > 1.0 { share = 1.0; }
+    ((share * m as f64 + 0.5) as usize, hi)
+}
+
+/// Samples the layers run over, from the n_avail after the length's: as many
+/// as a layer of half the message can use (STC_MAX_W per bit)
+fn ternary_samples(n_avail: usize, mlen: usize) -> usize {
+    stc::carriers(n_avail, mlen.div_ceil(2))
+}
+
+/// The payload, from both layers. None if the length or split doesn't fit,
+/// as for a wrong passphrase.
+fn read_payload(c: &Carrier, order: &[u32], n: u32) -> Option<Vec<u8>> {
+    let ch = c.channels();
+    if n < header_pixels(ch) { return None; }
+    let (len, split) = read_length(c, order, n);
+    let (mlen, avail) = (len as usize * 8, payload_samples(n, ch));
+    let ma = split as usize;
+    if (len as usize) < BOX_OVERHEAD || mlen > avail || ma > mlen { return None; }
+    let u = ternary_samples(avail, mlen);
+    let mb = mlen - ma;
+    let na = if ma > 0 { stc::carriers(u, ma) } else { 0 };
+    let nb = if mb > 0 { stc::carriers(u, mb) } else { 0 };
+    if u == 0 || (ma > 0 && na == 0) || (mb > 0 && nb == 0) { return None; }
+
+    let mut v = vec![0i32; u];
+    embed::get_values(c, order, length_samples(n, ch), &mut v);
     let mut m = vec![0u8; mlen];
+    if ma > 0 {
+        let y: Vec<u8> = v[..na].iter().map(|&x| second_bit(x)).collect();
+        stc::extract(&y, ma, na, &mut m[..ma]);
+    }
+    if mb > 0 {
+        let y: Vec<u8> = v[..nb].iter().map(|&x| (x & 1) as u8).collect();
+        stc::extract(&y, mb, nb, &mut m[ma..]);
+    }
     let mut payload = vec![0u8; len as usize];
-    embed::get_bits(c, order, length_samples(n, c.channels()), &mut y);
-    stc::extract(&y, mlen, used, &mut m);
     for i in 0..mlen { payload[i / 8] |= m[i] << (i % 8); }
     Some(payload)
 }
@@ -241,25 +321,106 @@ pub enum EmbedError {
     Alloc,
 }
 
-/// Records the changes for payload (see payload_samples) in plan: the STC
-/// picks, among all sample bits with the right syndrome, the set cheapest to
-/// reach under embed::costs.
-fn embed_payload(c: &Carrier, order: &[u32], n: u32, payload: &[u8], plan: &mut EmbedPlan)
+/// A large finite cost (as jpeg_io's wet carriers): the trellis avoids it
+/// unless it has no other way, and embed_layers checks it didn't
+const TERNARY_WET: f32 = 1e13;
+
+/// Both layers, with ma of the mlen bits in layer A: the changes into delta.
+/// Ok(true), Ok(false) if they can't be made by +-1 (the trellis had to pay a
+/// wet cost, or found no path). As C's embed_layers.
+#[allow(clippy::too_many_arguments)]
+fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[u8], ma: usize,
+                delta: &mut [i8]) -> bool {
+    let (u, mlen) = (v.len(), m.len());
+    let mb = mlen - ma;
+    let na = if ma > 0 { stc::carriers(u, ma) } else { 0 };
+    let nb = if mb > 0 { stc::carriers(u, mb) } else { 0 };
+    if (ma > 0 && na == 0) || (mb > 0 && nb == 0) { return false; }
+    delta.fill(0);
+    let mut x = vec![0u8; u];
+    let mut cost = vec![0f32; u];
+    let mut ya = vec![0u8; u];
+    let mut yb = vec![0u8; u];
+
+    // Layer A: second bits; flipping one takes +1 from odd, -1 from even
+    for i in 0..na {
+        let t = v[i] + if v[i] & 1 != 0 { 1 } else { -1 };
+        let lr = lambda * rho[i] as f64;
+        let k = if lr > 30.0 { lr } else { lr.exp().ln_1p() }; // ln(1 + e^(lambda rho))
+        x[i] = second_bit(v[i]);
+        cost[i] = if t < lo || t > hi || k > TERNARY_WET as f64 { TERNARY_WET } else { k as f32 };
+    }
+    if ma > 0 && stc::embed(&x[..na], &cost[..na], &m[..ma], ma, na, &mut ya[..na]).is_err() { return false; }
+    for i in 0..na { ya[i] = (ya[i] != x[i]) as u8; } // now: flipped
+
+    // Layer B: LSBs. A sample layer A flipped must flip its LSB too (its
+    // starting bit given as the flipped one, kept at a wet cost); any other
+    // can flip it alone, the way that keeps its second bit (from an odd value
+    // -1, from an even +1), or either way past layer A.
+    for i in 0..nb {
+        let lsb = (v[i] & 1) as u8;
+        if i < na && ya[i] != 0 {
+            x[i] = 1 - lsb;
+            cost[i] = TERNARY_WET;
+        } else {
+            let t = v[i] + if lsb != 0 { -1 } else { 1 };
+            x[i] = lsb;
+            cost[i] = if i < na && (t < lo || t > hi) { TERNARY_WET } else { rho[i] };
+        }
+    }
+    if mb > 0 && stc::embed(&x[..nb], &cost[..nb], &m[ma..], mb, nb, &mut yb[..nb]).is_err() { return false; }
+
+    // The changes; a wet cost the trellis had to pay means no +-1 change
+    // gives both layers' bits: no change by 2, the caller tries again
+    for i in 0..u {
+        let a = i < na && ya[i] != 0;
+        let b = i < nb && yb[i] != (v[i] & 1) as u8;
+        if a && i < nb && !b { return false; }
+        delta[i] = if a {
+            if v[i] & 1 != 0 { 1 } else { -1 }
+        } else if b && i < na {
+            if v[i] & 1 != 0 { -1 } else { 1 }
+        } else if b {
+            let mut coin = [0u8; 1];
+            sodium::random_bytes(&mut coin);
+            if v[i] == lo { 1 } else if v[i] == hi { -1 } else if coin[0] & 1 != 0 { 1 } else { -1 }
+        } else { 0 };
+        let t = v[i] + delta[i] as i32;
+        if t < lo || t > hi { return false; }
+    }
+    true
+}
+
+/// Makes the payload's changes at once, and records the length's in plan.
+/// Where layer A can't carry its share (a cover of mostly 0s or 255s, whose
+/// second bit no +-1 change flips), it carries less, halving down to nothing:
+/// then layer B alone is plain +-1 embedding, which any cover allows. The
+/// split is stored with the length, so decoding needs no change. As C's
+/// embed_payload.
+fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &mut EmbedPlan)
     -> Result<(), EmbedError> {
+    let ch = c.channels();
     let len = payload.len() as u32;
-    let (used, mlen) = payload_carriers(n, c.channels(), len);
-    if used == 0 { return Err(EmbedError::TooLong); }
-    write_length(c, order, n, len, plan).map_err(|_| EmbedError::Alloc)?;
-    let start = length_samples(n, c.channels());
+    let (mlen, avail) = (payload.len() * 8, payload_samples(n, ch));
+    if mlen == 0 || mlen > avail { return Err(EmbedError::TooLong); }
+    let (u, start) = (ternary_samples(avail, mlen), length_samples(n, ch));
+    if u == 0 { return Err(EmbedError::TooLong); }
 
     let m: Vec<u8> = (0..mlen).map(|i| (payload[i / 8] >> (i % 8)) & 1).collect();
-    let mut x = vec![0u8; used];
-    let mut y = vec![0u8; used];
-    let mut costs = vec![0f32; used];
-    embed::get_bits(c, order, start, &mut x);
-    embed::costs(c, order, start, &mut costs);
-    stc::embed(&x, &costs, &m, mlen, used, &mut y).map_err(|_| EmbedError::Alloc)?;
-    embed::set_bits(c, order, start, &y, plan);
+    let mut v = vec![0i32; u];
+    let mut rho = vec![0f32; u];
+    embed::get_values(c, order, start, &mut v);
+    embed::costs(c, order, start, &mut rho);
+    let range = embed::value_range(c);
+
+    let (mut ma, lambda) = ternary_split(&rho, mlen);
+    let mut delta = vec![0i8; u];
+    while !embed_layers(&v, &rho, range, lambda, &m, ma, &mut delta) {
+        if ma == 0 { return Err(EmbedError::TooLong); } // not even +-1 alone: too full
+        ma /= 2;
+    }
+    write_length(c, order, n, len, ma as u32, plan).map_err(|_| EmbedError::Alloc)?;
+    embed::add(c, order, start, &delta);
     Ok(())
 }
 

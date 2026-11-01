@@ -18,7 +18,7 @@
 const STC_H: u32 = 7;
 const STATES: usize = 1 << STC_H;
 /// Carriers per message bit, at most
-const STC_MAX_W: usize = 64;
+const STC_MAX_W: usize = 1024;
 /// Message bits per trellis run are chosen so a run spans at most about this
 /// many carriers, which bounds the path memory
 const STC_CHUNK_CARRIERS: usize = 1 << 20;

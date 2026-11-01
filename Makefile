@@ -7,13 +7,9 @@ LIBS    = -lsodium -lpng -ljpeg -lz -lm
 # read back with every build. Rebuild from clean after changing them.
 PNG_COSTS  ?= hill
 JPEG_COSTS ?= uerd
-# The payload's coder (codec.c): binary, or ternary, a prototype whose
-# images only read back with a ternary build
-STC        ?= binary
 upper       = $(shell echo $(1) | tr a-z A-Z)
 COSTS_FLAGS = -DSCATTERSTEG_PNG_COSTS=COSTS_$(call upper,$(PNG_COSTS)) \
-              -DSCATTERSTEG_JPEG_COSTS=COSTS_$(call upper,$(JPEG_COSTS)) \
-              -DSCATTERSTEG_STC=STC_$(call upper,$(STC))
+              -DSCATTERSTEG_JPEG_COSTS=COSTS_$(call upper,$(JPEG_COSTS))
 
 SRCS    = main.c codec.c prng.c embed.c stc.c png_io.c jpeg_io.c atomic_write.c distortion.c
 OBJS    = $(SRCS:.c=.o)

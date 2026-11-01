@@ -40,11 +40,11 @@ static size_t roundtrip(size_t n_avail, size_t mlen, const float *costs_or_null,
 
 static void test_roundtrips(void) {
     /* Every width regime: 1 (full), between 1 and 2, exact multiples,
-       fractional, and the 64 cap; tiny messages too */
+       fractional, and the 1024 cap; tiny messages too */
     struct { size_t n, mlen; } cases[] = {
         {1, 1}, {7, 7}, {100, 1}, {100, 3}, {1000, 999}, {1000, 600},
         {1000, 500}, {1000, 499}, {1000, 333}, {10000, 37}, {100000, 1000},
-        {100000, 99999}, {5000, 50},
+        {100000, 99999}, {5000, 50}, {200000, 100},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         int ok;
@@ -113,7 +113,8 @@ static void test_carriers(void) {
     CHECK(stc_carriers(99, 100) == 0);
     CHECK(stc_carriers(100, 100) == 100);
     CHECK(stc_carriers(150, 100) == 150);
-    CHECK(stc_carriers(1000000, 10) == 640);  /* capped at 64 per bit */
+    CHECK(stc_carriers(1000000, 10) == 10240);  /* capped at 1024 per bit */
+    CHECK(stc_carriers(10239, 10) == 10239);
 }
 
 static void test_known_answer(void) {

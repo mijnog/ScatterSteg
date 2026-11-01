@@ -323,6 +323,12 @@ def read_bits(rows, w, order, start, n, ch=3):
     return out
 
 
+def sample(rows, w, order, i, ch):
+    """Sample i of an order of pixels, ch samples each"""
+    p = order[i // ch]
+    return rows[p // w][(p % w) * ch + i % ch]
+
+
 def set_bits(rows, w, order, start, bits, ch):
     for i, bit in enumerate(bits):
         p = order[(start + i) // ch]
@@ -448,7 +454,7 @@ def payload_order(scatter_key, count, salt_px):
 
 # -- STC syndrome coding (see stc.h)
 
-STC_H, STC_MAX_W, STC_CHUNK = 7, 64, 1 << 20
+STC_H, STC_MAX_W, STC_CHUNK = 7, 1024, 1 << 20
 
 
 def stc_carriers(n_avail, mlen):
@@ -518,11 +524,12 @@ def stc_solve(x, m, n):
 
 SALT_SAMPLES = 8192
 LENGTH_SAMPLES = 2048
+LENGTH_BITS = 64  # the box's length, then how many of its bits layer A holds
 
 
 def length_samples(n, ch):
-    """Samples of an n-position payload order carrying the 32-bit length"""
-    return max(min(n * ch // 16, LENGTH_SAMPLES), 32)
+    """Samples of an n-position payload order carrying the length region"""
+    return max(min(n * ch // 16, LENGTH_SAMPLES), LENGTH_BITS)
 
 
 def salt_region_pixels(count, ch):
@@ -556,8 +563,11 @@ def layout(rows, w, h, pw):
 def forge(src, dst, message, passphrase, plaintext=None, name=b""):
     """Embed `message` (stored with `name`) the way scattersteg embed does,
     without its checks (so an empty message or a bad name are allowed), or
-    the secretbox's `plaintext` as given. Overwrites LSBs; decoding can't tell the difference from LSB
-    matching."""
+    the secretbox's `plaintext` as given. Everything goes in layer B (a
+    split of 0: the LSBs alone, which the format allows and decoders must
+    read), and LSBs are overwritten; decoding can't tell that from +-1.
+    read_box decodes both layers, so images made by the binaries check
+    layer A too."""
     w, h, rows = read_png(src)
     rows = [bytearray(r) for r in rows]
     ch = len(rows[0]) // w
@@ -570,30 +580,44 @@ def forge(src, dst, message, passphrase, plaintext=None, name=b""):
     order = payload_order(scatter_key, w * h, salt_px)
     box = seal(pack(message, name) if plaintext is None else plaintext, enc_key)
     k = length_samples(len(order), ch)
-    used = stc_carriers(k, 32)
+    used = stc_carriers(k, LENGTH_BITS)
     x = [read_bits(rows, w, order, i, 1, ch) for i in range(used)]
-    set_bits(rows, w, order, 0, stc_solve(x, [(len(box) >> b) & 1 for b in range(32)], used), ch)
-    n = stc_carriers(len(order) * ch - k, len(box) * 8)
-    assert n, "message too long"
+    region = [(len(box) >> b) & 1 for b in range(32)] + [0] * 32  # split 0
+    set_bits(rows, w, order, 0, stc_solve(x, region, used), ch)
+    mlen = len(box) * 8
+    u = stc_carriers(len(order) * ch - k, (mlen + 1) // 2)
+    n = stc_carriers(u, mlen)
+    assert u and n, "message too long"
     x = [read_bits(rows, w, order, k + i, 1, ch) for i in range(n)]
     set_bits(rows, w, order, k, stc_solve(x, to_bits(box), n), ch)
     write_png(dst, w, h, lambda x, y: rows[y][x * ch:x * ch + ch], channels=ch)
 
 
 def read_box(rows, w, order, ch, enc_key):
-    """The payload: a 32-bit length, then the box, each as an STC syndrome"""
+    """The payload: the length region (the box's length, and how many of its
+    bits layer A holds), then the box in two layers over the same samples:
+    A the syndrome of their second bits, B of their LSBs, each an STC"""
     k = length_samples(len(order), ch)
-    used = stc_carriers(k, 32)
-    m = stc_extract([read_bits(rows, w, order, i, 1, ch) for i in range(used)], 32, used)
+    used = stc_carriers(k, LENGTH_BITS)
+    m = stc_extract([read_bits(rows, w, order, i, 1, ch) for i in range(used)], LENGTH_BITS, used)
     length = sum(m[b] << b for b in range(32))
+    split = sum(m[32 + b] << b for b in range(32))
     samples = len(order) * ch - k
-    if not (BOX_OVERHEAD <= length and length * 8 <= samples):
-        return None
     mlen = length * 8
-    n = stc_carriers(samples, mlen)
-    y = [read_bits(rows, w, order, k + i, 1, ch) for i in range(n)]
-    m = stc_extract(y, mlen, n)
-    box = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(length))
+    if not (BOX_OVERHEAD <= length and mlen <= samples and split <= mlen):
+        return None
+    u = stc_carriers(samples, (mlen + 1) // 2)
+    na = stc_carriers(u, split) if split else 0
+    nb = stc_carriers(u, mlen - split) if mlen > split else 0
+    if not u or (split and not na) or (mlen > split and not nb):
+        return None
+    v = [sample(rows, w, order, k + i, ch) for i in range(max(na, nb))]
+    bits = []
+    if split:
+        bits += stc_extract([(x >> 1) & 1 for x in v[:na]], split, na)
+    if mlen > split:
+        bits += stc_extract([x & 1 for x in v[:nb]], mlen - split, nb)
+    box = bytes(sum(bits[i * 8 + b] << b for b in range(8)) for i in range(length))
     return open_box(box, enc_key)
 
 
@@ -616,7 +640,7 @@ def capacity(w, h, ch=3):
 
 
 SUGGESTED_PNG_BYTES, SUGGESTED_JPEG_BYTES = 3, 1  # per square root of the pixels or non-zero ACs
-FIXED_BYTES = SALT + 4 + MAC + 2  # salt, length, MAC, encoding and name length bytes
+FIXED_BYTES = SALT + 8 + MAC + 2  # salt, length region, MAC, encoding and name length bytes
 SMOOTH_PNG_RESIDUAL, SMOOTH_JPEG_SHARE = 1.7, 0.14
 
 
@@ -1092,16 +1116,16 @@ class CliTest(CliBase):
         # warning; within it, or with -q, nothing extra
         write_png(self.cover, 200, 160, cover_pixel)
         sug = suggested(200, 160)
-        self.assertEqual(sug, 496)  # 3 * isqrt(32000 pixels) - 38 of fixed overhead
+        self.assertEqual(sug, 492)  # 3 * isqrt(32000 pixels) - 42 of fixed overhead
         out = self.path("steg.png")
         code, log = run(["info", self.cover])
-        self.assertIn("Suggested: at most 496 bytes", log)
+        self.assertIn("Suggested: at most 492 bytes", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
         self.assertNotIn("Warning", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
-        self.assertIn("Warning: 497 bytes stored, more than the 496 suggested", log)
+        self.assertIn("Warning: 493 bytes stored, more than the 492 suggested", log)
         self.assertEqual(self.extract_bytes(out), noise(sug + 1))
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z", "-q"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
@@ -1118,7 +1142,7 @@ class CliTest(CliBase):
                 write_png(self.cover, w, h, busy_pixel)
                 code, log = run(["info", self.cover])
                 self.assertIn("Suggested: at most %d bytes;" % suggested(w, h), log)
-        self.assertEqual([suggested(n, n) for n in (100, 200, 400)], [262, 562, 1162])
+        self.assertEqual([suggested(n, n) for n in (100, 200, 400)], [258, 558, 1158])
 
     def test_smooth_cover(self):
         # A smooth cover gets no suggestion, and embed warns, but goes ahead
@@ -1150,7 +1174,7 @@ class CliTest(CliBase):
     def test_too_small_for_a_suggestion(self):
         # So small that the fixed overhead is over the suggestion: none,
         # and any message warns
-        write_png(self.cover, 12, 12, busy_pixel)  # 3 * 12 = 36 < 38
+        write_png(self.cover, 12, 12, busy_pixel)  # 3 * 12 = 36 < 42
         self.assertEqual(suggested(12, 12), 0)
         code, log = run(["info", self.cover])
         self.assertIn("Suggested: none: the image is too small to hide a message well\n", log)
@@ -1159,9 +1183,11 @@ class CliTest(CliBase):
         self.assertIn("Warning: this image is too small to hide a message well", log)
         write_png(self.cover, 13, 12, busy_pixel)  # isqrt(156) = 12: still 0
         self.assertEqual(suggested(13, 12), 0)
-        write_png(self.cover, 13, 13, busy_pixel)  # 3 * 13 - 38 = 1, singular
-        self.assertIn("Suggested: at most 1 byte;", run(["info", self.cover])[1])
-        self.assertEqual(suggested(13, 13), 1)
+        write_png(self.cover, 14, 14, busy_pixel)  # 3 * 14 = 42: still 0
+        self.assertEqual(suggested(14, 14), 0)
+        write_png(self.cover, 15, 15, busy_pixel)  # 3 * 15 - 42 = 3
+        self.assertIn("Suggested: at most 3 bytes;", run(["info", self.cover])[1])
+        self.assertEqual(suggested(15, 15), 3)
 
     def test_info_refuses_what_encode_refuses(self):
         # The same checks and messages as embed, and no prompt
@@ -1513,6 +1539,16 @@ class CliTest(CliBase):
         self.assertDecodes(out, "forged hello")
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_embed_progress(self):
+        # Progress in order on stderr, so a long embed doesn't look hung;
+        # none with -q
+        out = self.path("steg.png")
+        code, log = self.embed(b"progress", out)
+        self.assertEqual(code, 0, log)
+        self.assertIn("Deriving keys...\nEmbedding...\nWrote '%s'\n" % out, log)
+        code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-q"], b"quiet", ["correct horse"] * 2)
+        self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
+
     def test_decode_empty_message_prints_nothing(self):
         out = self.path("empty.png")
         forge(self.cover, out, b"", "correct horse")
@@ -2119,8 +2155,8 @@ class CliTest(CliBase):
         self.assertIn("too small", log)
         roomy = self.path("roomy.png")
         write_png(roomy, 16, 16, cover_pixel)
-        self.assertEqual(capacity(16, 16), 57)
-        code, log = self.embed(noise(58), self.path("out.png"), src=roomy)
+        self.assertEqual(capacity(16, 16), 53)  # the length region takes at least 64 samples
+        code, log = self.embed(noise(54), self.path("out.png"), src=roomy)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         code, log = self.extract(tiny)
@@ -2384,7 +2420,7 @@ class JpegTest(CliBase):
                          r"Suggested: at most (\d+) bytes; less is harder to detect\n", log)
         self.assertTrue(m, log)
         n, sug = int(m.group(1)), int(m.group(2))
-        self.assertTrue(0 < sug < n, (sug, n))  # isqrt(non-zero AC coefficients) - 38
+        self.assertTrue(0 < sug < n, (sug, n))  # isqrt(non-zero AC coefficients) - 42
         # The warning starts just past the suggestion
         code, log = self.embed(noise(sug), self.path("w.jpg"), src=self.jpeg)
         self.assertEqual(code, 0, log)

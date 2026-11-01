@@ -1,4 +1,6 @@
-//! Outputs checked against the C implementation's (FNV-1a of the bytes).
+//! Outputs checked against the C implementation's (FNV-1a of the bytes). STC
+//! cases 2 and 4 were recomputed with C's stc.c when the cap went from 64 to
+//! 1,024 carriers per bit (2026-11-01); 1 and 3 are unchanged.
 use scattersteg::{prng, sodium, stc};
 
 fn fnv(bytes: &[u8]) -> u64 {
@@ -24,9 +26,9 @@ fn prng_matches_c() {
 fn stc_matches_c() {
     let cases: [(usize, usize, usize, u64); 4] = [
         (1000, 100, 1000, 11783339882688702857),
-        (50000, 300, 19200, 17081218232135005402),
+        (50000, 300, 50000, 11670365125730500980),
         (20000, 20000, 20000, 12041373877459508547),
-        (3000000, 5000, 320000, 721137837011292038),
+        (3000000, 5000, 3000000, 10689391206250108763),
     ];
     for (c, &(navail, mlen, want_n, want_hash)) in cases.iter().enumerate() {
         let n = stc::carriers(navail, mlen);

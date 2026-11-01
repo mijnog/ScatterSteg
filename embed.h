@@ -60,7 +60,7 @@ void embed_get_bits(const Carrier *c, const uint32_t *indices, size_t start,
 /* Record the changes that give those samples these LSBs */
 void embed_set_bits(const Carrier *c, const uint32_t *indices, size_t start,
                     size_t n, const uint8_t *bits, EmbedPlan *plan);
-/* For ternary embedding (codec.c, STC_TERNARY builds): the values of
+/* For the payload's ternary embedding (codec.c): the values of
    samples start .. start+n-1, the range a sample may take, and adding
    delta[i] (-1, 0 or +1) to each, at once and unpaired */
 void embed_get_values(const Carrier *c, const uint32_t *indices, size_t start,

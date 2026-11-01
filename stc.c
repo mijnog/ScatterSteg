@@ -10,11 +10,12 @@
    efficiency, at 128 cheap steps per carrier. */
 #define STC_H      7
 #define STATES     (1u << STC_H)
-/* Carriers per message bit, at most: past this the gain in efficiency is
-   small and the trellis work (proportional to carriers used) isn't */
-#ifndef STC_MAX_W
-#define STC_MAX_W  64
-#endif
+/* Carriers per message bit, at most. Part of the format. 1024: a sparse
+   message spread over more carriers has more cheap ones to choose from
+   (fewer changes per bit at light payloads: binary/ternary change ratio
+   1.05/1.15 at 0.05 bits per non-zero AC, against 1.00 at 64), and stealth
+   comes before speed (the trellis work grows with the carriers used). */
+#define STC_MAX_W  1024
 /* Message bits per trellis run. The trellis is run in independent chunks so
    the path memory (2^STC_H bits per carrier) stays bounded: a chunk spans at
    most about 2^20 carriers, i.e. 16 MiB of path bits. */

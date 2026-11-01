@@ -687,6 +687,8 @@ fn embed(o: &Options) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // The slow step on a big image: say so, so it doesn't look hung
+    if !o.quiet { scattersteg::errln!("Embedding..."); }
     let stored = match prepared.embed(&mut cover.carrier(), name, &message, o.level) {
         Ok(s) => s,
         Err(EmbedError::TooLong) => {

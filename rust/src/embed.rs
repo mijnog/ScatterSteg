@@ -301,6 +301,31 @@ pub fn set_bits(c: &Carrier, indices: &[u32], start: usize, bits: &[u8], plan: &
     }
 }
 
+/// For the payload's ternary embedding (codec.rs): the values of samples
+/// start .. start+n-1
+pub fn get_values(c: &Carrier, indices: &[u32], start: usize, values: &mut [i32]) {
+    for (i, v) in values.iter_mut().enumerate() {
+        *v = c.value(c.flat(indices, (start + i) as u32));
+    }
+}
+
+/// The range a sample may take: 0..255 for pixels, what a JPEG encoder can
+/// write for coefficients (as `nudged`)
+pub fn value_range(c: &Carrier) -> (i32, i32) {
+    if c.is_coef() { (-1023, 1023) } else { (0, 255) }
+}
+
+/// Adds delta[i] (-1, 0 or +1) to each of samples start .. start+n-1, at once
+/// and unpaired
+pub fn add(c: &mut Carrier, indices: &[u32], start: usize, delta: &[i8]) {
+    for (i, &d) in delta.iter().enumerate() {
+        if d == 0 { continue; }
+        let flat = c.flat(indices, (start + i) as u32);
+        let v = c.value(flat);
+        c.set_value(flat, v + d as i32);
+    }
+}
+
 /// How costly a change to each of those samples would be to hide.
 ///
 /// PNG: HILL (see `Carrier::hill_costs`), or uniform if the carrier has no

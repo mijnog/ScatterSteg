@@ -325,11 +325,17 @@ batches of pairs of the same image, flipped and rotated alike. Builds of
 | ScatterSteg JPEG, UERD, every AC coefficient | 0.2 bits per non-zero AC | **0.077** ± 0.006 | 0.979 | 89% |
 | ScatterSteg PNG, S-UNIWARD (benchmark build) | 0.4 bits per pixel | **0.095** ± 0.007 | 0.976 | 85% |
 | ScatterSteg JPEG, J-UNIWARD, every AC coefficient (benchmark build) | 0.2 bits per non-zero AC | **0.080** ± 0.006 | 0.977 | 88% |
+| ScatterSteg PNG, HILL | 0.1 bits per pixel | **0.339** ± 0.011 | 0.743 | 29% |
+| ScatterSteg PNG, S-UNIWARD (benchmark build) | 0.2 bits per pixel | **0.214** ± 0.009 | 0.887 | 54% |
+| ScatterSteg JPEG, UERD, every AC coefficient | 0.1 bits per non-zero AC | **0.093** ± 0.006 | 0.970 | 86% |
+| ScatterSteg JPEG, UERD, every AC coefficient | 0.05 bits per non-zero AC | **0.109** ± 0.007 | 0.957 | 83% |
+| ScatterSteg JPEG, J-UNIWARD, every AC coefficient (benchmark build) | 0.1 bits per non-zero AC | **0.109** ± 0.007 | 0.955 | 83% |
 
-The last four rows were trained for 15 epochs, starting from the detector
-of `hill_0.4` (the PNG rows), the first JPEG row, or the every-AC UERD row
-(the J-UNIWARD one), with build `b702512` for the every-AC rows. A head start favours the detector, so they are if anything
-pessimistic for the user.
+Every row after the first two was trained for 15 epochs, starting from the
+detector of a heavier payload of the same cost model (`hill_0.4`, then
+`hill_0.2`; `suniward_0.4`; `uerdall_0.2`, then `uerdall_0.1`;
+`juniwardall_0.2`), with build `b702512` for the every-AC rows. A head start
+favours the detector, so they are if anything pessimistic for the user.
 
 This is far stronger than the rich models. On BOSSbase (512×512 there, so
 not the same images) the SRM-style detector's P_E for HILL at 0.4 was 0.22;
@@ -367,8 +373,11 @@ hidden. S-UNIWARD is caught more often than HILL at 0.4 (P_E 0.095 against
 0.129), though it makes fewer changes, so HILL stays the PNG default.
 J-UNIWARD and UERD are level for JPEG at 0.2 (0.080 against 0.077, within
 one standard error), so UERD, much cheaper to compute, stays the default.
-The lighter payloads (0.05 to 0.2) are still being trained; their rows go
-here. This setting favours the warden:
+Lighter payloads help, but slowly: for JPEG, P_E rises only from 0.077 at
+0.2 bits per non-zero AC to 0.093 at 0.1 and 0.109 at 0.05, so even the
+lightest payload measured is caught 83% of the time at 5% false alarms (89%
+of the time at the best threshold). PNG at 0.1 bits per pixel is the first
+row the detector does poorly on (P_E 0.34). This setting favours the warden:
 one cover source for training and test, the payload known, and small
 images, where a given rate is easier to detect.
 
@@ -376,6 +385,55 @@ images, where a given rate is easier to detect.
     SCATTERSTEG=... python3 dl/embed.py DIR png hill 0.4    # and jpg uerd 0.2
     python3 dl/train.py DIR png hill_0.4 DIR/runs/hill_0.4 --epochs 40
     python3 dl/summarize.py DIR
+
+## Ternary embedding (prototype)
+
+Branch `ternary-stc` (C only, `make STC=ternary`; not merged): two binary STC
+layers, the second least-significant-bit plane and then the LSB, so the
+message picks +1 or −1 and the exchange swaps go. Compared with the current
+binary format, both on the costed-length format, JPEG UERD, with 64 or 1,024
+samples per message bit (`STC_MAX_W`, the cap on the pool). Per image, binary
+makes 1.00, 1.13 and 1.14 times as many changes as ternary at 0.05, 0.2 and
+0.4, far fewer than the 1.75 the reference simulators suggested, so the gain
+has to be judged by detection.
+
+**DCTR** (P_E, 0.5 is guessing; Wikimedia photographs, build `e43c20e`):
+
+| Payload | binary, 64 | binary, 1,024 | ternary, 64 | ternary, 1,024 |
+|---|---|---|---|---|
+| 0.05 | 0.481 | 0.490 | 0.481 | 0.492 |
+| 0.1 | 0.463 | 0.471 | 0.461 | 0.482 |
+| 0.2 | 0.420 | 0.422 | 0.434 | 0.440 |
+| 0.3 | 0.360 | 0.360 | 0.382 | 0.395 |
+
+**Aletheia's ALASKA2 models** (480 images; P_E, J-UNIWARD model / J-MiPOD
+model; the 64-sample binary is the current format):
+
+| Payload | binary, 64 | binary, 1,024 | ternary, 64 | ternary, 1,024 |
+|---|---|---|---|---|
+| 0.05 | 0.458 / 0.491 | 0.464 / 0.491 | 0.462 / 0.486 | 0.462 / 0.488 |
+| 0.1 | 0.436 / 0.479 | 0.436 / 0.481 | 0.432 / 0.483 | 0.434 / 0.479 |
+| 0.2 | 0.395 / 0.477 | 0.392 / 0.476 | 0.397 / 0.477 | 0.392 / 0.478 |
+| 0.4 | 0.374 / 0.467 | 0.371 / 0.467 | 0.334 / 0.459 | 0.332 / 0.468 |
+
+Level up to 0.2; at 0.4 the J-UNIWARD model catches ternary more often.
+
+**SRNet**, JPEG UERD at 0.2 bits per non-zero AC, 15 epochs from
+`uerdall_0.2`'s detector, 1,024 samples per bit for both: binary
+`uerdbin_0.2` and ternary `uerdtern_0.2`. Trained twice, on Kaggle's GPUs
+and locally:
+
+| | Kaggle | local |
+|---|---|---|
+| binary | 0.083 | 0.088 |
+| ternary | 0.100 | 0.099 |
+
+(± 0.006 each.) Ternary is about 0.01 harder to detect in both runs, 1.5 to 2
+standard errors: suggestive, not proven. Taken together: DCTR and SRNet lean
+towards ternary at light payloads, the ALASKA2 J-UNIWARD model against it at
+0.4. A second training seed is next; ternary needs a format change (the
+pool cap from 64 to 1,024 samples per bit) and a decision on PNG's exchange
+embedding, so it isn't merged.
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

@@ -1,14 +1,20 @@
 SRNet benchmark (benchmark/dl), 2026-10-31. Builds of cd98771 (HILL, UERD); BOSSbase 1.01 at 256x256,
-7000/1000/2000 train/validation/test; 40 epochs from scratch. Still running or queued (train_queue4.sh):
-hill_0.1, uerdall_0.1, suniward_0.2, juniwardall_0.1, uerdall_0.05. juniward_0.2 (old rule) was stopped at epoch 11.
+7000/1000/2000 train/validation/test; 40 epochs from scratch. The light-payload runs (hill_0.1, uerdall_0.1/0.05, suniward_0.2, juniwardall_0.1) are 15 epochs from the next heavier payload's detector (train_queue4.sh, build b702512 sets). uerdbin_0.2 and uerdtern_0.2: ternary prototype e43c20e, 15 epochs from uerdall_0.2 (queue5.sh, local; Kaggle gave 0.083 and 0.100). juniward_0.2 (old rule) was stopped at epoch 11.
 
 set             kind     n    P_E     ±    AUC  P_D@5%FP
+juniwardall_0.1 jpg   2000  0.109 0.007  0.955     0.830
+juniwardall_0.2 jpg   2000  0.080 0.006  0.977     0.884
 uerd_0.2        jpg   1955  0.073 0.006  0.981     0.892
+uerdall_0.05    jpg   2000  0.109 0.007  0.957     0.831
+uerdall_0.1     jpg   2000  0.093 0.006  0.970     0.864
 uerdall_0.2     jpg   2000  0.077 0.006  0.979     0.894
+uerdbin_0.2     jpg   2000  0.088 0.006  0.975     0.855
+uerdtern_0.2    jpg   2000  0.099 0.007  0.967     0.821
+hill_0.1        png   2000  0.339 0.011  0.743     0.292
 hill_0.2        png   2000  0.256 0.010  0.842     0.418
 hill_0.4        png   2000  0.129 0.008  0.954     0.756
+suniward_0.2    png   2000  0.214 0.009  0.887     0.541
 suniward_0.4    png   2000  0.095 0.007  0.976     0.852
-juniwardall_0.2 jpg   2000  0.080 0.006  0.977     0.884
 
 hill_0.2, suniward_0.4 and uerdall_0.2: 15 epochs from hill_0.4's (the PNG runs) and uerd_0.2's detectors (code be0265b);
 juniwardall_0.2 (build b702512, JPEG_COSTS=juniward): 15 epochs from uerdall_0.2's.

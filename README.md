@@ -14,7 +14,7 @@ The commands and options are steghide's, for everything ScatterSteg does, so ste
 ## How safe is it?
 
 - **The message itself is well protected.** It is encrypted and authenticated with standard, well-reviewed cryptography (libsodium), and every passphrase guess costs an attacker about 0.2 s and 256 MiB of memory. A changed image fails to decode; it never yields a wrong message.
-- **Hiding that a message exists is harder, and only partly achieved.** Classic and feature-based detectors catch ScatterSteg 50–65% of the time at the payloads tested, against 96–98% for steghide. Off-the-shelf deep-learning detectors (Aletheia's ALASKA2 models) are at chance against a light JPEG payload. But a deep-learning detector (SRNet) trained on images like the cover catches it 74–92% of the time at the payloads measured so far (0.2–0.4 bits). Small messages and private covers matter more than anything else. See [Steganalysis results](#steganalysis-results).
+- **Hiding that a message exists is harder, and only partly achieved.** Classic and feature-based detectors catch ScatterSteg 50–65% of the time at the payloads tested, against 96–98% for steghide. Off-the-shelf deep-learning detectors (Aletheia's ALASKA2 models) are at chance against a light JPEG payload. But a deep-learning detector (SRNet) trained on images like the cover catches it 66–92% of the time at the payloads measured (0.05–0.4 bits). Small messages and private covers matter more than anything else. See [Steganalysis results](#steganalysis-results).
 - **Nobody independent has reviewed it.** The code is heavily tested and has had a security audit of its own ([`AUDIT-2026-10-24.md`](AUDIT-2026-10-24.md)), but no outside review. Don't rely on it where your safety is at stake.
 
 [`THREAT_MODEL.md`](THREAT_MODEL.md) says exactly what it protects, against whom, and what it doesn't.
@@ -154,8 +154,11 @@ These detectors are reimplementations of rich models trained on a few hundred im
 | ScatterSteg, PNG | 0.2 bits per pixel | 0.26 | 74% |
 | ScatterSteg, PNG | 0.4 bits per pixel | 0.13 | 87% |
 | ScatterSteg, JPEG | 0.2 bits per non-zero AC coefficient | 0.08 | 92% |
+| ScatterSteg, PNG | 0.1 bits per pixel | 0.34 | 66% |
+| ScatterSteg, JPEG | 0.1 bits per non-zero AC coefficient | 0.09 | 91% |
+| ScatterSteg, JPEG | 0.05 bits per non-zero AC coefficient | 0.11 | 89% |
 
-SRNet was trained on 7,000 cover/stego pairs from the same source as the test images, at a known payload: a capable warden's best case, but a realistic one. A warden who downloads a detector instead does far worse: Aletheia's EfficientNet detectors, trained on ALASKA2 for J-UNIWARD and J-MiPOD, score ScatterSteg's JPEGs at 0.05 bits per non-zero AC coefficient at 0.46 and 0.49 (480 Wikimedia photographs at quality 75; chance is about 0.47 there), level with the published UERD's 0.47 and 0.49. The lighter payloads are still being measured; until they are, assume that only small messages in private, noisy covers stay hidden. [`benchmark/README.md`](benchmark/README.md) has every measurement, the method, and the full list of limitations.
+SRNet was trained on 7,000 cover/stego pairs from the same source as the test images, at a known payload: a capable warden's best case, but a realistic one. A warden who downloads a detector instead does far worse: Aletheia's EfficientNet detectors, trained on ALASKA2 for J-UNIWARD and J-MiPOD, score ScatterSteg's JPEGs at 0.05 bits per non-zero AC coefficient at 0.46 and 0.49 (480 Wikimedia photographs at quality 75; chance is about 0.47 there), level with the published UERD's 0.47 and 0.49. Halving the payload barely helps JPEG against this detector (0.05 bits per non-zero AC is still caught 89% of the time), so assume that only small messages in private, noisy covers stay hidden. [`benchmark/README.md`](benchmark/README.md) has every measurement, the method, and the full list of limitations.
 
 ## Limitations
 

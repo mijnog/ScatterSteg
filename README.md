@@ -119,19 +119,19 @@ ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read th
  message ──► DEFLATE ──────────────► XSalsa20-Poly1305 ──► box
                                                 │
                                                 ▼
-             STC: find the cheapest bit changes that make
-             the box the syndrome of the carriers' bits
+             ternary STC, two layers: find the cheapest ±1 changes
+             that make the box the syndrome of the carriers'
+             two lowest bits
                                                 │
                                                 ▼
-             pair the changes into value swaps where possible,
-             ±1 nudges otherwise ──► write the image back
+             apply the changes ──► write the image back
 ```
 
 1. **Keys.** A random salt is hidden at public positions. Argon2id turns the passphrase and salt into a master key, which gives a *scatter key* and an *encryption key*.
 2. **Compression and encryption.** The message is compressed (DEFLATE) if that makes it shorter, since fewer bits to hide means fewer changes; text typically shrinks to half. It is then encrypted and authenticated with XSalsa20-Poly1305.
 3. **Order.** The scatter key shuffles the image's carriers into a secret order: the pixel samples of a PNG, or the AC coefficients of a JPEG, zeros included.
 4. **Syndrome coding.** Instead of writing one bit into each carrier, which changes about half of them, syndrome-trellis codes (STC) find the cheapest set of changes that encodes the message. "Cheapest" comes from content-adaptive costs: HILL for PNG and UERD for JPEG make a change cheap where the image is busy and expensive where it is flat. This makes 2 to 3 times fewer changes than writing the bits directly, in the places hardest to notice.
-5. **Changes.** Every change is ±1. Where two carriers that both need changing hold values one apart, they swap values instead, which leaves the image's histogram exactly as it was (93–98.5% of a PNG's changes, on the benchmark's photographs).
+5. **Changes.** Every change is ±1, and its sign carries message bits too (ternary coding: one STC layer over the carriers' lowest bit and one over the next, since a +1 and a −1 flip them differently). An earlier version wrote its bits with a binary coder and then swapped values between pairs of carriers, which kept the image's histogram exactly; SRNet found the ternary coder harder to detect (PNG at 0.2 bits per pixel: P_E 0.266 against 0.242; JPEG at 0.2 bits per non-zero AC: 0.097–0.100 against 0.083–0.088; [`benchmark/README.md`](benchmark/README.md#ternary-embedding-prototype)). The few changes that hide the salt and the length are still swapped in pairs where possible.
 
 JPEG coefficients are edited directly: the image is never decompressed and recompressed. The image stores no header or version marker. [`FORMAT.md`](FORMAT.md) specifies the format exactly. [`5_LEVELS_OF_SCATTERSTEG.md`](5_LEVELS_OF_SCATTERSTEG.md) explains all this five times, from a child's level to an expert's.
 
@@ -179,7 +179,7 @@ Next, each measured before it's kept:
 
 - **JPEG: embed in every AC coefficient** (done), not only those of magnitude 2 or more, as the published schemes (UERD, J-UNIWARD) do. Against DCTR it is harder to detect from 0.2 bits per non-zero AC coefficient up (P_E 0.42 against 0.40 at 0.2, 0.36 against 0.26 at 0.3); SRNet sees no difference. It also fits messages into smooth covers that couldn't hold them before, where they are easily found, as smooth covers always were at the same payload: the payload suggestion will take that into account.
 - **Write files the way the cover was written** (done). A PNG keeps the cover's row filters, data chunk sizes and zlib settings, and a camera JPEG its whole header and Huffman tables, so a cover saved unchanged comes back identical. Before, the output's structure showed it had been rewritten (see A1 in [`THREAT_MODEL.md`](THREAT_MODEL.md)), which a careful observer could notice without any steganalysis.
-- **Ternary embedding,** where the message also chooses the direction of each change, for fewer changes per message.
+- **Ternary embedding** (done, 2026-11-01), where the message also chooses the direction of each change: fewer changes per message, and harder for SRNet to detect than the binary coder it replaced (see step 5 above).
 - **A payload suggestion that follows the square root law** (done): it grows with the square root of the image size, not in proportion to it, and is none at all for a smooth image. Calibrating the √n scaling on our own measurements needs SRNet runs at several image sizes.
 - **No cost-blind changes** (done). The message length was written straight into 32 secret positions, about 16 changes that ignored the costs; Aletheia's J-MiPOD detector caught that alone, even with a 1-byte message (P_E 0.41). It is now syndrome-coded like the rest, and the same detector is at chance (0.49).
 - **Comparison with the other modern tools** (HStego, phasm) and with Aletheia's detectors (its ALASKA2 JPEG detectors done, above), to know where ScatterSteg stands.

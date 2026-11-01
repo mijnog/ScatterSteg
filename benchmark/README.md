@@ -111,8 +111,9 @@ one labelled stego, score 0.485-0.518 (chance), and at 1.0 bits per pixel
 (476 covers; the 4 grayscale ones can't hold it) uniform costs score 0.091
 with SPAM and 0.018 with SRM, HILL 0.363 and 0.235. So both detectors see
 HILL at a heavy payload, and the SRM-style figures are the ones to use. HILL makes 28–41% more changes than uniform costs but puts them
-where the image is busy, and more of them pair as value swaps (93–98.5%
-against 48–87%). Ker's adjacency HCF-COM, the detector an earlier HILL-like
+where the image is busy, and more of them paired as value swaps (93–98.5%
+against 48–87%; the exchange embedding of the time, see "Ternary embedding"
+below for what replaced it). Ker's adjacency HCF-COM, the detector an earlier HILL-like
 attempt lost on, moves 9 to 12 times less than with uniform costs (`hcf.py`).
 BOSSbase is re-run below; JPEG costs are covered in the UERD section.
 
@@ -414,12 +415,12 @@ images, where a given rate is easier to detect.
     python3 dl/train.py DIR png hill_0.4 DIR/runs/hill_0.4 --epochs 40
     python3 dl/summarize.py DIR
 
-## Ternary embedding (prototype)
+## Ternary embedding
 
-Branch `ternary-stc` (C only, `make STC=ternary`; not merged): two binary STC
-layers, the second least-significant-bit plane and then the LSB, so the
-message picks +1 or −1 and the exchange swaps go. Compared with the current
-binary format, both on the costed-length format, JPEG UERD, with 64 or 1,024
+Merged 2026-11-01 (the measurements below are of the prototype on branch
+`ternary-stc`, `make STC=ternary`): two binary STC layers, the second
+least-significant-bit plane and then the LSB, so the message picks +1 or −1
+and the exchange swaps go. Compared with the earlier binary format, both on the costed-length format, JPEG UERD, with 64 or 1,024
 samples per message bit (`STC_MAX_W`, the cap on the pool). Per image, binary
 makes 1.00, 1.13 and 1.14 times as many changes as ternary at 0.05, 0.2 and
 0.4, far fewer than the 1.75 the reference simulators suggested, so the gain
@@ -480,8 +481,10 @@ literature expects for the spatial domain (Butora and Fridrich: ternary
 gains most where quantization is fine). One seed, and the pool caps differ
 (64 against 1,024; for JPEG, DCTR saw no difference between binary at 64 and
 1,024, which hasn't been checked for PNG). So ternary replaces the exchange
-embedding for PNG too; the port (with the pool cap raised to 1,024 samples
-per bit) follows.
+embedding for PNG too. The payload is now coded ternary in both builds, with
+the pool cap at 1,024 samples per bit (`FORMAT.md`); the merged coder differs
+from the prototype only where layer A can't carry its share (a cover of
+mostly 0s or 255s), which the prototype failed on.
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

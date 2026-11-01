@@ -81,7 +81,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Student:** Why not just flip the last bit like LSB?
 
-**Me:** Flipping the last bit of 200 gives 201, but flipping 201 gives 200. Values only ever move within their pair: 200↔201, 202↔203. Over a whole image that evens out the counts within each pair, and the **chi-square attack** (Westfeld and Pfitzmann, 1999) spots exactly that. ScatterSteg adds or subtracts 1 instead (±1, "LSB matching"), which changes the bit just the same but doesn't create that pattern. Better still: when two positions both need changing and one holds 200 while the other holds 201, it just *swaps* them. Both bits change, and the image's histogram of values stays exactly the same. On photos, 93–98.5% of a PNG's changes end up as swaps.
+**Me:** Flipping the last bit of 200 gives 201, but flipping 201 gives 200. Values only ever move within their pair: 200↔201, 202↔203. Over a whole image that evens out the counts within each pair, and the **chi-square attack** (Westfeld and Pfitzmann, 1999) spots exactly that. ScatterSteg adds or subtracts 1 instead (±1, "LSB matching"), which changes the bit just the same but doesn't create that pattern. And it lets the sign carry information too: whether a value goes up or down is part of the message. (That is "ternary" coding, below. It replaced an earlier trick that swapped a 200 with a 201 whenever two positions needed that, which kept the image's histogram of values exactly the same, but which the strongest detector caught more often.)
 
 **Step 5: Write the file the way it was written.** The output is saved with the cover's own settings: a PNG with the same compression choices, a camera JPEG with the same header and Huffman tables. A detector shouldn't need statistics to notice "this file was rewritten by some unusual program".
 
@@ -105,7 +105,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Grad student:** Binary or ternary?
 
-**Me:** Binary STC with ±1 changes, where the direction is chosen afterwards to set up those value swaps. The published HILL and UERD results assume a ternary coder, where the message also chooses the direction. In theory that's more efficient. ScatterSteg makes about 1.75 times as many changes as conseal's reference simulators at the same payload, but those run at the theoretical bound, on luminance only. A multi-layer ternary prototype cuts ScatterSteg's own changes by only about 14%, and it gives up most of the swaps. Its first detection results are mixed: a little harder for a DCTR-style detector to catch at 0.2–0.3, easier for one of the ALASKA2 models at 0.4. So binary stays until the measurements say otherwise.
+**Me:** Ternary. The published HILL and UERD results assume a ternary coder, where the message also chooses the direction of each ±1 change; ScatterSteg first used a binary one, with the directions chosen afterwards to set up value swaps that keep the histogram exactly. The ternary coder is two binary STC layers over the same samples: one over the second-lowest bit, one over the lowest, because a +1 and a −1 flip the second bit differently. It makes about 13–14% fewer changes than the binary coder (far from the 1.75 times that conseal's reference simulators make fewer, which run at the theoretical bound on luminance only). Against SRNet it was harder to detect in every run: JPEG at 0.2 bits per non-zero AC, P_E 0.097–0.100 against 0.083–0.088 over three trainings; PNG at 0.2 bits per pixel, 0.266 against 0.242. DCTR agrees, and one of the ALASKA2 models disagrees at 0.4. It also needs a wider pool: 1,024 samples per message bit instead of 64, for fewer changes at light payloads.
 
 **How it's evaluated.** The figure of merit is **P_E** = min over thresholds of ½(P_FA + P_MD), where 0.5 means the detector is guessing. ScatterSteg has been run against:
 
@@ -140,7 +140,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Expert:** What about non-additive costs? Synchronizing changes between neighbours?
 
-**Me:** Not done. CMD and Synch-style schemes that make adjacent changes agree in sign beat additive HILL against SRM, and it's an open question how much of that survives against SRNet. Ternary coding raises the same question in another form. ScatterSteg's binary coder plus value swaps keep the first-order histogram exactly, and a ternary coder gives most of that up for fewer changes. The prototype's mixed results so far say it's an empirical question, not a foregone conclusion.
+**Me:** Not done. CMD and Synch-style schemes that make adjacent changes agree in sign beat additive HILL against SRM, and it's an open question how much of that survives against SRNet. Ternary coding raised the same question in another form: the earlier binary coder plus value swaps kept the first-order histogram exactly, and the ternary coder gives that up for fewer changes. SRNet preferred the ternary one (see above), which is an empirical result, not a theorem.
 
 **Expert:** Side information?
 
@@ -152,7 +152,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Expert:** So where does it actually stand?
 
-**Me:** Honestly: well engineered, cryptographically conventional, steganographically mid-pack. Content-adaptive costs, near-optimal binary coding, no cost-blind changes, careful file structure. Behind the state of the art in its costs (additive, not synchronized) and its payload guidance (linear, not √n), and possibly in its coder (binary; a ternary prototype hasn't yet shown a clear gain). Not independently reviewed. Against a capable warden who trains on its output, only small messages in private, textured covers have a good chance. The remaining work is mostly closing those gaps and measuring each step, and then freezing the format so someone independent can try to break it.
+**Me:** Honestly: well engineered, cryptographically conventional, steganographically mid-pack. Content-adaptive costs, near-optimal ternary coding, no cost-blind changes, careful file structure, payload guidance that follows the square root law. Behind the state of the art in its costs (additive, not synchronized, and no side information), and its √n scaling is the literature's, not measured here. Others (phasm) go further on deniability, which ScatterSteg leaves out for now. Not independently reviewed. Against a capable warden who trains on its output, only small messages in private, textured covers have a good chance. The remaining work is mostly closing those gaps and measuring each step, and then freezing the format so someone independent can try to break it.
 
 ---
 

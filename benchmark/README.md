@@ -420,11 +420,25 @@ images, where a given rate is easier to detect.
 Adopted 2026-11-01, after the measurements below, which are of the prototype
 on branch `ternary-stc` (`make STC=ternary`): two binary STC layers, the second
 least-significant-bit plane and then the LSB, so the message picks +1 or −1
-and the exchange swaps go. Compared with the earlier binary format, both on the costed-length format, JPEG UERD, with 64 or 1,024
-samples per message bit (`STC_MAX_W`, the cap on the pool). Per image, binary
-makes 1.00, 1.13 and 1.14 times as many changes as ternary at 0.05, 0.2 and
-0.4, far fewer than the 1.75 the reference simulators suggested, so the gain
-has to be judged by detection.
+and the exchange swaps go. Compared with the earlier binary format, both on
+the costed-length format, JPEG UERD, with 64 or 1,024 samples per message bit
+(`STC_MAX_W`, the cap on the pool).
+
+Changes made (`count_changes.py`: coefficients that differ from the cover,
+40 BOSSbase JPEGs at 256×256, the prototype's four builds, one run; a repeat
+differs by about a percentage point, as the messages and the ±1 directions
+are random), against the binary coder at 64:
+
+| bits per non-zero AC | binary, 1,024 | ternary, 64 | ternary, 1,024 |
+|---|---|---|---|
+| 0.05 | 0.1% more | 0.9% more | 4.2% fewer |
+| 0.2 | 0.3% more | 9.6% fewer | 9.9% fewer |
+| 0.4 | 0.2% more | 11.3% fewer | 11.5% fewer |
+
+So ternary makes about a tenth fewer changes from 0.2 up, far fewer than the
+gap to conseal's reference simulators; the 1,024 cap helps ternary at light
+payloads only, and binary not at all. The gain has to be judged by
+detection.
 
 **DCTR** (P_E, 0.5 is guessing; Wikimedia photographs, build `e43c20e`):
 

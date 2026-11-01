@@ -621,6 +621,18 @@ def read_box(rows, w, order, ch, enc_key):
     return open_box(box, enc_key)
 
 
+def read_split(src, passphrase):
+    """How many of the box's bits the image's layer A holds (the length
+    region's second word)"""
+    w, h, rows = read_png(src)
+    ch = len(rows[0]) // w
+    _, order, _ = layout(rows, w, h, passphrase.encode())
+    k = length_samples(len(order), ch)
+    used = stc_carriers(k, LENGTH_BITS)
+    m = stc_extract([read_bits(rows, w, order, i, 1, ch) for i in range(used)], LENGTH_BITS, used)
+    return sum(m[32 + b] << b for b in range(32))
+
+
 def reveal(src, passphrase, name=False):
     """Extract and decrypt a message independently of the binary. Returns
     the message's bytes, or None. With name=True, (name, message)."""
@@ -2597,10 +2609,19 @@ class FaultSweepTest(CliBase):
         out = self.path("steg.png")
         verified = []
 
+        splits = set()
+
         def check(code, log):
             self.check_verified(log, verified)
+            # Out of memory is reported as such, never as a message too
+            # long, and never worked around: the ternary coder once took a
+            # failed trellis for a cover layer A can't use, and retried with
+            # less in layer A (a worse embedding, and no error)
+            if re.search(r"FAULT_FIRED (malloc|calloc|realloc|sodium_malloc)\b", log):
+                self.assertNotIn("too long", log)
             if code == 0:
                 self.assertDecodes(out, message.decode())
+                splits.add(read_split(out, "correct horse"))
             else:
                 with open(out, "rb") as f:
                     self.assertEqual(f.read(), b"precious")
@@ -2613,6 +2634,7 @@ class FaultSweepTest(CliBase):
         faults = self.sweep(["embed", "-cf", self.cover, "-sf", out, "-f"], message,
                             ["correct horse"] * 2, check)
         self.assertEqual(len(verified), 1)
+        self.assertEqual(len(splits), 1, splits)  # the same layer A share however the run went
         return faults
 
     def test_encode_sweep(self):

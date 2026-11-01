@@ -362,7 +362,8 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
 
 /* Both layers, with ma of the mlen bits in layer A: the changes into
    delta. 0, 1 if they can't be made by +-1 (the trellis had to pay a wet
-   cost, or found no path), or -2 if out of memory. */
+   cost), or -2 if out of memory. The costs are finite (wet ones too), so
+   the trellis fails only for want of memory: that is no reason to retry. */
 static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo, int32_t hi,
                         double lambda, const uint8_t *m, size_t mlen, size_t ma, int8_t *delta) {
     size_t mb = mlen - ma;
@@ -372,7 +373,6 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
     uint8_t *x = malloc(u), *ya = calloc(u, 1), *yb = malloc(u);
     int r = -2;
     if (!cost || !x || !ya || !yb) goto out;
-    r = 1;
     memset(delta, 0, u);
 
     /* Layer A: second bits; flipping one takes +1 from odd, -1 from even */
@@ -408,7 +408,7 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
     for (size_t i = 0; i < u; i++) {
         int a = i < na && ya[i];
         int b = i < nb && yb[i] != (uint8_t)(v[i] & 1);
-        if (a && i < nb && !b) goto out;
+        if (a && i < nb && !b) { r = 1; goto out; }
         if (a) delta[i] = (v[i] & 1) ? 1 : -1;
         else if (b && i < na) delta[i] = (v[i] & 1) ? -1 : 1;
         else if (b) {
@@ -416,7 +416,7 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
             randombytes_buf(&coin, 1);
             delta[i] = v[i] == lo ? 1 : v[i] == hi ? -1 : (coin & 1) ? 1 : -1;
         }
-        if (v[i] + delta[i] < lo || v[i] + delta[i] > hi) goto out;
+        if (v[i] + delta[i] < lo || v[i] + delta[i] > hi) { r = 1; goto out; }
     }
     r = 0;
 out:

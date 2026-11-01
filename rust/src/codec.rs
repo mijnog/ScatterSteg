@@ -327,15 +327,16 @@ const TERNARY_WET: f32 = 1e13;
 
 /// Both layers, with ma of the mlen bits in layer A: the changes into delta.
 /// Ok(true), Ok(false) if they can't be made by +-1 (the trellis had to pay a
-/// wet cost, or found no path). As C's embed_layers.
+/// wet cost), Err if the trellis failed. The costs are finite (wet ones too),
+/// so that is no reason to retry. As C's embed_layers.
 #[allow(clippy::too_many_arguments)]
 fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[u8], ma: usize,
-                delta: &mut [i8]) -> bool {
+                delta: &mut [i8]) -> Result<bool, ()> {
     let (u, mlen) = (v.len(), m.len());
     let mb = mlen - ma;
     let na = if ma > 0 { stc::carriers(u, ma) } else { 0 };
     let nb = if mb > 0 { stc::carriers(u, mb) } else { 0 };
-    if (ma > 0 && na == 0) || (mb > 0 && nb == 0) { return false; }
+    if (ma > 0 && na == 0) || (mb > 0 && nb == 0) { return Ok(false); }
     delta.fill(0);
     let mut x = vec![0u8; u];
     let mut cost = vec![0f32; u];
@@ -350,7 +351,7 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
         x[i] = second_bit(v[i]);
         cost[i] = if t < lo || t > hi || k > TERNARY_WET as f64 { TERNARY_WET } else { k as f32 };
     }
-    if ma > 0 && stc::embed(&x[..na], &cost[..na], &m[..ma], ma, na, &mut ya[..na]).is_err() { return false; }
+    if ma > 0 { stc::embed(&x[..na], &cost[..na], &m[..ma], ma, na, &mut ya[..na])?; }
     for i in 0..na { ya[i] = (ya[i] != x[i]) as u8; } // now: flipped
 
     // Layer B: LSBs. A sample layer A flipped must flip its LSB too (its
@@ -368,14 +369,14 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
             cost[i] = if i < na && (t < lo || t > hi) { TERNARY_WET } else { rho[i] };
         }
     }
-    if mb > 0 && stc::embed(&x[..nb], &cost[..nb], &m[ma..], mb, nb, &mut yb[..nb]).is_err() { return false; }
+    if mb > 0 { stc::embed(&x[..nb], &cost[..nb], &m[ma..], mb, nb, &mut yb[..nb])?; }
 
     // The changes; a wet cost the trellis had to pay means no +-1 change
     // gives both layers' bits: no change by 2, the caller tries again
     for i in 0..u {
         let a = i < na && ya[i] != 0;
         let b = i < nb && yb[i] != (v[i] & 1) as u8;
-        if a && i < nb && !b { return false; }
+        if a && i < nb && !b { return Ok(false); }
         delta[i] = if a {
             if v[i] & 1 != 0 { 1 } else { -1 }
         } else if b && i < na {
@@ -386,9 +387,9 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
             if v[i] == lo { 1 } else if v[i] == hi { -1 } else if coin[0] & 1 != 0 { 1 } else { -1 }
         } else { 0 };
         let t = v[i] + delta[i] as i32;
-        if t < lo || t > hi { return false; }
+        if t < lo || t > hi { return Ok(false); }
     }
-    true
+    Ok(true)
 }
 
 /// Makes the payload's changes at once, and records the length's in plan.
@@ -415,7 +416,7 @@ fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &
 
     let (mut ma, lambda) = ternary_split(&rho, mlen);
     let mut delta = vec![0i8; u];
-    while !embed_layers(&v, &rho, range, lambda, &m, ma, &mut delta) {
+    while !embed_layers(&v, &rho, range, lambda, &m, ma, &mut delta).map_err(|_| EmbedError::Alloc)? {
         if ma == 0 { return Err(EmbedError::TooLong); } // not even +-1 alone: too full
         ma /= 2;
     }

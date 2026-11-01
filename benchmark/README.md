@@ -417,8 +417,8 @@ images, where a given rate is easier to detect.
 
 ## Ternary embedding
 
-Merged 2026-11-01 (the measurements below are of the prototype on branch
-`ternary-stc`, `make STC=ternary`): two binary STC layers, the second
+Adopted 2026-11-01, after the measurements below, which are of the prototype
+on branch `ternary-stc` (`make STC=ternary`): two binary STC layers, the second
 least-significant-bit plane and then the LSB, so the message picks +1 or −1
 and the exchange swaps go. Compared with the earlier binary format, both on the costed-length format, JPEG UERD, with 64 or 1,024
 samples per message bit (`STC_MAX_W`, the cap on the pool). Per image, binary
@@ -449,8 +449,8 @@ Level up to 0.2; at 0.4 the J-UNIWARD model catches ternary more often.
 
 **SRNet**, JPEG UERD at 0.2 bits per non-zero AC, 15 epochs from
 `uerdall_0.2`'s detector: binary `uerdbin_0.2` (the format's 64 samples per
-bit) and ternary `uerdtern_0.2` (1,024; DCTR saw no difference between
-binary at 64 and 1,024). Trained on Kaggle's GPUs with two seeds, and
+bit) and ternary `uerdtern_0.2` (1,024; DCTR put binary at 64 and 1,024
+within 0.01 P_E of each other, inside its noise). Trained on Kaggle's GPUs with two seeds, and
 locally:
 
 | | Kaggle, seed 0 | local, seed 0 | Kaggle, seed 1 |
@@ -479,8 +479,8 @@ On the same test images, a paired bootstrap puts the difference at 0.024 ±
 0.004: ternary is harder to detect, by 1.4 to 2.2 times the JPEG gaps, as the
 literature expects for the spatial domain (Butora and Fridrich: ternary
 gains most where quantization is fine). One seed, and the pool caps differ
-(64 against 1,024; for JPEG, DCTR saw no difference between binary at 64 and
-1,024, which hasn't been checked for PNG). So ternary replaces the exchange
+(64 against 1,024; for JPEG, binary at 64 and 1,024 are within noise of each
+other in DCTR and in changes made, which hasn't been checked for PNG). So ternary replaces the exchange
 embedding for PNG too. The payload is now coded ternary in both builds, with
 the pool cap at 1,024 samples per bit (`FORMAT.md`); the merged coder differs
 from the prototype only where layer A can't carry its share (a cover of

@@ -11,6 +11,7 @@ Uses only the standard library (PNGs are written and parsed by hand).
 import ctypes
 import ctypes.util
 import hashlib
+import math
 import os
 import pty
 import re
@@ -299,8 +300,9 @@ if sodium:
     sodium.crypto_secretbox_open_easy.argtypes = [
         ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
 
-SALT, NONCE, MAC = 16, 24, 16
-BOX_OVERHEAD = NONCE + MAC
+SALT, MAC = 16, 16
+BOX_OVERHEAD = MAC  # the secretbox's nonce is all zeros, not stored
+ZERO_NONCE = bytes(24)
 MESSAGE_MAX = 64 << 20  # CODEC_MESSAGE_MAX
 
 
@@ -333,11 +335,10 @@ def to_bits(data):
 
 
 def open_box(box, key):
-    nonce, ct = box[:NONCE], box[NONCE:]
-    pt = ctypes.create_string_buffer(max(1, len(ct) - MAC))
-    if sodium.crypto_secretbox_open_easy(pt, ct, len(ct), nonce, key) != 0:
+    pt = ctypes.create_string_buffer(max(1, len(box) - MAC))
+    if sodium.crypto_secretbox_open_easy(pt, box, len(box), ZERO_NONCE, key) != 0:
         return None
-    return pt.raw[:len(ct) - MAC]
+    return pt.raw[:len(box) - MAC]
 
 
 NAME_MAX = 255
@@ -390,10 +391,9 @@ def unpack(pt):
 
 
 def seal(message, key):
-    nonce = os.urandom(NONCE)
     ct = ctypes.create_string_buffer(MAC + len(message))
-    sodium.crypto_secretbox_easy(ct, message, len(message), nonce, key)
-    return nonce + ct.raw
+    sodium.crypto_secretbox_easy(ct, message, len(message), ZERO_NONCE, key)
+    return ct.raw
 
 
 # -- keys and orders
@@ -537,13 +537,18 @@ def salt_region(count, ch):
     return permutation(key, count)[:k], stc_carriers(k * ch, SALT * 8)
 
 
-def layout(rows, w, h, pw):
-    """(salt pixels, payload order, encryption key) for an image"""
+def read_salt(rows, w, h):
+    """(salt pixels, the salt) of an image"""
     ch = len(rows[0]) // w
     salt_px, used = salt_region(w * h, ch)
     y = [read_bits(rows, w, salt_px, i, 1, ch) for i in range(used)]
     m = stc_extract(y, SALT * 8, used)
-    salt = bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(SALT))
+    return salt_px, bytes(sum(m[i * 8 + b] << b for b in range(8)) for i in range(SALT))
+
+
+def layout(rows, w, h, pw):
+    """(salt pixels, payload order, encryption key) for an image"""
+    salt_px, salt = read_salt(rows, w, h)
     scatter_key, enc_key = keys(pw, salt)
     return salt_px, payload_order(scatter_key, w * h, salt_px), enc_key
 
@@ -610,12 +615,41 @@ def capacity(w, h, ch=3):
     return (n * ch - length_samples(n, ch)) // 8 - BOX_OVERHEAD - 2
 
 
-SUGGESTED_UNITS_PER_BYTE = 160  # 0.05 bits per pixel, the lightest payload measured
+SUGGESTED_PNG_BYTES, SUGGESTED_JPEG_BYTES = 3, 1  # per square root of the pixels or non-zero ACs
+FIXED_BYTES = SALT + 4 + MAC + 1  # salt, length, MAC, encoding byte
+SMOOTH_PNG_RESIDUAL, SMOOTH_JPEG_SHARE = 1.7, 0.14
 
 
-def suggested(w, h, ch=3):
-    """The most `info` suggests storing in a PNG: a byte per 160 pixels"""
-    return min(w * h // SUGGESTED_UNITS_PER_BYTE, capacity(w, h, ch))
+def png_smooth(rows, w, h):
+    """Whether a PNG is too smooth for any message: a mean prediction
+    residual, |4x - the four neighbours| / 4 per sample, under 1.7"""
+    ch = len(rows[0]) // w
+    if w < 3 or h < 3:
+        return True
+    total = 0
+    for y in range(1, h - 1):
+        up, row, down = rows[y - 1], rows[y], rows[y + 1]
+        for i in range(ch, (w - 1) * ch):
+            total += abs(4 * row[i] - row[i - ch] - row[i + ch] - up[i] - down[i])
+    return 10 * total < 17 * 4 * (w - 2) * (h - 2) * ch
+
+
+def suggested(w, h, ch=3, units=None, jpeg=False):
+    """The most `info` suggests storing in a cover that isn't smooth:
+    SUGGESTED_*_BYTES per square root of its pixels (or `units`, its
+    non-zero AC coefficients), less the fixed overhead, at most what it
+    holds"""
+    most = math.isqrt(w * h if units is None else units) * (SUGGESTED_JPEG_BYTES if jpeg else SUGGESTED_PNG_BYTES)
+    most = max(0, most - FIXED_BYTES)
+    return most if jpeg else min(most, capacity(w, h, ch))
+
+
+def busy_pixel(x, y):
+    """A cover pixel with texture enough not to count as smooth: hashed
+    noise, the same for every run"""
+    v = (x * 0x9E3779B1 ^ y * 0x85EBCA77) & 0xFFFFFFFF
+    v = (v ^ (v >> 15)) * 0x2C1B3C6D & 0xFFFFFFFF
+    return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
 
 
 def noise(n, seed=1):
@@ -1021,17 +1055,17 @@ class CliTest(CliBase):
     def test_near_capacity(self):
         # 64x64: 4096 - 256 salt-region pixels (1/16 of the image) = 3840
         # px * 3 bits; minus the length's 11520 / 16 = 720 -> 1350 payload
-        # bytes; minus nonce 24 + MAC 16, the encoding byte and the name
-        # length = 1308
-        self.assertEqual(capacity(64, 64), 1308)
+        # bytes; minus the MAC's 16, the encoding byte and the name length
+        # = 1332
+        self.assertEqual(capacity(64, 64), 1332)
         out = self.path("full.png")
-        msg = noise(1308)
+        msg = noise(1332)
         code, log = self.embed(msg, out)
         self.assertEqual(code, 0, log)
         self.assertEqual(self.extract_bytes(out), msg)
-        code, log = self.embed(noise(1309), self.path("over.png"))
+        code, log = self.embed(noise(1333), self.path("over.png"))
         self.assertEqual(code, 1, log)
-        self.assertIn("message too long for this image, which holds 1308 bytes", log)
+        self.assertIn("message too long for this image, which holds 1332 bytes", log)
 
     def test_info(self):
         # The capacity, with no passphrase asked: exactly what embed takes
@@ -1040,7 +1074,7 @@ class CliTest(CliBase):
                                          "Suggested: at most %d bytes; less is harder to detect\n"
                                          % (capacity(64, 64), suggested(64, 64))))
         gray = self.path("gray.png")
-        write_png(gray, 50, 40, lambda x, y: (cover_pixel(x, y)[0],), channels=1)
+        write_png(gray, 50, 40, lambda x, y: (busy_pixel(x, y)[0],), channels=1)
         code, log = run(["info", gray])
         self.assertEqual((code, log), (0, "Format:    PNG, 50x40, gray\nCapacity:  %d bytes (more if the message compresses)\n"
                                          "Suggested: at most %d bytes; less is harder to detect\n"
@@ -1058,16 +1092,16 @@ class CliTest(CliBase):
         # warning; within it, or with -q, nothing extra
         write_png(self.cover, 200, 160, cover_pixel)
         sug = suggested(200, 160)
-        self.assertEqual(sug, 200)  # 32000 pixels at a byte per 160
+        self.assertEqual(sug, 497)  # 3 * isqrt(32000 pixels) - 37 of fixed overhead
         out = self.path("steg.png")
         code, log = run(["info", self.cover])
-        self.assertIn("Suggested: at most 200 bytes", log)
+        self.assertIn("Suggested: at most 497 bytes", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
         self.assertNotIn("Warning", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
-        self.assertIn("Warning: 201 bytes stored, more than the 200 suggested", log)
+        self.assertIn("Warning: 498 bytes stored, more than the 497 suggested", log)
         self.assertEqual(self.extract_bytes(out), noise(sug + 1))
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z", "-q"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
@@ -1076,6 +1110,58 @@ class CliTest(CliBase):
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f"], text, ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
         self.assertNotIn("Warning", log)
+
+    def test_suggestion_follows_square_root(self):
+        # Four times the pixels, twice the suggestion (before the overhead)
+        for w, h in ((100, 100), (200, 200), (400, 400)):
+            with self.subTest(size=(w, h)):
+                write_png(self.cover, w, h, busy_pixel)
+                code, log = run(["info", self.cover])
+                self.assertIn("Suggested: at most %d bytes;" % suggested(w, h), log)
+        self.assertEqual([suggested(n, n) for n in (100, 200, 400)], [263, 563, 1163])
+
+    def test_smooth_cover(self):
+        # A smooth cover gets no suggestion, and embed warns, but goes ahead
+        for name, pixel in (("ramp", lambda x, y: ((x * 7) & 0xFF, (y * 5) & 0xFF, (x + y) & 0xFF)),
+                            ("flat", lambda x, y: (120, 130, 140))):
+            with self.subTest(name):
+                write_png(self.cover, 120, 90, pixel)
+                w, h, rows = read_png(self.cover)
+                self.assertTrue(png_smooth(rows, w, h))
+                code, log = run(["info", self.cover])
+                self.assertEqual(code, 0, log)
+                self.assertIn("Suggested: none: the image is smooth, and a trained detector finds "
+                              "almost any message in it; a busier photo hides one better\n", log)
+                out = self.path("steg.png")
+                code, log = self.embed(b"hi", out)
+                self.assertEqual(code, 0, log)
+                self.assertIn("Warning: this image is smooth, and a trained detector finds almost any "
+                              "message in it;\na busier photo hides one better", log)
+                self.assertNotIn("bytes stored", log)
+                self.assertDecodes(out, "hi")
+                code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-q"], b"hi", ["correct horse"] * 2)
+                self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
+        # The busy one next to it isn't
+        write_png(self.cover, 120, 90, busy_pixel)
+        w, h, rows = read_png(self.cover)
+        self.assertFalse(png_smooth(rows, w, h))
+        self.assertIn("Suggested: at most %d bytes" % suggested(120, 90), run(["info", self.cover])[1])
+
+    def test_too_small_for_a_suggestion(self):
+        # So small that the fixed overhead is over the suggestion: none,
+        # and any message warns
+        write_png(self.cover, 12, 12, busy_pixel)  # 3 * 12 = 36 < 37
+        self.assertEqual(suggested(12, 12), 0)
+        code, log = run(["info", self.cover])
+        self.assertIn("Suggested: none: the image is too small to hide a message well\n", log)
+        code, log = self.embed(b"hi", self.path("steg.png"))
+        self.assertEqual(code, 0, log)
+        self.assertIn("Warning: this image is too small to hide a message well", log)
+        write_png(self.cover, 13, 12, busy_pixel)  # isqrt(156) = 12: still 0
+        self.assertEqual(suggested(13, 12), 0)
+        write_png(self.cover, 13, 13, busy_pixel)  # 3 * 13 - 37 = 2
+        self.assertIn("Suggested: at most 2 bytes;", run(["info", self.cover])[1])
+        self.assertEqual(suggested(13, 13), 2)
 
     def test_info_refuses_what_encode_refuses(self):
         # The same checks and messages as embed, and no prompt
@@ -1179,12 +1265,20 @@ class CliTest(CliBase):
         touched_rows = [y for y in range(h) if before[y] != after[y]]
         self.assertGreater(max(touched_rows), h // 2)
 
-    def test_random_nonce(self):
+    def test_fresh_salt(self):
+        # The secretbox's nonce is fixed (all zeros), which is safe only
+        # because every embed draws a new salt, and so a new key: the same
+        # message and passphrase twice must give two different salts
         a, b = self.path("a.png"), self.path("b.png")
         self.assertEqual(self.embed(b"same message", a)[0], 0)
         self.assertEqual(self.embed(b"same message", b)[0], 0)
         with open(a, "rb") as fa, open(b, "rb") as fb:
             self.assertNotEqual(fa.read(), fb.read())
+        salts = []
+        for f in (a, b):
+            w, h, rows = read_png(f)
+            salts.append(read_salt(rows, w, h)[1])
+        self.assertNotEqual(salts[0], salts[1])
         self.assertDecodes(a, "same message")
         self.assertDecodes(b, "same message")
 
@@ -1205,9 +1299,9 @@ class CliTest(CliBase):
     def test_gray_capacity(self):
         gray = self.path("gray.png")
         write_png(gray, 40, 40, lambda x, y: ((x * 9 + y * 5) & 0xFF,), channels=1)
-        # salt region 128 px, length 1472 / 16 = 92 samples: (1600 - 128 - 92) / 8 - 40 - 2 = 130
+        # salt region 128 px, length 1472 / 16 = 92 samples: (1600 - 128 - 92) / 8 - 16 - 2 = 154
         cap = capacity(40, 40, 1)
-        self.assertEqual(cap, 130)
+        self.assertEqual(cap, 154)
         out = self.path("steg.png")
         self.assertEqual(self.embed(noise(cap), out, src=gray)[0], 0)
         self.assertEqual(self.extract_bytes(out), noise(cap))
@@ -1672,7 +1766,7 @@ class CliTest(CliBase):
         w, h, rows = read_png(out)
         rows = [bytearray(r) for r in rows]
         _, order, _ = layout(rows, w, h, b"correct horse")
-        pos = length_samples(len(order), 3) + (NONCE + MAC + 3) * 8  # a bit of the 4th plaintext byte
+        pos = length_samples(len(order), 3) + (MAC + 3) * 8  # a bit inside the box
         p = order[pos // 3]
         rows[p // w][(p % w) * 3 + pos % 3] ^= 1
         write_png(out, w, h, lambda x, y: rows[y][x * 3:x * 3 + 3])
@@ -2015,8 +2109,8 @@ class CliTest(CliBase):
         code, log = self.embed(b"hi", self.path("out.png"), src=tiny)
         self.assertEqual(code, 1)
         self.assertIn("too small", log)
-        # 81 px: salt + header, but 4 payload bytes, short of the 40 the
-        # nonce and MAC take: no room for a byte of message
+        # 81 px: salt + header, but 4 payload bytes, short of the 18 the
+        # MAC, encoding and name length take: no room for a byte of message
         small = self.path("small.png")
         write_png(small, 9, 9, cover_pixel)
         self.assertLessEqual(capacity(9, 9), 0)
@@ -2025,8 +2119,8 @@ class CliTest(CliBase):
         self.assertIn("too small", log)
         roomy = self.path("roomy.png")
         write_png(roomy, 16, 16, cover_pixel)
-        self.assertEqual(capacity(16, 16), 33)
-        code, log = self.embed(noise(34), self.path("out.png"), src=roomy)
+        self.assertEqual(capacity(16, 16), 57)
+        code, log = self.embed(noise(58), self.path("out.png"), src=roomy)
         self.assertEqual(code, 1)
         self.assertIn("too long", log)
         code, log = self.extract(tiny)
@@ -2277,7 +2371,7 @@ class JpegTest(CliBase):
         self.assertIn("too long", log)
         self.assertFalse(os.path.exists(out))
         tiny = self.path("tiny.jpg")
-        make_jpeg(tiny, 8, 8, 1, 50)  # one block: nowhere near 160 carriers
+        make_jpeg(tiny, 8, 8, 1, 50)  # one block: 63 carriers, too few for the salt
         code, log = self.embed(b"x", out, src=tiny)
         self.assertEqual(code, 1, log)
         self.assertIn("too small", log)
@@ -2290,7 +2384,7 @@ class JpegTest(CliBase):
                          r"Suggested: at most (\d+) bytes; less is harder to detect\n", log)
         self.assertTrue(m, log)
         n, sug = int(m.group(1)), int(m.group(2))
-        self.assertTrue(0 < sug < n, (sug, n))  # a byte per 160 non-zero AC coefficients
+        self.assertTrue(0 < sug < n, (sug, n))  # isqrt(non-zero AC coefficients) - 37
         # The warning starts just past the suggestion
         code, log = self.embed(noise(sug), self.path("w.jpg"), src=self.jpeg)
         self.assertEqual(code, 0, log)

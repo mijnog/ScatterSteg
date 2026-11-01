@@ -15,7 +15,7 @@ What ScatterSteg tries to protect, against whom, and what it explicitly doesn't.
 
 Someone who sees many images (a censor, a platform, a border check) and runs detectors over them, looking for any that carry hidden data.
 
-- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one catches PNG output about 56% of the time at 0.05 bits per pixel, the lightest payload measured, and 65% at 0.4 (HILL costs; 65% and 93% with the uniform costs used before). That is harder to detect than steghide or plain LSB embedding, not undetectable. A deep-learning detector (SRNet) does much better: it catches 74% of PNGs at 0.2 bits per pixel, 87% at 0.4, and 92% of JPEGs at 0.2 bits per non-zero AC coefficient (89% at 0.05). Against a warden with such a detector, only small payloads in private, busy covers can hope to pass.
+- **Claim:** at low payloads, ScatterSteg output is not reliably distinguishable from clean images by the classic detectors for LSB steganography, but the trained classifiers measured in [Machine-learning detectors](#machine-learning-detectors) catch it often: the stronger one catches PNG output about 56% of the time at 0.05 bits per pixel, the lightest payload measured, and 65% at 0.4 (HILL costs; 65% and 93% with the uniform costs used before). That is harder to detect than steghide or plain LSB embedding, not undetectable. A deep-learning detector (SRNet) does much better: it catches 74% of PNGs at 0.2 bits per pixel, 87% at 0.4, and 92% of JPEGs at 0.2 bits per non-zero AC coefficient. On those small test images, how busy the cover is matters more than the payload: the smoothest third of JPEGs is caught 93–98% of the time at any payload measured, the busiest third 80–85%. Against a warden with such a detector, only small payloads in private, busy covers can hope to pass, which is what `info`'s suggestion steers towards.
 - **How:** STC syndrome coding (few changes) with HILL costs for PNG (changes where the image is busy), ±1 changes paired as value swaps (the histogram kept), JPEG coefficients edited losslessly with UERD costs (changes in busy blocks), the output in the cover's own format and metadata, and no header or marker in the image.
 - **Evidence:** measured against chi-square, sample pair analysis, HCF-COM and adjacency HCF-COM (see [`benchmark/README.md`](benchmark/README.md#classic-detectors)), and against trained classifiers, rich models and SRNet (see [Machine-learning detectors](#machine-learning-detectors) below). Also scored by Aletheia's off-the-shelf EfficientNet-B0 detectors, trained on ALASKA2 (see [Machine-learning detectors](#machine-learning-detectors)): they found a flaw, since fixed, and are now at chance at 0.05.
 - **Known-position test:** the salt must sit at public positions, so a warden can look exactly there. An earlier design wrote it straight in (about 64 changes in 128 known samples), and a targeted test of prediction error at those positions detected it slightly above chance: AUC 0.56 over 500 ALASKA2 images, 9% detected at 5% false alarms. The salt is now carried as an STC syndrome over a public region of ~8192 samples (about 18 sparse changes); the same test, and the same test over the whole region, are at chance (AUC 0.49–0.50).
@@ -95,7 +95,7 @@ Someone who takes or searches a device used with ScatterSteg (at a border, in a 
 |---|---|
 | Key stretching | Argon2id, opslimit 3, memlimit 256 MiB, 16-byte random salt per image |
 | Key separation | `crypto_kdf` subkeys 1 (scatter) and 2 (encryption), context `ScatStg2` |
-| Encryption | XSalsa20-Poly1305 (`crypto_secretbox`), 24-byte random nonce |
+| Encryption | XSalsa20-Poly1305 (`crypto_secretbox`), nonce all zeros: each image's key comes from a fresh random salt and is used once, so the nonce needn't vary, and not storing it saves 24 bytes of embedding (`test_fresh_salt` checks two embeds never share a salt) |
 | Pixel order | unbiased Fisher–Yates driven by ChaCha20-IETF keyed with the scatter key |
 | Salt positions | the same shuffle keyed with BLAKE2b of a public label |
 
@@ -140,9 +140,9 @@ SRNet, the reference deep network for steganalysis, trained on 7,000 cover/stego
 | ScatterSteg JPEG, UERD, 0.2 bits per non-zero AC coefficient | 0.08 | 92% |
 | ScatterSteg PNG, HILL, 0.1 bits per pixel | 0.34 | 66% |
 | ScatterSteg JPEG, UERD, 0.1 bits per non-zero AC coefficient | 0.09 | 91% |
-| ScatterSteg JPEG, UERD, 0.05 bits per non-zero AC coefficient | 0.11 | 89% |
+| ScatterSteg JPEG, UERD, 0.05 bits per non-zero AC coefficient (about 0.09 with the format's fixed overhead) | 0.11 | 89% |
 
-What this means for A1: a warden who can train a deep network on images like yours, at about the payload you use, will find moderate payloads most of the time. The rich-model figures above understate that warden. Lighter payloads help only slowly (JPEG at 0.05 bits per non-zero AC is still caught 89% of the time), so keep to the suggested most (`scattersteg info`) or well under it, and prefer covers that are busy and unpublished.
+What this means for A1: a warden who can train a deep network on images like yours, at about the payload you use, will find moderate payloads most of the time. The rich-model figures above understate that warden. On these 256×256 images every message also carries a fixed overhead (then 62 bytes, now 38), so the lightest JPEG payload was really about 0.09 bits per non-zero AC coefficient; nothing lighter has been measured. Keep to the suggested most (`scattersteg info`) or well under it, and use covers that are busy and unpublished: `info` suggests nothing for a smooth one.
 
 ## Reporting a problem
 

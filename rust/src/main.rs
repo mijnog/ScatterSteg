@@ -363,14 +363,43 @@ fn check_cover(cover: &mut Cover, input: &Path) -> bool {
     true
 }
 
-/// The suggested most to store in the cover (see
-/// codec::SUGGESTED_UNITS_PER_BYTE), never more than it holds
-fn suggested(cover: &mut Cover) -> usize {
-    let units = match cover {
-        Cover::Png(img) => img.width as u64 * img.height as u64,
-        Cover::Jpeg(j) => j.nonzero_ac,
+/// Whether the cover is too smooth for any message (see codec::SMOOTH_*): a
+/// PNG's mean prediction residual, a JPEG's share of non-zero AC coefficients
+fn smooth(cover: &mut Cover) -> bool {
+    let img = match cover {
+        Cover::Jpeg(j) => {
+            let nonzero = j.nonzero_ac;
+            return 100 * nonzero < codec::SMOOTH_JPEG_PERCENT * cover.carrier().positions() as u64;
+        }
+        Cover::Png(img) => img,
     };
-    ((units / codec::SUGGESTED_UNITS_PER_BYTE) as usize).min(codec::capacity(&cover.carrier()))
+    let (w, h, ch) = (img.width as usize, img.height as usize, img.channels as usize);
+    if w < 3 || h < 3 { return true; }
+    let stride = w * ch;
+    let count = ((w - 2) * (h - 2) * ch) as u64;
+    let mut sum = 0u64;
+    for y in 1..h - 1 {
+        let (up, row, down) = (&img.pixels[(y - 1) * stride..y * stride], &img.pixels[y * stride..(y + 1) * stride],
+                               &img.pixels[(y + 1) * stride..(y + 2) * stride]);
+        for i in ch..(w - 1) * ch {
+            let d = 4 * row[i] as i32 - row[i - ch] as i32 - row[i + ch] as i32 - up[i] as i32 - down[i] as i32;
+            sum += d.unsigned_abs() as u64;
+        }
+    }
+    // mean of |d| / 4 under 1.7: 10 * sum < 17 * 4 * count
+    10 * sum < codec::SMOOTH_PNG_RESIDUAL_X10 * 4 * count
+}
+
+/// The suggested most to store in the cover (see codec::SUGGESTED_*), never
+/// more than it holds, and whether the cover is smooth (then 0)
+fn suggested(cover: &mut Cover) -> (usize, bool) {
+    if smooth(cover) { return (0, true); }
+    let (units, jpeg) = match cover {
+        Cover::Png(img) => (img.width as u64 * img.height as u64, false),
+        Cover::Jpeg(j) => (j.nonzero_ac, true),
+    };
+    let most = codec::suggested(units, jpeg).min(codec::capacity(&cover.carrier()) as u64);
+    (most as usize, false)
 }
 
 /// info: the cover's format and size, and the longest message it holds, or
@@ -387,11 +416,19 @@ fn info(input: &Path) -> ExitCode {
         Cover::Jpeg(j) => { let (w, h) = j.size(); format!("JPEG, {w}x{h}") }
     };
     let capacity = codec::capacity(&cover.carrier());
-    let suggest = suggested(&mut cover);
+    let (suggest, is_smooth) = suggested(&mut cover);
     drop(cover);
+    let advice = if is_smooth {
+        "none: the image is smooth, and a trained detector finds almost any message in it; \
+         a busier photo hides one better".to_string()
+    } else if suggest == 0 {
+        "none: the image is too small to hide a message well".to_string()
+    } else {
+        format!("at most {suggest} byte{}; less is harder to detect", if suggest == 1 { "" } else { "s" })
+    };
     let text = format!("Format:    {format}\n\
                         Capacity:  {capacity} bytes (more if the message compresses)\n\
-                        Suggested: at most {suggest} bytes; less is harder to detect\n");
+                        Suggested: {advice}\n");
     if let Err(e) = write_fd(1, text.as_bytes()) {
         scattersteg::errln!("Error: could not write the information: {}", errno_message(&e));
         return ExitCode::FAILURE;
@@ -612,7 +649,7 @@ fn embed(o: &Options) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
-    let suggest = suggested(&mut cover);
+    let (suggest, is_smooth) = suggested(&mut cover);
     if !o.quiet { scattersteg::errln!("Deriving keys..."); }
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,
@@ -686,7 +723,12 @@ fn embed(o: &Options) -> ExitCode {
         }
     }
     // Advice, not a limit: lighter payloads are harder to detect
-    if !o.quiet && stored.hidden - 1 > suggest {
+    if !o.quiet && is_smooth {
+        scattersteg::errln!("Warning: this image is smooth, and a trained detector finds almost any message in it;\n\
+                   a busier photo hides one better (see `scattersteg info`)");
+    } else if !o.quiet && suggest == 0 {
+        scattersteg::errln!("Warning: this image is too small to hide a message well (see `scattersteg info`)");
+    } else if !o.quiet && stored.hidden - 1 > suggest {
         scattersteg::errln!("Warning: {} bytes stored, more than the {suggest} suggested for this image;\n\
                    the more is hidden, the easier it is to detect (see `scattersteg info`)", stored.hidden - 1);
     }

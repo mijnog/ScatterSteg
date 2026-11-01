@@ -14,7 +14,7 @@
 //!            256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
 //!            and 2 of master, context KDF_CONTEXT
 //!   order    prng::permutation(scatter key) with the salt pixels removed
-//!   payload  [nonce 24 | secretbox]: its 32-bit little-endian length as the
+//!   payload  secretbox, nonce all zeros: its 32-bit little-endian length as the
 //!            STC syndrome of the first length_samples samples in that
 //!            order, then its bits as the STC syndrome of the samples after
 //!            them (see payload_carriers), both with the same costs
@@ -40,12 +40,39 @@ const LENGTH_SAMPLES: usize = 2048;
 // The labels are part of the format; "v2" is history, not a version
 const SALT_LABEL: &[u8] = b"ScatterSteg v2 salt positions";
 const KDF_CONTEXT: &[u8; 8] = b"ScatStg2";
-pub const BOX_OVERHEAD: usize = NONCE_BYTES + MAC_BYTES;
-/// The suggested most to store: 1 byte per this many pixels (PNG) or
-/// non-zero AC coefficients (JPEG), i.e. 0.05 bits each, the lightest
-/// payload the benchmarks measured (README, "Steganalysis results"). Lighter
-/// is harder to detect; it is advice, not a limit.
-pub const SUGGESTED_UNITS_PER_BYTE: u64 = 160;
+pub const BOX_OVERHEAD: usize = MAC_BYTES;
+/// The secretbox nonce: always zero. Each message's encryption key comes from
+/// a fresh random salt (prepare_encode), so no key is used twice and the
+/// nonce needn't vary; storing one would cost 24 bytes of embedding.
+const ZERO_NONCE: [u8; NONCE_BYTES] = [0; NONCE_BYTES];
+/// The suggested most to store (advice, not a limit; README, "Keep the
+/// message small"). By the square root law, what an image hides at a given
+/// risk grows with the square root of its size: everything stored, the fixed
+/// overhead included, is at most this many bytes per square root of the
+/// pixels (PNG) or non-zero AC coefficients (JPEG). Anchored on the lightest
+/// payloads the benchmarks measured on BOSSbase (256x256): about 0.1 bits per
+/// pixel and 0.08 bits per non-zero AC coefficient, overhead included.
+pub const SUGGESTED_PNG_BYTES: u64 = 3;
+pub const SUGGESTED_JPEG_BYTES: u64 = 1;
+/// What every message stores besides its record, less the record's name
+/// length byte (the suggestion counts the record without it): salt 16,
+/// length 4, MAC 16, encoding 1
+pub const FIXED_BYTES: u64 = 37;
+/// A cover this smooth gets no suggestion, as a trained detector finds almost
+/// any message in it: a mean prediction residual (|4x - the four neighbours|
+/// / 4 per sample) under 1.7 (PNG), or under 14% of AC coefficients non-zero
+/// (JPEG). From the same benchmarks: the smoothest third of covers was caught
+/// 93-98% of the time at any payload.
+pub const SMOOTH_PNG_RESIDUAL_X10: u64 = 17;
+pub const SMOOTH_JPEG_PERCENT: u64 = 14;
+
+/// The suggestion for a cover of `units` pixels (PNG) or non-zero AC
+/// coefficients (JPEG), before the smoothness check: 0 if the fixed overhead
+/// alone is over it
+pub fn suggested(units: u64, jpeg: bool) -> u64 {
+    let most = units.isqrt() * if jpeg { SUGGESTED_JPEG_BYTES } else { SUGGESTED_PNG_BYTES };
+    most.saturating_sub(FIXED_BYTES)
+}
 
 /// Pixels in the salt region: SALT_SAMPLES samples' worth, but at most 1/16
 /// of the image, and never fewer than one sample per salt bit
@@ -236,13 +263,12 @@ fn embed_payload(c: &Carrier, order: &[u32], n: u32, payload: &[u8], plan: &mut 
     Ok(())
 }
 
-/// Open [nonce | secretbox] with key. The plaintext has one spare byte after
+/// Open the secretbox with key (and ZERO_NONCE). The plaintext has one spare byte after
 /// it (for the caller's newline). None if it doesn't authenticate.
 fn open_box(boxed: &[u8], key: &[u8; 32]) -> Result<Option<Secret>, String> {
     let pt_len = boxed.len() - BOX_OVERHEAD;
     let mut pt = Secret::new(pt_len + 1).ok_or("allocation failed")?;
-    let nonce: &[u8; NONCE_BYTES] = boxed[..NONCE_BYTES].try_into().unwrap();
-    if !sodium::secretbox_open_easy(&mut pt[..pt_len], &boxed[NONCE_BYTES..], nonce, key) { return Ok(None); }
+    if !sodium::secretbox_open_easy(&mut pt[..pt_len], boxed, &ZERO_NONCE, key) { return Ok(None); }
     Ok(Some(pt))
 }
 
@@ -339,15 +365,12 @@ impl Prepared {
     /// shorter (0: never), encrypts it, and changes the cover to carry it.
     /// TooLong if it doesn't fit even compressed.
     pub fn embed(self, c: &mut Carrier, name: &[u8], message: &[u8], level: u32) -> Result<Embedded, EmbedError> {
-        // payload = [nonce | secretbox([encoding | body])]
+        // payload = secretbox([encoding | body]), nonce ZERO_NONCE
         let (packed, packed_len) = compress::pack(name, message, level).ok_or(EmbedError::Alloc)?;
         let stored = Embedded { hidden: packed_len - 1, compressed: packed[0] != 0 };
         if packed_len > self.max_msg + 2 { return Err(EmbedError::TooLong); }
         let mut payload = vec![0u8; BOX_OVERHEAD + packed_len];
-        let mut nonce = [0u8; NONCE_BYTES];
-        sodium::random_bytes(&mut nonce);
-        payload[..NONCE_BYTES].copy_from_slice(&nonce);
-        sodium::secretbox_easy(&mut payload[NONCE_BYTES..], &packed[..packed_len], &nonce, self.keys.enc());
+        sodium::secretbox_easy(&mut payload, &packed[..packed_len], &ZERO_NONCE, self.keys.enc());
         drop(packed);
 
         // PNG: HILL costs (see embed::costs), or the build's other model;

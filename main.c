@@ -266,12 +266,36 @@ static int cover_check(Cover *c, const char *path) {
     return 0;
 }
 
-/* The suggested most to store in the cover (see
-   CODEC_SUGGESTED_UNITS_PER_BYTE), never more than it holds */
-static size_t suggested(const Cover *c) {
+/* Whether the cover is too smooth for any message (see CODEC_SMOOTH_*):
+   a PNG's mean prediction residual, a JPEG's share of non-zero AC
+   coefficients */
+static int smooth(const Cover *c) {
+    if (c->jpeg)
+        return 100 * jpeg_nonzero_ac(c->jpeg) <
+               (uint64_t)CODEC_SMOOTH_JPEG_PERCENT * carrier_positions(&c->carrier);
+    const Image *im = c->png;
+    uint32_t w = im->width, h = im->height, ch = im->channels;
+    if (w < 3 || h < 3) return 1;
+    uint64_t sum = 0, count = (uint64_t)(w - 2) * (h - 2) * ch;
+    for (uint32_t y = 1; y + 1 < h; y++) {
+        const uint8_t *up = im->rows[y - 1], *row = im->rows[y], *down = im->rows[y + 1];
+        for (uint32_t i = ch; i < (w - 1) * ch; i++) {
+            int d = 4 * row[i] - row[i - ch] - row[i + ch] - up[i] - down[i];
+            sum += (uint64_t)(d < 0 ? -d : d);
+        }
+    }
+    /* mean of |d| / 4 under 1.7: 10 * sum < 17 * 4 * count */
+    return 10 * sum < (uint64_t)CODEC_SMOOTH_PNG_RESIDUAL_X10 * 4 * count;
+}
+
+/* The suggested most to store in the cover (see CODEC_SUGGESTED_*), never
+   more than it holds; 0 for a smooth cover, which *is_smooth tells */
+static size_t suggested(const Cover *c, int *is_smooth) {
+    *is_smooth = smooth(c);
+    if (*is_smooth) return 0;
     uint64_t units = c->png ? (uint64_t)c->png->width * c->png->height : jpeg_nonzero_ac(c->jpeg);
-    size_t most = (size_t)(units / CODEC_SUGGESTED_UNITS_PER_BYTE), holds = codec_capacity(&c->carrier);
-    return most < holds ? most : holds;
+    uint64_t most = codec_suggested(units, c->jpeg != NULL), holds = codec_capacity(&c->carrier);
+    return (size_t)(most < holds ? most : holds);
 }
 
 /* A digest of all a decoder reads: the carrier's size and every sample, in
@@ -689,7 +713,7 @@ static int do_embed(const Options *o) {
     Cover cover = {0};
     CodecPrepared *prep = NULL;
     size_t holds = 0, suggest = 0, message_len = 0;
-    int too_long = 0, read_err = 0;
+    int too_long = 0, read_err = 0, is_smooth = 0;
     CodecEmbedded stored;
 
     passphrase = read_passphrase("Passphrase: ");
@@ -710,7 +734,7 @@ static int do_embed(const Options *o) {
 
     if (cover_load(o->cover_file, &cover) != 0 || cover_check(&cover, o->cover_file) != 0)
         goto done;
-    suggest = suggested(&cover);
+    suggest = suggested(&cover, &is_smooth);
     if (!o->quiet) fprintf(stderr, "Deriving keys...\n");
     prep = codec_prepare(&cover.carrier, passphrase);
     free_passphrase(passphrase);
@@ -765,7 +789,12 @@ static int do_embed(const Options *o) {
         goto done;
     }
     /* Advice, not a limit: lighter payloads are harder to detect */
-    if (!o->quiet && stored.hidden - 1 > suggest)
+    if (!o->quiet && is_smooth)
+        fprintf(stderr, "Warning: this image is smooth, and a trained detector finds almost any message in it;\n"
+                        "a busier photo hides one better (see `scattersteg info`)\n");
+    else if (!o->quiet && suggest == 0)
+        fprintf(stderr, "Warning: this image is too small to hide a message well (see `scattersteg info`)\n");
+    else if (!o->quiet && stored.hidden - 1 > suggest)
         fprintf(stderr, "Warning: %u bytes stored, more than the %zu suggested for this image;\n"
                         "the more is hidden, the easier it is to detect (see `scattersteg info`)\n",
                 stored.hidden - 1, suggest);
@@ -890,14 +919,24 @@ static int show_info(const char *input) {
         jpeg_size(cover.jpeg, &w, &h);
         snprintf(format, sizeof(format), "JPEG, %ux%u", w, h);
     }
-    size_t capacity = codec_capacity(&cover.carrier), suggest = suggested(&cover);
+    int is_smooth;
+    size_t capacity = codec_capacity(&cover.carrier), suggest = suggested(&cover, &is_smooth);
     cover_free(&cover);
 
-    char out[256];
+    char advice[160];
+    if (is_smooth)
+        snprintf(advice, sizeof(advice), "none: the image is smooth, and a trained detector finds "
+                                         "almost any message in it; a busier photo hides one better");
+    else if (suggest == 0)
+        snprintf(advice, sizeof(advice), "none: the image is too small to hide a message well");
+    else
+        snprintf(advice, sizeof(advice), "at most %zu byte%s; less is harder to detect", suggest,
+                 suggest == 1 ? "" : "s");
+    char out[512];
     int n = snprintf(out, sizeof(out), "Format:    %s\n"
                                        "Capacity:  %zu bytes (more if the message compresses)\n"
-                                       "Suggested: at most %zu bytes; less is harder to detect\n",
-                     format, capacity, suggest);
+                                       "Suggested: %s\n",
+                     format, capacity, advice);
     if (write_all(STDOUT_FILENO, out, (size_t)n) != 0) {
         fprintf(stderr, "Error: could not write the information: %s\n", strerror(errno));
         return 1;

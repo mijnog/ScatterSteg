@@ -12,7 +12,7 @@ ScatterSteg competes with steghide, so its command line uses steghide's commands
   - `-cf -` and `-sf -` (cover from stdin, output to stdout) aren't supported.
   - An existing output file is refused unless `-f`; there is no yes/no prompt. `-f` doesn't replace a file named by the image (the sender chose it): only `-xf <name> -f` does.
   - The stored file name must be UTF-8, not start with `.`, and hold no control or bidi characters (`-N` stores none). An extracted file is created 0600.
-  - `info <image>` reports whether the image can be a cover, its capacity, and a suggested most to store (a byte per 160 pixels or non-zero AC coefficients, from the benchmarks' lightest payload). It doesn't look for a message: nothing can, without the passphrase.
+  - `info <image>` reports whether the image can be a cover, its capacity, and a suggested most to store (3 bytes per √pixels or 1 per √(non-zero AC coefficients), less the fixed overhead; none for a smooth cover). It doesn't look for a message: nothing can, without the passphrase.
   - Messages are always byte-exact (no newline added or removed).
 - **Both front ends:** `main.c` (C) and `rust/src/main.rs` (Rust) must behave identically, wording included. `tests/test_cli.py` runs against each (`SCATTERSTEG=<binary>`).
 
@@ -24,11 +24,11 @@ ScatterSteg competes with steghide, so its command line uses steghide's commands
 
 **Kaggle.** Public datasets `qpdbqp/scattersteg-srnet-ternary` (BOSSbase republished with its maintainer's permission) and soon `qpdbqp/scattersteg-srnet-png`; public notebooks `qpdbqp/scattersteg-srnet-ternary-vs-binary` and `-seed-1` (`~/bench/kaggle/`). Setup: `~/bench/venv-kaggle`, token in `~/.kaggle/access_token` (0600). ~45 minutes per detector, two in parallel on two T4s; GPU time is limited (~30 h a week), so only runs that decide something. The owner pushes.
 
-**Branches.** `ternary-stc` (local): the prototype above. Nothing else is waiting.
+**Branches.** `ternary-stc` (local): the prototype above. `payload-suggestion`: step 4 and the nonce (below), waiting for CI and the owner's go-ahead.
 
 **Audit findings** (`AUDIT-2026-10-31.md`): all eight fixed and merged, nothing open.
 
-**Step 4 (payload suggestion) is next** after the PNG run is pushed.
+**Step 4 (payload suggestion), branch `payload-suggestion`.** The owner chose all three parts (2026-11-01): (1) a smooth cover gets no suggestion, and embed warns (JPEG under 14% of ACs non-zero, PNG mean residual |4x − neighbours|/4 under 1.7: the smoothest third, caught 93–98% at any payload); (2) the suggestion is 3 bytes per √pixels (PNG) or 1 per √(non-zero ACs) (JPEG) less 37 fixed bytes (`codec_suggested`), anchored on BOSSbase's lightest payloads with the overhead counted, the √n scaling from the literature (untested here: one image size); (3) the 24-byte secretbox nonce is gone (zero nonce; the key is unique per message as the salt is fresh; `test_fresh_salt`), overhead 62 to 38 bytes. Found on the way: the BOSSbase light payloads were dominated by that overhead ("0.05" was ~0.09 effective, 0.17 on smooth images), and texture matters more than payload; docs corrected. A size sweep (SRNet at several image sizes) would calibrate √n, if worth the GPU time.
 
 **Tools.** mozjpeg 4.1.1 in `~/bench/ext/mozjpeg-src/build`, covers `~/bench/mozjpeg-covers`; `~/bench/venv-conseal` (conseal 2025.11 + jpeglib) for reference simulators (`benchmark/alaska2/sim_reference.py`); Aletheia at `~/bench/ext/aletheia`.
 
@@ -41,7 +41,7 @@ The file format isn't frozen: nobody uses ScatterSteg yet, so a format change ne
 1. **Done: JPEG embeds in every AC coefficient** (zeros and ±1 included), as UED, UERD and J-UNIWARD were published. Results in `benchmark/README.md` (DCTR: better from 0.2 up; SRNet: no difference). It fits smooth covers that the old rule refused, which SRNet catches almost always: at 0.2 bits per non-zero AC, P_E runs from 0.002 (smoothest tenth) to 0.176 (busiest quarter) under either rule. That is step 4's job.
 2. **Done: files are written the way the cover was** (PNG: row filters, IDAT size, zlib settings; camera JPEGs: header and Huffman tables; `diff_png`/`diff_jpeg` check C and Rust write the same bytes). Scan scripts of progressive/multi-scan covers are kept (merged with `jpeg-scan-script`). Left: progressive headers, fill bytes before EOI, padding-bit quirks, PNG level-0 stored blocks.
 3. **Ternary embedding** (multi-layer STC; the message picks +1 or −1): fewer changes per bit, as the published HILL/UERD/J-UNIWARD results assume. It removes most of the exchange embedding's swaps, so measure it against the current binary + exchange, don't assume. **Kept (2026-11-01); PNG check and port pending:** see the Handoff.
-4. **Payload suggestion by the square root law, and by texture:** `info`'s suggested most should grow with √(pixels or non-zero ACs), not linearly, and be stricter for smooth covers: at 0.2 bits per nonzero AC, SRNet's P_E runs from 0.002 (smoothest tenth by nonzero-AC share) to 0.176 (busiest quarter), under either JPEG rule (`benchmark/README.md`). embed's over-the-suggestion warning follows it. Calibrate on the new rule's light-payload SRNet runs (below); do the same check for PNG (texture measure: mean HILL cost, say) with `hill_0.1`/`hill_0.2`.
+4. **Payload suggestion by the square root law, and by texture** (branch `payload-suggestion`, see the Handoff): `info`'s suggested most should grow with √(pixels or non-zero ACs), not linearly, and be stricter for smooth covers: at 0.2 bits per nonzero AC, SRNet's P_E runs from 0.002 (smoothest tenth by nonzero-AC share) to 0.176 (busiest quarter), under either JPEG rule (`benchmark/README.md`). embed's over-the-suggestion warning follows it. Calibrate on the new rule's light-payload SRNet runs (below); do the same check for PNG (texture measure: mean HILL cost, say) with `hill_0.1`/`hill_0.2`.
 5. **Know where we stand:** add HStego (J-UNIWARD/HILL with STC, the closest rival) and phasm-core (Rust, J-UNIWARD + STC), if it has a usable CLI, to the benchmark. Aletheia's ALASKA2 detectors on ScatterSteg: **done** (`benchmark/README.md`, `benchmark/alaska2/`).
 
 **Kaggle (added 2026-10-31; the off-the-shelf ALASKA2 detectors are done):**

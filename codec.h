@@ -18,11 +18,30 @@ enum { DECODED, NO_MATCH, FAILED };
 #define CODEC_MESSAGE_MAX ((uint32_t)64 << 20)
 /* The longest file name stored with a message */
 #define CODEC_NAME_MAX 255
-/* The suggested most to store: 1 byte per this many pixels (PNG) or
-   non-zero AC coefficients (JPEG), i.e. 0.05 bits each, the lightest
-   payload the benchmarks measured (README, "Steganalysis results").
-   Lighter is harder to detect; it is advice, not a limit. */
-#define CODEC_SUGGESTED_UNITS_PER_BYTE 160
+/* The suggested most to store (advice, not a limit; README, "Keep the
+   message small"). By the square root law, what an image hides at a given
+   risk grows with the square root of its size: everything stored, the fixed
+   overhead included, is at most this many bytes per square root of the
+   pixels (PNG) or non-zero AC coefficients (JPEG). Anchored on the lightest
+   payloads the benchmarks measured on BOSSbase (256x256): about 0.1 bits per
+   pixel and 0.08 bits per non-zero AC coefficient, overhead included. */
+#define CODEC_SUGGESTED_PNG_BYTES  3
+#define CODEC_SUGGESTED_JPEG_BYTES 1
+/* What every message stores besides its record, less the record's name
+   length byte (the suggestion counts the record without it): salt 16,
+   length 4, MAC 16, encoding 1 */
+#define CODEC_FIXED_BYTES 37
+/* A cover this smooth gets no suggestion, as a trained detector finds
+   almost any message in it: a mean prediction residual (|4x - the four
+   neighbours| / 4 per sample) under 1.7 (PNG), or under 14% of AC
+   coefficients non-zero (JPEG). From the same benchmarks: the smoothest
+   third of covers was caught 93-98% of the time at any payload. */
+#define CODEC_SMOOTH_PNG_RESIDUAL_X10 17
+#define CODEC_SMOOTH_JPEG_PERCENT     14
+/* The suggestion for a cover of `units` pixels (PNG) or non-zero AC
+   coefficients (JPEG), before the smoothness check: 0 if the fixed overhead
+   alone is over it */
+uint64_t codec_suggested(uint64_t units, int jpeg);
 
 /* Whether name can be stored with a message, and so created by extract: a
    bare file name of 1 to CODEC_NAME_MAX bytes of UTF-8, not starting with

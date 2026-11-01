@@ -132,7 +132,7 @@ The idea is **steganography**: hiding a message so well that nobody knows a mess
 
 **Expert:** And the payload advice?
 
-**Me:** That's the weakest part right now. `info` suggests 0.05 bits per pixel or per non-zero AC coefficient, linear in the cover size. The **square root law** (Ker, Pevný, Kodovský and Fridrich; Filler, Ker and Fridrich) says secure capacity grows like √n, so a linear rule is too generous for big covers. It's also blind to texture. At 0.2 bits per non-zero AC coefficient, SRNet's P_E runs from 0.002 for the smoothest tenth of BOSSbase to 0.18 for the busiest quarter. Bits per non-zero AC coefficient doesn't put covers on an equal footing. The plan is to make the suggestion scale with √n and with a texture measure, calibrated on the light-payload SRNet runs now training.
+**Me:** It follows the **square root law** (Ker, Pevný, Kodovský and Fridrich; Filler, Ker and Fridrich): secure capacity grows like √n, so `info` suggests a fixed number of bytes per √(pixels) or √(non-zero AC coefficients), anchored on the lightest payloads SRNet was tested at, with the format's fixed overhead counted. Texture matters more than size at these rates: at 0.2 bits per non-zero AC coefficient, SRNet's P_E runs from 0.002 for the smoothest tenth of BOSSbase to 0.18 for the busiest quarter, so a smooth cover gets no suggestion at all. The weak spot is the √n part: every BOSSbase image is 256×256, so the scaling is the literature's, not our measurement.
 
 **Expert:** Pooled steganalysis?
 

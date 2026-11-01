@@ -373,11 +373,38 @@ hidden. S-UNIWARD is caught more often than HILL at 0.4 (P_E 0.095 against
 0.129), though it makes fewer changes, so HILL stays the PNG default.
 J-UNIWARD and UERD are level for JPEG at 0.2 (0.080 against 0.077, within
 one standard error), so UERD, much cheaper to compute, stays the default.
-Lighter payloads help, but slowly: for JPEG, P_E rises only from 0.077 at
-0.2 bits per non-zero AC to 0.093 at 0.1 and 0.109 at 0.05, so even the
-lightest payload measured is caught 83% of the time at 5% false alarms (89%
-of the time at the best threshold). PNG at 0.1 bits per pixel is the first
-row the detector does poorly on (P_E 0.34). This setting favours the warden:
+For JPEG, P_E rises only from 0.077 at 0.2 bits per non-zero AC to 0.093
+at 0.1 and 0.109 at 0.05. The nominal payload overstates the difference:
+every message also carried a fixed 62 bytes (salt 16, length 4, nonce 24,
+MAC 16, two header bytes; 38 since the nonce went), which on a 256×256 JPEG
+with a median 11,300 non-zero AC coefficients is 47% of the bits at 0.05.
+So "0.05" was really about 0.09, and 0.17 on the smoothest images. Counting
+the overhead, by the share of AC coefficients that aren't 0 (the three
+UERD runs pooled; each run's own threshold):
+
+| bits per non-zero AC, overhead included | smoothest third (2–14%) | middle third (14–21%) | busiest third (21–47%) |
+|---|---|---|---|
+| 0.05–0.08 | – | – | 0.244 |
+| 0.08–0.11 | 0.067 | 0.070 | 0.200 |
+| 0.11–0.15 | 0.028 | 0.062 | 0.194 |
+| 0.15–0.20 | 0.031 | 0.038 | – |
+| 0.20–0.30 | 0.018 | 0.056 | 0.152 |
+
+Texture, not payload, dominates at these rates. PNG shows the same, by the
+mean prediction residual (|4x − the four neighbours| / 4), in fifths:
+
+| Set | smoothest | 2nd | 3rd | 4th | busiest |
+|---|---|---|---|---|---|
+| HILL 0.1 | 0.158 | 0.271 | 0.375 | 0.432 | 0.461 |
+| HILL 0.2 | 0.064 | 0.164 | 0.269 | 0.336 | 0.446 |
+| HILL 0.4 | 0.010 | 0.040 | 0.086 | 0.177 | 0.334 |
+
+PNG at 0.1 bits per pixel is the first row the detector does poorly on (P_E
+0.34, and near chance on the busiest images). `info`'s suggestion follows
+from these tables: none for a cover in the smoothest third (JPEG under 14%
+non-zero, PNG residual under 1.7), and otherwise the lightest measured
+payloads, overhead included, scaled by the square root of the cover's size
+(`codec.h`, `CODEC_SUGGESTED_*`). This setting favours the warden:
 one cover source for training and test, the payload known, and small
 images, where a given rate is easier to detect.
 

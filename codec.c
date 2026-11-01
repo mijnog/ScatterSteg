@@ -5,6 +5,7 @@
 #include "embed.h"
 #include "prng.h"
 #include "stc.h"
+#include <math.h>
 #include <sodium.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,7 @@
               256 MiB); scatter and encryption keys = crypto_kdf subkeys 1
               and 2 of master, context KDF_CONTEXT
      order    prng_permutation(scatter key) with the salt pixels removed
-     payload  [nonce 24 | secretbox]: its 32-bit little-endian length as
+     payload  secretbox, nonce all zeros: its 32-bit little-endian length as
               the STC syndrome of the first length_samples samples in that
               order, then its bits as the STC syndrome of the samples after
               them (see payload_carriers), both with the same costs
@@ -43,7 +44,11 @@
 /* The labels are part of the format; "v2" is history, not a version */
 #define SALT_LABEL      "ScatterSteg v2 salt positions"
 #define KDF_CONTEXT     "ScatStg2"                          /* exactly 8 chars */
-#define BOX_OVERHEAD    (crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES)
+#define BOX_OVERHEAD    crypto_secretbox_MACBYTES
+/* The secretbox nonce: always zero. Each message's encryption key comes
+   from a fresh random salt (codec_prepare), so no key is used twice and the
+   nonce needn't vary; storing one would cost 24 bytes of embedding. */
+static const uint8_t ZERO_NONCE[crypto_secretbox_NONCEBYTES];
 
 /* Pixels in the salt region: SALT_SAMPLES samples' worth, but at most 1/16
    of the image, and never fewer than one sample per salt bit */
@@ -474,7 +479,7 @@ static int unpack_message(uint8_t **pt, uint32_t *len, char name[CODEC_NAME_MAX 
     return DECODED;
 }
 
-/* Open [nonce | secretbox] with key. NO_MATCH if it doesn't authenticate. */
+/* Open the secretbox with key (and ZERO_NONCE). NO_MATCH if it doesn't authenticate. */
 static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
                     uint8_t **plaintext, uint32_t *pt_len) {
     *pt_len = box_len - BOX_OVERHEAD;
@@ -483,9 +488,7 @@ static int open_box(const uint8_t *box, uint32_t box_len, const uint8_t *key,
         fprintf(stderr, "Error: allocation failed\n");
         return FAILED;
     }
-    const uint8_t *nonce = box, *ct = box + crypto_secretbox_NONCEBYTES;
-    if (crypto_secretbox_open_easy(*plaintext, ct, box_len - crypto_secretbox_NONCEBYTES,
-                                   nonce, key) != 0) {
+    if (crypto_secretbox_open_easy(*plaintext, box, box_len, ZERO_NONCE, key) != 0) {
         sodium_free(*plaintext);
         *plaintext = NULL;
         return NO_MATCH;
@@ -614,7 +617,7 @@ void codec_prepared_free(CodecPrepared *p) {
 
 int codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
                 const uint8_t *message, uint32_t msg_len, int level, CodecEmbedded *info) {
-    /* payload = [nonce | secretbox([encoding | body])] */
+    /* payload = secretbox([encoding | body]), nonce ZERO_NONCE */
     uint32_t packed_len = 0;
     uint8_t *packed = pack_message(name, message, msg_len, level, &packed_len);
     if (packed && info) {
@@ -629,9 +632,7 @@ int codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
         codec_prepared_free(p);
         return too_long ? -1 : -2;
     }
-    randombytes_buf(payload, crypto_secretbox_NONCEBYTES);
-    crypto_secretbox_easy(payload + crypto_secretbox_NONCEBYTES, packed, packed_len,
-                          payload, p->keys->enc);
+    crypto_secretbox_easy(payload, packed, packed_len, ZERO_NONCE, p->keys->enc);
     sodium_free(packed);
     sodium_free(p->keys);  /* not needed past here */
     p->keys = NULL;
@@ -670,4 +671,17 @@ int codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
     free(hill);
     codec_prepared_free(p);
     return r;
+}
+
+/* floor(sqrt(n)), exactly */
+static uint64_t isqrt64(uint64_t n) {
+    uint64_t r = (uint64_t)sqrt((double)n);
+    while (r > 0 && r * r > n) r--;
+    while ((r + 1) * (r + 1) <= n) r++;
+    return r;
+}
+
+uint64_t codec_suggested(uint64_t units, int jpeg) {
+    uint64_t most = isqrt64(units) * (jpeg ? CODEC_SUGGESTED_JPEG_BYTES : CODEC_SUGGESTED_PNG_BYTES);
+    return most > CODEC_FIXED_BYTES ? most - CODEC_FIXED_BYTES : 0;
 }

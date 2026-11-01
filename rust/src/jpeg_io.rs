@@ -695,8 +695,6 @@ enum Tables { Libjpeg, Cover, Optimized }
 
 fn be16(b: &[u8]) -> usize { (b[0] as usize) << 8 | b[1] as usize }
 
-/// Where the SOS segment starts in a JPEG's bytes, which must be whole
-/// segments from SOI on; None if there's none
 /// The 0xFF fill bytes just before the EOI that `d` (the file up to where
 /// libjpeg stopped reading) ends with, up to MAX_EOI_FILL; 0 if it doesn't
 /// end with an EOI. Entropy-coded data stuffs a 0 after any 0xFF it holds,
@@ -708,6 +706,8 @@ fn count_eoi_fill(d: &[u8]) -> usize {
     window.iter().rev().take_while(|&&b| b == 0xFF).count().min(MAX_EOI_FILL)
 }
 
+/// Where the SOS segment starts in a JPEG's bytes, which must be whole
+/// segments from SOI on; None if there's none
 fn find_sos(d: &[u8]) -> Option<usize> {
     if d.len() < 2 || d[..2] != [0xFF, 0xD8] { return None; }
     let mut pos = 2;

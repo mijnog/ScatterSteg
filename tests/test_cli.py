@@ -616,7 +616,7 @@ def capacity(w, h, ch=3):
 
 
 SUGGESTED_PNG_BYTES, SUGGESTED_JPEG_BYTES = 3, 1  # per square root of the pixels or non-zero ACs
-FIXED_BYTES = SALT + 4 + MAC + 1  # salt, length, MAC, encoding byte
+FIXED_BYTES = SALT + 4 + MAC + 2  # salt, length, MAC, encoding and name length bytes
 SMOOTH_PNG_RESIDUAL, SMOOTH_JPEG_SHARE = 1.7, 0.14
 
 
@@ -1092,16 +1092,16 @@ class CliTest(CliBase):
         # warning; within it, or with -q, nothing extra
         write_png(self.cover, 200, 160, cover_pixel)
         sug = suggested(200, 160)
-        self.assertEqual(sug, 497)  # 3 * isqrt(32000 pixels) - 37 of fixed overhead
+        self.assertEqual(sug, 496)  # 3 * isqrt(32000 pixels) - 38 of fixed overhead
         out = self.path("steg.png")
         code, log = run(["info", self.cover])
-        self.assertIn("Suggested: at most 497 bytes", log)
+        self.assertIn("Suggested: at most 496 bytes", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
         self.assertNotIn("Warning", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
-        self.assertIn("Warning: 498 bytes stored, more than the 497 suggested", log)
+        self.assertIn("Warning: 497 bytes stored, more than the 496 suggested", log)
         self.assertEqual(self.extract_bytes(out), noise(sug + 1))
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z", "-q"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
@@ -1118,7 +1118,7 @@ class CliTest(CliBase):
                 write_png(self.cover, w, h, busy_pixel)
                 code, log = run(["info", self.cover])
                 self.assertIn("Suggested: at most %d bytes;" % suggested(w, h), log)
-        self.assertEqual([suggested(n, n) for n in (100, 200, 400)], [263, 563, 1163])
+        self.assertEqual([suggested(n, n) for n in (100, 200, 400)], [262, 562, 1162])
 
     def test_smooth_cover(self):
         # A smooth cover gets no suggestion, and embed warns, but goes ahead
@@ -1150,7 +1150,7 @@ class CliTest(CliBase):
     def test_too_small_for_a_suggestion(self):
         # So small that the fixed overhead is over the suggestion: none,
         # and any message warns
-        write_png(self.cover, 12, 12, busy_pixel)  # 3 * 12 = 36 < 37
+        write_png(self.cover, 12, 12, busy_pixel)  # 3 * 12 = 36 < 38
         self.assertEqual(suggested(12, 12), 0)
         code, log = run(["info", self.cover])
         self.assertIn("Suggested: none: the image is too small to hide a message well\n", log)
@@ -1159,9 +1159,9 @@ class CliTest(CliBase):
         self.assertIn("Warning: this image is too small to hide a message well", log)
         write_png(self.cover, 13, 12, busy_pixel)  # isqrt(156) = 12: still 0
         self.assertEqual(suggested(13, 12), 0)
-        write_png(self.cover, 13, 13, busy_pixel)  # 3 * 13 - 37 = 2
-        self.assertIn("Suggested: at most 2 bytes;", run(["info", self.cover])[1])
-        self.assertEqual(suggested(13, 13), 2)
+        write_png(self.cover, 13, 13, busy_pixel)  # 3 * 13 - 38 = 1, singular
+        self.assertIn("Suggested: at most 1 byte;", run(["info", self.cover])[1])
+        self.assertEqual(suggested(13, 13), 1)
 
     def test_info_refuses_what_encode_refuses(self):
         # The same checks and messages as embed, and no prompt
@@ -2384,7 +2384,7 @@ class JpegTest(CliBase):
                          r"Suggested: at most (\d+) bytes; less is harder to detect\n", log)
         self.assertTrue(m, log)
         n, sug = int(m.group(1)), int(m.group(2))
-        self.assertTrue(0 < sug < n, (sug, n))  # isqrt(non-zero AC coefficients) - 37
+        self.assertTrue(0 < sug < n, (sug, n))  # isqrt(non-zero AC coefficients) - 38
         # The warning starts just past the suggestion
         code, log = self.embed(noise(sug), self.path("w.jpg"), src=self.jpeg)
         self.assertEqual(code, 0, log)

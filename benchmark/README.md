@@ -401,8 +401,9 @@ mean prediction residual (|4x − the four neighbours| / 4), in fifths:
 
 PNG at 0.1 bits per pixel is the first row the detector does poorly on (P_E
 0.34, and near chance on the busiest images). `info`'s suggestion follows
-from these tables: none for a cover in the smoothest third (JPEG under 14%
-non-zero, PNG residual under 1.7), and otherwise the lightest measured
+from these tables: none for a smooth cover (JPEG under 14% non-zero, the
+smoothest third here; PNG residual under 1.7, the smoothest fifth), and
+otherwise the lightest measured
 payloads, overhead included, scaled by the square root of the cover's size
 (`codec.h`, `CODEC_SUGGESTED_*`). This setting favours the warden:
 one cover source for training and test, the payload known, and small
@@ -446,21 +447,23 @@ model; the 64-sample binary is the current format):
 Level up to 0.2; at 0.4 the J-UNIWARD model catches ternary more often.
 
 **SRNet**, JPEG UERD at 0.2 bits per non-zero AC, 15 epochs from
-`uerdall_0.2`'s detector, 1,024 samples per bit for both: binary
-`uerdbin_0.2` and ternary `uerdtern_0.2`. Trained twice, on Kaggle's GPUs
-and locally:
+`uerdall_0.2`'s detector: binary `uerdbin_0.2` (the format's 64 samples per
+bit) and ternary `uerdtern_0.2` (1,024; DCTR saw no difference between
+binary at 64 and 1,024). Trained on Kaggle's GPUs with two seeds, and
+locally:
 
-| | Kaggle | local |
-|---|---|---|
-| binary | 0.083 | 0.088 |
-| ternary | 0.100 | 0.099 |
+| | Kaggle, seed 0 | local, seed 0 | Kaggle, seed 1 |
+|---|---|---|---|
+| binary | 0.083 | 0.088 | 0.083 |
+| ternary | 0.100 | 0.099 | 0.097 |
 
-(± 0.006 each.) Ternary is about 0.01 harder to detect in both runs, 1.5 to 2
-standard errors: suggestive, not proven. Taken together: DCTR and SRNet lean
-towards ternary at light payloads, the ALASKA2 J-UNIWARD model against it at
-0.4. A second training seed is next; ternary needs a format change (the
-pool cap from 64 to 1,024 samples per bit) and a decision on PNG's exchange
-embedding, so it isn't merged.
+(± 0.006–0.007 each, so ± 0.009 on a difference.) Ternary is harder to
+detect in every run, by 0.011 to 0.017: 1.2 to 1.8 standard errors each,
+consistent across three runs. Taken together: DCTR and SRNet
+favour ternary at light payloads, the ALASKA2 J-UNIWARD model disfavours it
+at 0.4. Ternary is kept for JPEG (2026-11-01); the PNG comparison against
+binary with exchange embedding is being trained, and the port (with the
+pool cap raised from 64 to 1,024 samples per bit) follows it.
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

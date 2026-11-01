@@ -54,15 +54,15 @@ const ZERO_NONCE: [u8; NONCE_BYTES] = [0; NONCE_BYTES];
 /// pixel and 0.08 bits per non-zero AC coefficient, overhead included.
 pub const SUGGESTED_PNG_BYTES: u64 = 3;
 pub const SUGGESTED_JPEG_BYTES: u64 = 1;
-/// What every message stores besides its record, less the record's name
-/// length byte (the suggestion counts the record without it): salt 16,
-/// length 4, MAC 16, encoding 1
-pub const FIXED_BYTES: u64 = 37;
+/// What every message stores besides its text and file name: salt 16,
+/// length 4, MAC 16, encoding 1, name length 1
+pub const FIXED_BYTES: u64 = 38;
 /// A cover this smooth gets no suggestion, as a trained detector finds almost
 /// any message in it: a mean prediction residual (|4x - the four neighbours|
-/// / 4 per sample) under 1.7 (PNG), or under 14% of AC coefficients non-zero
-/// (JPEG). From the same benchmarks: the smoothest third of covers was caught
-/// 93-98% of the time at any payload.
+/// / 4 per sample) under 1.7 (PNG: the smoothest fifth of BOSSbase, caught
+/// 84% of the time at 0.1 bits per pixel, 94% at 0.2), or under 14% of AC
+/// coefficients non-zero (JPEG: the smoothest third, caught 93-98% of the
+/// time at any payload measured).
 pub const SMOOTH_PNG_RESIDUAL_X10: u64 = 17;
 pub const SMOOTH_JPEG_PERCENT: u64 = 14;
 

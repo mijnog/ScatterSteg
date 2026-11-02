@@ -546,6 +546,51 @@ for a large one. JPEG meets them; a 12 MP PNG at the suggested size does not
 (11.5 / 10.8 s), and `main` did not either (9.5 / 8.6 s). That PNG figure is
 from this run, before any parallel zlib-settings or HILL work.
 
+**Parallel HILL and settings search (2026-11-02, `35d47a2`).** The zlib
+settings search reads only the cover's compressed data, so it now runs on a
+thread of its own while the pixels change; HILL runs in steps over rows, and
+the coder's gather and layer costs over ranges of samples, on up to 8
+threads. Each value is computed as on one thread: with libsodium's random
+bytes fixed (an `LD_PRELOAD` stub), `61cf515` and `35d47a2`, C and Rust,
+wrote byte-identical files for the photo above, PNG and JPEG, at the
+suggested size and at capacity. Timed alone on the 12 MP PNG (C), HILL went
+from 1.19 s to 0.30 s. Searching for the settings took 1.66 s on one thread;
+only one of the 41 settings still matched after the first 192 KB, so it
+can't be split across threads, but it now overlaps the coder.
+
+Same machine, idle (load 1.51 1.73 1.28), `run_speed.sh`
+(`results-speed-parallel.txt`); `main` is `c590ac5`, the same code as
+`5f621dc`. Embed wall time, seconds (C / Rust):
+
+| | `main` | `35d47a2` |
+|---|---|---|
+| JPEG, suggested | 3.5 / 3.0 | 4.1 / 3.8 |
+| JPEG, capacity | 8.2 / 8.3 | 9.6 / 9.8 |
+| PNG, suggested | 9.3 / 8.5 | 7.9 / 7.4 |
+| PNG, capacity | 16.0 / 15.2 | 15.8 / 16.1 |
+
+Extract is 1.1–2.7 s on `35d47a2`'s files; peak RSS while embedding 638–1,003
+MiB (`main`: 328–641 MiB).
+
+At capacity the time depends on the message: where layer A can't carry its
+share, the coder tries again with less (`embed_payload`), and every try is
+two more trellises. Six more PNG capacity runs (C, a fresh message and salt
+each) fell into two groups: about 27–28 s of CPU for one try, 71–78 s with
+retries. One try: 12.7 s (`61cf515`) against 9.0 s (`35d47a2`); with retries,
+20.0 and 20.3 s against 15.6 and 15.9 s. `35d47a2`'s PNG capacity runs in
+the table above retried (73.4 / 82.2 s of CPU), and by the same reading so
+did its JPEG ones (43.4 / 47.9 s, against 16.5 s for the 2026-11-01 Rust
+run); the 2026-11-01 PNG capacity runs, at 27–29 s, did not. So the capacity
+rows of both tables are one draw each, not a fixed cost.
+
+Against the limits, on this 12 MP photo: JPEG at the suggested size
+(4.1 / 3.8 s) meets the 3–5 s one; a PNG at the suggested size (7.9 / 7.4 s)
+still misses it. About 5.5 s of that can't run in parallel without changing
+the output: compressing with the cover's settings (4.0 s, as one zlib stream
+like the cover's), Argon2id and the order (1.05 s), loading and reading back
+(0.5 s). At capacity, JPEG took 9.6 / 9.8 s and PNG 9.0–16.1 s, over the
+15 s limit when the coder has to retry.
+
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 
 A warden needn't train anything: Aletheia ships EfficientNet-B0 detectors

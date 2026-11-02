@@ -1,0 +1,49 @@
+Speed run, 2026-11-02 (benchmark/run_speed.sh), on an idle machine. main = c590ac5's builds
+(the same code as 5f621dc, which results-speed.txt calls main); new = 35d47a2: the zlib settings
+search on its own thread, HILL and the coder's per-sample loops in parallel (output
+byte-identical to 61cf515's with randomness fixed). Same photo and PNG as results-speed.txt.
+machine: 12 threads,  12th Gen Intel(R) Core(TM) i5-12400F, 31 GiB; load at start 1.51 1.73 1.28
+c-main jpg 3914 embed:   3.5 s wall, 3.5 s CPU, 399 MiB peak, exit 0
+c-main jpg 3914 extract: 2.3 s wall, 2.3 s CPU, 399 MiB peak, exit 0, message back exactly
+c-main jpg 2962080 embed:   8.2 s wall, 8.2 s CPU, 507 MiB peak, exit 0
+c-main jpg 2962080 extract: 2.8 s wall, 2.8 s CPU, 399 MiB peak, exit 0, message back exactly
+c-new jpg 3909 embed:   4.1 s wall, 8.6 s CPU, 638 MiB peak, exit 0
+c-new jpg 3909 extract: 2.7 s wall, 2.7 s CPU, 399 MiB peak, exit 0, message back exactly
+c-new jpg 2962080 embed:   9.6 s wall, 43.4 s CPU, 819 MiB peak, exit 0
+c-new jpg 2962080 extract: 2.7 s wall, 2.7 s CPU, 399 MiB peak, exit 0, message back exactly
+r-main jpg 3914 embed:   3.0 s wall, 3.0 s CPU, 455 MiB peak, exit 0
+r-main jpg 3914 extract: 1.3 s wall, 1.3 s CPU, 453 MiB peak, exit 0, message back exactly
+r-main jpg 2962080 embed:   8.3 s wall, 8.2 s CPU, 561 MiB peak, exit 0
+r-main jpg 2962080 extract: 1.7 s wall, 1.7 s CPU, 453 MiB peak, exit 0, message back exactly
+r-new jpg 3909 embed:   3.8 s wall, 8.8 s CPU, 660 MiB peak, exit 0
+r-new jpg 3909 extract: 1.7 s wall, 1.7 s CPU, 453 MiB peak, exit 0, message back exactly
+r-new jpg 2962080 embed:   9.8 s wall, 47.9 s CPU, 799 MiB peak, exit 0
+r-new jpg 2962080 extract: 1.7 s wall, 1.7 s CPU, 453 MiB peak, exit 0, message back exactly
+c-main png 10349 embed:   9.3 s wall, 9.3 s CPU, 328 MiB peak, exit 0
+c-main png 10349 extract: 1.3 s wall, 1.3 s CPU, 310 MiB peak, exit 0, message back exactly
+c-main png 4494692 embed:   16.0 s wall, 16.0 s CPU, 635 MiB peak, exit 0
+c-main png 4494692 extract: 2.0 s wall, 2.0 s CPU, 311 MiB peak, exit 0, message back exactly
+c-new png 10344 embed:   7.9 s wall, 22.9 s CPU, 980 MiB peak, exit 0
+c-new png 10344 extract: 2.1 s wall, 2.1 s CPU, 310 MiB peak, exit 0, message back exactly
+c-new png 4494692 embed:   15.8 s wall, 73.4 s CPU, 1003 MiB peak, exit 0
+c-new png 4494692 extract: 1.9 s wall, 1.9 s CPU, 311 MiB peak, exit 0, message back exactly
+r-main png 10349 embed:   8.5 s wall, 8.5 s CPU, 329 MiB peak, exit 0
+r-main png 10349 extract: 0.6 s wall, 0.6 s CPU, 310 MiB peak, exit 0, message back exactly
+r-main png 4494692 embed:   15.2 s wall, 15.2 s CPU, 641 MiB peak, exit 0
+r-main png 4494692 extract: 1.1 s wall, 1.1 s CPU, 312 MiB peak, exit 0, message back exactly
+r-new png 10344 embed:   7.4 s wall, 24.4 s CPU, 928 MiB peak, exit 0
+r-new png 10344 extract: 1.3 s wall, 1.3 s CPU, 311 MiB peak, exit 0, message back exactly
+r-new png 4494692 embed:   16.1 s wall, 82.2 s CPU, 969 MiB peak, exit 0
+r-new png 4494692 extract: 1.1 s wall, 1.1 s CPU, 313 MiB peak, exit 0, message back exactly
+DONE
+
+PNG at capacity (4494692 bytes), C, three more runs each, alternating, fresh random message
+and salt each run (benchmark/speed.py); old = 61cf515 (results-speed.txt's new), new = 35d47a2.
+About 27 s CPU is one try; about 71-78 s, layer A retried with a smaller share (codec.c,
+embed_payload), which depends on the message and salt:
+c-old: 20.3 s wall, 73.1 s CPU, 979 MiB peak, exit 0
+c-new: 15.6 s wall, 74.8 s CPU, 983 MiB peak, exit 0
+c-old: 12.7 s wall, 27.2 s CPU, 964 MiB peak, exit 0
+c-new: 15.9 s wall, 77.6 s CPU, 997 MiB peak, exit 0
+c-old: 20.0 s wall, 71.4 s CPU, 1001 MiB peak, exit 0
+c-new: 9.0 s wall, 28.3 s CPU, 982 MiB peak, exit 0

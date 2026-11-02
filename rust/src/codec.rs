@@ -346,18 +346,36 @@ const TERNARY_WET: f32 = 1e13;
 /// threads. As C's PER_THREAD.
 const PER_THREAD: usize = 65536;
 
-/// Both layers, with ma of the mlen bits in layer A: the changes into delta.
-/// Ok(true), Ok(false) if they can't be made by +-1 (the trellis had to pay a
-/// wet cost), Err if the trellis failed. The costs are finite (wet ones too),
-/// so that is no reason to retry. As C's embed_layers.
+/// Samples embed_layers lists where layer B couldn't follow layer A: past that
+/// many, a retry halves layer A's share instead (see embed_payload). As C's
+/// RETRY_SPOTS.
+const RETRY_SPOTS: usize = 64;
+
+/// Why a try failed: the samples layer A flipped whose LSB layer B then kept
+/// (B's trellis had to pay that wet cost), the first RETRY_SPOTS of them, and
+/// how many other failures there were (a change leaving the value range, a
+/// layer with no samples). As C's Failed.
+#[derive(Default)]
+struct Failed {
+    kept: usize,
+    other: usize,
+    spots: Vec<usize>,
+}
+
+/// Both layers, with ma of the mlen bits in layer A, which leaves the samples
+/// marked in avoid (if not empty) alone: the changes into delta. Ok(true),
+/// Ok(false) if they can't be made by +-1 (a trellis had to pay a wet cost; f
+/// says where), Err if the trellis failed. The costs are finite (wet ones
+/// too), so that is no reason to retry. As C's embed_layers.
 #[allow(clippy::too_many_arguments)]
 fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[u8], ma: usize,
-                delta: &mut [i8]) -> Result<bool, ()> {
+                avoid: &[u8], delta: &mut [i8], f: &mut Failed) -> Result<bool, ()> {
     let (u, mlen) = (v.len(), m.len());
     let mb = mlen - ma;
     let na = if ma > 0 { stc::carriers(u, ma) } else { 0 };
     let nb = if mb > 0 { stc::carriers(u, mb) } else { 0 };
-    if (ma > 0 && na == 0) || (mb > 0 && nb == 0) { return Ok(false); }
+    *f = Failed { other: ((ma > 0 && na == 0) || (mb > 0 && nb == 0)) as usize, ..Failed::default() };
+    if f.other > 0 { return Ok(false); }
     delta.fill(0);
     let mut x = vec![0u8; u];
     let mut cost = vec![0f32; u];
@@ -372,7 +390,8 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
             let lr = lambda * rho as f64;
             let k = if lr > 30.0 { lr } else { lr.exp().ln_1p() }; // ln(1 + e^(lambda rho))
             *x = second_bit(v);
-            *cost = if t < lo || t > hi || k > TERNARY_WET as f64 { TERNARY_WET } else { k as f32 };
+            let wet = t < lo || t > hi || k > TERNARY_WET as f64 || avoid.get(from + j) == Some(&1);
+            *cost = if wet { TERNARY_WET } else { k as f32 };
         }
     });
     if ma > 0 { stc::embed(&x[..na], &cost[..na], &m[..ma], ma, na, &mut ya[..na])?; }
@@ -404,7 +423,11 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
     for i in 0..u {
         let a = i < na && ya[i] != 0;
         let b = i < nb && yb[i] != (v[i] & 1) as u8;
-        if a && i < nb && !b { return Ok(false); }
+        if a && i < nb && !b {
+            if f.kept < RETRY_SPOTS { f.spots.push(i); }
+            f.kept += 1;
+            continue;
+        }
         delta[i] = if a {
             if v[i] & 1 != 0 { 1 } else { -1 }
         } else if b && i < na {
@@ -415,18 +438,29 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
             if v[i] == lo { 1 } else if v[i] == hi { -1 } else if coin[0] & 1 != 0 { 1 } else { -1 }
         } else { 0 };
         let t = v[i] + delta[i] as i32;
-        if t < lo || t > hi { return Ok(false); }
+        if t < lo || t > hi { f.other += 1; }
     }
-    Ok(true)
+    Ok(f.kept == 0 && f.other == 0)
 }
 
 /// Makes the payload's changes at once, and records the length's in plan.
-/// Where layer A can't carry its share (a cover of mostly 0s or 255s, whose
-/// second bit no +-1 change flips, or a message near capacity), it carries
-/// less: a half, a quarter, then nothing, when layer B alone is plain +-1
+/// When a try fails, the next one depends on why:
+/// - Near capacity, layer B is dense, and at the start of its trellis chunks
+///   (which start from state 0) its first bits can be set by only a few
+///   samples: if layer A flipped those, B can't follow at one or two samples.
+///   Then layer A keeps its share but leaves those samples alone; on the
+///   second retry it also gives layer B one bit, which changes B's first bits
+///   where both layers start, at sample 0, where A has no choice. Halving A's
+///   share would only make B denser.
+/// - Otherwise (a cover of mostly 0s or 255s, whose second bit no +-1 change
+///   flips, or many such samples), layer A carries less: a half, then a
+///   quarter.
+///
+/// The fourth try gives layer A nothing: layer B alone is plain +-1
 /// embedding, which any cover allows. Each try costs two trellises over the
-/// samples, so four at most. The split is stored with the length, so
-/// decoding needs no change. As C's embed_payload.
+/// samples, so four at most. A message the first try fits is coded as before
+/// these retries existed. The split is stored with the length, so decoding
+/// needs no change. As C's embed_payload.
 fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &mut EmbedPlan)
     -> Result<(), EmbedError> {
     let ch = c.channels();
@@ -448,10 +482,19 @@ fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &
 
     let (mut ma, lambda) = ternary_split(&rho, mlen);
     let mut delta = vec![0i8; u];
+    let (mut avoid, mut f) = (Vec::new(), Failed::default());
     let mut tries = 1;
-    while !embed_layers(&v, &rho, range, lambda, &m, ma, &mut delta).map_err(|_| EmbedError::Alloc)? {
+    while !embed_layers(&v, &rho, range, lambda, &m, ma, &avoid, &mut delta, &mut f).map_err(|_| EmbedError::Alloc)? {
         if ma == 0 { return Err(EmbedError::TooLong); } // not even +-1 alone: too full
-        ma = if tries < 3 { ma / 2 } else { 0 };
+        if tries == 3 {
+            ma = 0;
+        } else if f.other == 0 && f.kept <= RETRY_SPOTS {
+            avoid.resize(u, 0);
+            for &i in &f.spots { avoid[i] = 1; }
+            if tries == 2 { ma -= 1; }
+        } else {
+            ma /= 2;
+        }
         tries += 1;
     }
     write_length(c, order, n, len, ma as u32, plan).map_err(|_| EmbedError::Alloc)?;

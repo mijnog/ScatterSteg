@@ -392,6 +392,7 @@ typedef struct {
     double lambda;
     const uint8_t *ya;  /* layer B: which samples layer A flipped */
     size_t na;
+    const uint8_t *avoid;  /* layer A: samples it must leave alone (wet), or NULL */
     uint8_t *x;
     float *cost;
 } LayerCosts;
@@ -404,7 +405,8 @@ static void layer_a_costs(void *ctx, size_t from, size_t to) {
         double lr = L->lambda * L->rho[i];
         double k = lr > 30 ? lr : log1p(exp(lr));  /* ln(1 + e^(lambda rho)) */
         L->x[i] = second_bit(v);
-        L->cost[i] = t < L->lo || t > L->hi || k > TERNARY_WET ? TERNARY_WET : (float)k;
+        int wet = t < L->lo || t > L->hi || k > TERNARY_WET || (L->avoid && L->avoid[i]);
+        L->cost[i] = wet ? TERNARY_WET : (float)k;
     }
 }
 
@@ -428,22 +430,40 @@ static void layer_b_costs(void *ctx, size_t from, size_t to) {
     }
 }
 
-/* Both layers, with ma of the mlen bits in layer A: the changes into
-   delta. 0, 1 if they can't be made by +-1 (the trellis had to pay a wet
-   cost), or -2 if out of memory. The costs are finite (wet ones too), so
-   the trellis fails only for want of memory: that is no reason to retry. */
+/* Samples embed_layers lists where layer B couldn't follow layer A: past
+   that many, a retry halves layer A's share instead (see embed_payload) */
+#define RETRY_SPOTS 64
+
+/* Why a try failed: the samples layer A flipped whose LSB layer B then
+   kept (B's trellis had to pay that wet cost), the first RETRY_SPOTS of
+   them, and how many other failures there were (a change leaving the value
+   range, a layer with no samples) */
+typedef struct {
+    size_t kept, other;
+    size_t spot[RETRY_SPOTS];
+} Failed;
+
+/* Both layers, with ma of the mlen bits in layer A, which leaves the
+   samples marked in avoid (if not NULL) alone: the changes into delta.
+   0, 1 if they can't be made by +-1 (a trellis had to pay a wet cost; f
+   says where), or -2 if out of memory. The costs are finite (wet ones
+   too), so the trellis fails only for want of memory: that is no reason
+   to retry. */
 static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo, int32_t hi,
-                        double lambda, const uint8_t *m, size_t mlen, size_t ma, int8_t *delta) {
+                        double lambda, const uint8_t *m, size_t mlen, size_t ma,
+                        const uint8_t *avoid, int8_t *delta, Failed *f) {
     size_t mb = mlen - ma;
     size_t na = ma ? stc_carriers(u, ma) : 0, nb = mb ? stc_carriers(u, mb) : 0;
-    if ((ma && !na) || (mb && !nb)) return 1;
+    f->kept = 0;
+    f->other = (ma && !na) || (mb && !nb);
+    if (f->other) return 1;
     float *cost = malloc(u * sizeof(float));
     uint8_t *x = malloc(u), *ya = calloc(u, 1), *yb = malloc(u);
     int r = -2;
     if (!cost || !x || !ya || !yb) goto out;
     memset(delta, 0, u);
 
-    LayerCosts L = {v, rho, lo, hi, lambda, ya, na, x, cost};
+    LayerCosts L = {v, rho, lo, hi, lambda, ya, na, avoid, x, cost};
     parallel_for(na, PER_THREAD, layer_a_costs, &L);
     if (ma && stc_embed(x, cost, m, ma, na, ya) != 0) goto out;
     for (size_t i = 0; i < na; i++) ya[i] = ya[i] != x[i];  /* now: flipped */
@@ -455,7 +475,11 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
     for (size_t i = 0; i < u; i++) {
         int a = i < na && ya[i];
         int b = i < nb && yb[i] != (uint8_t)(v[i] & 1);
-        if (a && i < nb && !b) { r = 1; goto out; }
+        if (a && i < nb && !b) {
+            if (f->kept < RETRY_SPOTS) f->spot[f->kept] = i;
+            f->kept++;
+            continue;
+        }
         if (a) delta[i] = (v[i] & 1) ? 1 : -1;
         else if (b && i < na) delta[i] = (v[i] & 1) ? -1 : 1;
         else if (b) {
@@ -463,9 +487,9 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
             randombytes_buf(&coin, 1);
             delta[i] = v[i] == lo ? 1 : v[i] == hi ? -1 : (coin & 1) ? 1 : -1;
         }
-        if (v[i] + delta[i] < lo || v[i] + delta[i] > hi) { r = 1; goto out; }
+        if (v[i] + delta[i] < lo || v[i] + delta[i] > hi) f->other++;
     }
-    r = 0;
+    r = f->kept || f->other;
 out:
     free(cost); free(x); free(ya); free(yb);
     return r;
@@ -488,12 +512,22 @@ static void gather(void *ctx, size_t from, size_t to) {
 
 /* Makes the payload's changes (see ternary_split) at once, and records
    the length's in plan. Returns 0, -1 if it doesn't fit, or -2 if out of
-   memory. Where layer A can't carry its share (a cover of mostly 0s or
-   255s, whose second bit no +-1 change flips, or a message near capacity),
-   it carries less: a half, a quarter, then nothing, when layer B alone is
-   plain +-1 embedding, which any cover allows. Each try costs two
-   trellises over the samples, so four at most. The split is stored with
-   the length, so decoding needs no change. */
+   memory. When a try fails, the next one depends on why:
+   - Near capacity, layer B is dense, and at the start of its trellis
+     chunks (which start from state 0) its first bits can be set by only a
+     few samples: if layer A flipped those, B can't follow at one or two
+     samples. Then layer A keeps its share but leaves those samples alone;
+     on the second retry it also gives layer B one bit, which changes B's
+     first bits where both layers start, at sample 0, where A has no
+     choice. Halving A's share would only make B denser.
+   - Otherwise (a cover of mostly 0s or 255s, whose second bit no +-1
+     change flips, or many such samples), layer A carries less: a half,
+     then a quarter.
+   The fourth try gives layer A nothing: layer B alone is plain +-1
+   embedding, which any cover allows. Each try costs two trellises over
+   the samples, so four at most. A message the first try fits is coded as
+   before these retries existed. The split is stored with the length, so
+   decoding needs no change. */
 static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
                          const uint8_t *payload, uint32_t len, EmbedPlan *plan) {
     uint32_t ch = carrier_channels(c);
@@ -515,12 +549,23 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
 
     double lambda;
     size_t ma = ternary_split(rho, u, mlen, &lambda);
+    uint8_t *avoid = NULL;
+    Failed f;
     for (int tries = 1;; tries++) {
-        r = embed_layers(v, rho, u, lo, hi, lambda, m, mlen, ma, delta);
+        r = embed_layers(v, rho, u, lo, hi, lambda, m, mlen, ma, avoid, delta, &f);
         if (r != 1) break;
         if (ma == 0) { r = -1; break; }  /* not even +-1 alone: too full */
-        ma = tries < 3 ? ma / 2 : 0;
+        if (tries == 3) {
+            ma = 0;
+        } else if (!f.other && f.kept <= RETRY_SPOTS) {
+            if (!avoid && !(avoid = calloc(u, 1))) { r = -2; break; }
+            for (size_t k = 0; k < f.kept; k++) avoid[f.spot[k]] = 1;
+            if (tries == 2) ma--;
+        } else {
+            ma /= 2;
+        }
     }
+    free(avoid);
     if (r != 0) goto out;
     if (write_length(c, order, n, len, (uint32_t)ma, plan) != 0) { r = -2; goto out; }
     embed_add(c, order, start, u, delta);

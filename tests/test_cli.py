@@ -133,6 +133,21 @@ def exec_or_exit(argv):
         os._exit(127)
 
 
+def wait_or_kill(pid, timeout=None):
+    """The child's wait status, or None (after killing it) if it is still
+    running after timeout seconds (TIMEOUT by default), so a test fails
+    instead of hanging"""
+    deadline = time.monotonic() + (TIMEOUT if timeout is None else timeout)
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            return status
+        time.sleep(0.05)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    return None
+
+
 def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
         stdin_path=None, stdout_path=None, memlock=None, cwd=None):
     """Run scattersteg, answer each passphrase prompt in order. The message
@@ -1913,6 +1928,10 @@ class CliTest(CliBase):
             with self.subTest(signal=name):
                 pid, master = pty.fork()
                 if pid == 0:
+                    # As a terminal would start it, even if the tests run
+                    # under nohup: an inherited ignored SIGHUP stays ignored
+                    # (test_ignored_signal_stays_ignored_at_prompt)
+                    signal.signal(signal.SIGHUP, signal.SIG_DFL)
                     exec_or_exit([BINARY, "extract", "-sf", self.cover])
                 out, deadline = b"", time.monotonic() + TIMEOUT
                 while b"Passphrase: " not in out and time.monotonic() < deadline:
@@ -1923,7 +1942,8 @@ class CliTest(CliBase):
                     os.write(master, how)
                 else:
                     os.kill(pid, how)
-                _, status = os.waitpid(pid, 0)
+                status = wait_or_kill(pid)
+                self.assertIsNotNone(status, "still running %d s after %s" % (TIMEOUT, name))
                 self.assertTrue(termios.tcgetattr(master)[3] & termios.ECHO)
                 self.assertTrue(os.WIFSIGNALED(status))
                 os.close(master)

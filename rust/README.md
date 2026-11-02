@@ -61,6 +61,7 @@ Needed for compatibility:
 
     cargo test --release                      # unit tests, and every stored fuzz regression
     python3 ../tests/test_cli.py              # with SCATTERSTEG=target/release/scattersteg
+    make -C .. rust-cli-test                  # the same, with the fault build, in parallel shards
     python3 ../tests/differential.py          # C and Rust agree on which files load (needs ../scattersteg)
 
 Fuzzing (needs `cargo install cargo-fuzz` and a nightly toolchain):

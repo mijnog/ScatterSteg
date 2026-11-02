@@ -190,7 +190,7 @@ Then a first release with a frozen format, and an independent review.
 ## Development
 
 ```bash
-make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~3 min)
+make test       # unit, CLI and fault-injection tests, under ASan/UBSan (~70 s, in parallel; see CONTRIBUTING.md)
 make fuzz       # the six libFuzzer targets (needs clang)
 make coverage   # line coverage over the whole suite (~98%); annotated sources in tests/build/cov
 ```

@@ -46,6 +46,11 @@ FAULT_OBJS  = $(SRCS:%.c=$(FAULT_DIR)/%.o) $(FAULT_DIR)/fault.o $(FAULT_DIR)/fau
 
 test: unit-test cli-test
 
+# The CLI tests run in JOBS parallel shards (tests/run_sharded.py; each test
+# once, as alone); JOBS=1 runs them as one process. 6: one per physical core
+# here, as the embeds' own threads compete too.
+JOBS ?= 6
+
 unit-test: $(UNIT_TESTS) $(TEST_DIR)/jpeg_fixture
 	@for t in $(UNIT_TESTS); do echo "== $$t"; $(TEST_ENV) $$t || exit 1; done
 
@@ -53,7 +58,18 @@ cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault $(TEST_DIR)/jpeg
 	@echo "== tests/test_cli.py"
 	$(TEST_ENV) SCATTERSTEG=$(TEST_DIR)/scattersteg SCATTERSTEG_FAULT=$(TEST_DIR)/scattersteg-fault \
 		JPEG_FIXTURE=$(TEST_DIR)/jpeg_fixture \
-		python3 tests/test_cli.py
+		python3 tests/run_sharded.py -j $(JOBS) --profile c
+
+# The same CLI tests against the Rust build, and its fault-injection build
+RUST_TARGET = rust/target
+rust-cli-test: $(TEST_DIR)/jpeg_fixture
+	cd rust && cargo build --release --locked && \
+		cargo build --release --locked --features fault-injection --target-dir target/fault
+	@echo "== tests/test_cli.py (Rust)"
+	SCATTERSTEG=$(CURDIR)/$(RUST_TARGET)/release/scattersteg \
+		SCATTERSTEG_FAULT=$(CURDIR)/$(RUST_TARGET)/fault/release/scattersteg FAULT_LONG_MIN=15 \
+		JPEG_FIXTURE=$(TEST_DIR)/jpeg_fixture \
+		python3 tests/run_sharded.py -j $(JOBS) --profile rust
 
 $(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h tests/embed_bytes.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lz -lsodium -lm
@@ -187,4 +203,4 @@ clean:
 	rm -f $(OBJS) $(TARGET)
 	rm -rf $(TEST_DIR)
 
-.PHONY: all test unit-test cli-test fuzz coverage clean
+.PHONY: all test unit-test cli-test rust-cli-test fuzz coverage clean

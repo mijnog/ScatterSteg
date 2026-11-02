@@ -32,7 +32,7 @@ jobs:
         run: make
 
       - name: Unit, CLI and fault-injection tests
-        run: make test
+        run: make test JOBS=4  # the CLI tests in 4 shards: the runner's 4 cores
 
   # The jobs run side by side, so CI takes as long as the slowest one: the
   # fuzzing and the C-against-Rust checks each get their own
@@ -99,7 +99,7 @@ jobs:
         run: |
           R=$PWD/rust/target
           SCATTERSTEG=$R/release/scattersteg SCATTERSTEG_FAULT=$R/fault/release/scattersteg \
-            FAULT_LONG_MIN=15 python3 tests/test_cli.py
+            FAULT_LONG_MIN=15 python3 tests/run_sharded.py -j 4 --profile rust
 
   # Builds with the other distortion models (distortion.h), which the
   # default builds above never run: the C one with WOW and J-UNIWARD under
@@ -117,7 +117,7 @@ jobs:
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: C with WOW and J-UNIWARD
-        run: make test PNG_COSTS=wow JPEG_COSTS=juniward
+        run: make test PNG_COSTS=wow JPEG_COSTS=juniward JOBS=4
 
   models-rust:
     runs-on: ubuntu-24.04
@@ -137,7 +137,7 @@ jobs:
           JPEG_FIXTURE: tests/build/jpeg_fixture
         run: |
           (cd rust && cargo build --release --locked)
-          SCATTERSTEG=$PWD/rust/target/release/scattersteg python3 tests/test_cli.py
+          SCATTERSTEG=$PWD/rust/target/release/scattersteg python3 tests/run_sharded.py -j 4 --profile rust
 
   differential:
     runs-on: ubuntu-24.04

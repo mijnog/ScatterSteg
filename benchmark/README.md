@@ -499,10 +499,11 @@ other in DCTR and in changes made, which hasn't been checked for PNG). So ternar
 embedding for PNG too. The payload is now coded ternary in both builds, with
 the pool cap at 1,024 samples per bit (`FORMAT.md`); the coder on `ternary`
 differs from the prototype in picking the split from a sample of 65,536 costs
-(the decoder reads it, so it only has to be about right), and in giving layer
-A less where it can't carry its share (a half, a quarter, then none: a cover
-of mostly 0s or 255s, which the prototype failed on, or a message near
-capacity). Against `69257f6` (the same trellis over every cost, before the
+(the decoder reads it, so it only has to be about right), and in what it
+does when a try fails: on a cover of mostly 0s or 255s, which the prototype
+failed on, layer A carries less (a half, a quarter, then none); near
+capacity, it keeps its share and avoids the samples layer B couldn't follow
+(see [Speed](#speed)). Against `69257f6` (the same trellis over every cost, before the
 sample and the cap of four tries), `count_changes.py` on 40 BOSSbase JPEGs
 counted 0.4% fewer changes at 0.05 bits per non-zero AC, the same at 0.2 and
 0.2% more at 0.4 (`results-count-changes-port.txt`), all within the about one
@@ -590,6 +591,27 @@ the output: compressing with the cover's settings (4.0 s, as one zlib stream
 like the cover's), Argon2id and the order (1.05 s), loading and reading back
 (0.5 s). At capacity, JPEG took 9.6 / 9.8 s and PNG 9.0–16.1 s, over the
 15 s limit when the coder has to retry.
+
+**Retries near capacity (2026-11-02).** Those retries failed for a narrow
+reason (`results-retries.txt`): each first try at capacity failed at 1–3
+samples out of millions, where layer A had flipped a sample that layer B's
+trellis, which starts each chunk from state 0, needed for its first bits.
+Halving A's share, the old retry, made layer B denser: on the 12 MP PNG the
+next try failed at 19–21 samples, then 27, then fell back to layer B alone
+(plain ±1). Now a try that fails only that way (at most 64 such samples, no
+change leaving the value range) is retried with the same share, layer A
+leaving those samples alone, and on the second retry one bit moved from A to
+B, which settles the case at sample 0, where A has no choice. Covers of
+mostly 0s or 255s fail otherwise and still halve. Over 12 runs at capacity on
+the 12 MP PNG (an instrumented build with this policy), 7 fit in one try, 4
+in two and 1 in three, against 4 in one and 2 in four with halving (6 runs).
+With the final builds and the random bytes fixed (seeds 1–6), the embed took
+about 9 s with one try, 11.3–11.5 s with two and 14.0 / 14.2 s with three (C
+/ Rust), under 15 s; a fourth try is still possible (none of those 12 runs
+needed one), at about 16 s. A message the first try fits is written exactly
+as before (the same bytes for that PNG and JPEG at the suggested size), and
+so is one that fails otherwise (a mostly black cover at 50–100% of
+capacity).
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

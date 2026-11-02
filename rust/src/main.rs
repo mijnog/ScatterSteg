@@ -181,7 +181,7 @@ fn prompt_once(fd: RawFd, prompt: &str) -> Prompt {
 /// short.
 /// The question embed asks before storing more than the image's suggested
 /// most (see `embed`). As C's CONTINUE_QUESTION.
-const CONTINUE_QUESTION: &str = "Are you sure you want to continue? (y/N) ";
+const CONTINUE_QUESTION: &str = "Proceed? (y/N) ";
 
 /// Asks CONTINUE_QUESTION at the terminal, echo on: Some(true) for y or yes
 /// (any case), Some(false) for anything else (Enter alone, Ctrl+D), None if
@@ -205,6 +205,33 @@ fn ask_continue() -> Option<bool> {
     unsafe { libc::close(fd) };
     let answer = answer.to_ascii_lowercase();
     Some(ended && (answer == b"y" || answer == b"yes"))
+}
+
+/// embed's warning for a message over the image's suggested most: how far
+/// over, and how often a trained detector caught that much. The figures are
+/// SRNet's "caught at 5% false alarms" in benchmark/README.md (BOSSbase
+/// 256x256): PNG HILL 0.1 / 0.2 / 0.4 bits per pixel 29% / 42-44% / 76%, JPEG
+/// UERD 0.05 / 0.1 / 0.2 bits per non-zero AC 83% / 86% / 89%, about the
+/// suggestion, twice and four times it. The ratio is bracketed at sqrt(2),
+/// 2 sqrt(2) and 4 sqrt(2), compared squared, in integers. As C's warn_over,
+/// word for word.
+fn warn_over(stored: u64, suggest: u64, jpeg: bool) {
+    const HOW: [&str; 4] = ["more than", "about twice", "about four times", "over five times"];
+    const CAUGHT: [[&str; 3]; 2] = [["3 in 10", "4 in 10", "3 in 4"], ["8 in 10", "9 in 10", "9 in 10"]];
+    let (s2, g2) = (stored * stored, suggest * suggest);
+    let k = if s2 < 2 * g2 { 0 } else if s2 < 8 * g2 { 1 } else if s2 < 32 * g2 { 2 } else { 3 };
+    let (caught, kind) = (&CAUGHT[jpeg as usize], if jpeg { "JPEGs" } else { "PNGs" });
+    let third = match k {
+        0 => "at the suggested size, and more past it, while wrongly flagging 1 in 20".to_string(),
+        3 => "at four times the suggestion, the most we tested, while wrongly flagging 1 in 20".to_string(),
+        _ => format!("carrying that much ({}{} at the suggested size), while wrongly flagging 1 in 20",
+                     caught[0], if jpeg { " even" } else { "" }),
+    };
+    scattersteg::errln!("Warning: the message takes {stored} bytes, {} the {suggest} suggested for this image.\n\
+               In our tests, a detector trained to find ScatterSteg flagged about {} {kind}\n\
+               {third}\n\
+               clean images. Real-world checks are likely weaker, but that can't be counted on.",
+               HOW[k], caught[k.min(2)]);
 }
 
 /// embed's warning for an image with no suggested most (see info): any
@@ -751,8 +778,7 @@ fn embed(o: &Options) -> ExitCode {
         if is_smooth || suggest == 0 {
             warn_unsuited(is_smooth);
         } else {
-            scattersteg::errln!("Warning: the message takes {} bytes, more than the {suggest} suggested for this image;\n\
-                       the more is hidden, the easier it is to detect (see `scattersteg info`)", stored.hidden - 1);
+            warn_over(stored.hidden as u64 - 1, suggest as u64, cover.is_jpeg());
         }
         match ask_continue() {
             Some(false) => {
@@ -801,8 +827,7 @@ fn embed(o: &Options) -> ExitCode {
     } else if is_smooth || suggest == 0 {
         warn_unsuited(is_smooth);
     } else if stored.hidden - 1 > suggest {
-        scattersteg::errln!("Warning: {} bytes stored, more than the {suggest} suggested for this image;\n\
-                   the more is hidden, the easier it is to detect (see `scattersteg info`)", stored.hidden - 1);
+        warn_over(stored.hidden as u64 - 1, suggest as u64, is_jpeg);
     }
     if o.verbose {
         let from = if name.is_empty() { String::new() } else { format!(" from '{}'", String::from_utf8_lossy(name)) };

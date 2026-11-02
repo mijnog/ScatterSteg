@@ -708,6 +708,25 @@ def busy_pixel(x, y):
     return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
 
 
+def over_warning(stored, sug, jpeg=False):
+    """embed's warning for a message over the suggestion (main.c's
+    warn_over): how far over, bracketed at sqrt(2), 2 sqrt(2) and 4 sqrt(2),
+    and the SRNet figures from benchmark/README.md ("caught at 5% false
+    alarms": PNG 29% / 42-44% / 76%, JPEG 83% / 86% / 89%, rounded)"""
+    k = sum(stored * stored >= f * sug * sug for f in (2, 8, 32))
+    how = ("more than", "about twice", "about four times", "over five times")[k]
+    caught = (("3 in 10", "4 in 10", "3 in 4"), ("8 in 10", "9 in 10", "9 in 10"))[jpeg]
+    third = ("at the suggested size, and more past it",
+             "carrying that much (%s%s at the suggested size)" % (caught[0], " even" if jpeg else ""),
+             "carrying that much (%s%s at the suggested size)" % (caught[0], " even" if jpeg else ""),
+             "at four times the suggestion, the most we tested")[k]
+    return ("Warning: the message takes %d bytes, %s the %d suggested for this image.\n"
+            "In our tests, a detector trained to find ScatterSteg flagged about %s %s\n"
+            "%s, while wrongly flagging 1 in 20\n"
+            "clean images. Real-world checks are likely weaker, but that can't be counted on.\n"
+            % (stored, how, sug, caught[min(k, 2)], "JPEGs" if jpeg else "PNGs", third))
+
+
 def noise(n, seed=1):
     """n bytes that don't compress, so a message of them is stored as is:
     capacity limits are exact for them"""
@@ -1158,7 +1177,8 @@ class CliTest(CliBase):
         self.assertNotIn("Warning", log)
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
-        self.assertIn("Warning: 493 bytes stored, more than the 492 suggested", log)
+        self.assertIn(over_warning(sug + 1, sug), log)
+        self.assertTrue(log.index("Warning") > log.index("Embedding"), log)  # -f: after writing
         self.assertEqual(self.extract_bytes(out), noise(sug + 1))
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f", "-Z", "-q"], noise(sug + 1), ["correct horse"] * 2)
         self.assertEqual((code, log), (0, "Passphrase: \nConfirm passphrase: \n"))
@@ -1174,9 +1194,7 @@ class CliTest(CliBase):
         write_png(self.cover, 200, 160, cover_pixel)
         sug = suggested(200, 160)
         out = self.path("steg.png")
-        warning = ("Warning: the message takes %d bytes, more than the %d suggested for this image;\n"
-                   "the more is hidden, the easier it is to detect (see `scattersteg info`)\n"
-                   "Are you sure you want to continue? (y/N) " % (sug + 1, sug))
+        warning = over_warning(sug + 1, sug) + "Proceed? (y/N) "
 
         def embed(message, *flags, confirm="y"):
             return run(["embed", "-cf", self.cover, "-sf", out, "-Z"] + list(flags), message,
@@ -1214,13 +1232,31 @@ class CliTest(CliBase):
         self.assertEqual(code, 1, log)
         self.assertIn("Warning: this image is smooth, and a trained detector finds almost any message in it;\n"
                       "a busier photo hides one better (see `scattersteg info`)\n"
-                      "Are you sure you want to continue? (y/N) ", log)
+                      "Proceed? (y/N) ", log)
         self.assertFalse(os.path.exists(out))
         # A message too long for the image is refused before any question
         code, log = embed(noise(capacity(120, 90) + 1), confirm=None)
         self.assertEqual(code, 1, log)
         self.assertIn("message too long", log)
         self.assertNotIn("(y/N)", log)
+
+    def test_over_warning_scales(self):
+        # How far over, in words, and the detection figure for about that
+        # much: just over, twice, four times and past what was measured
+        write_png(self.cover, 200, 160, cover_pixel)
+        sug = suggested(200, 160)
+        out = self.path("steg.png")
+        for n, how in ((sug + 1, "more than"), (2 * sug, "about twice"), (4 * sug, "about four times"),
+                       (6 * sug, "over five times")):
+            with self.subTest(n=n):
+                code, log = run(["embed", "-cf", self.cover, "-sf", out, "-Z", "-f"], noise(n), ["correct horse"] * 2)
+                self.assertEqual(code, 0, log)
+                self.assertIn(over_warning(n, sug), log)
+                self.assertIn("takes %d bytes, %s the %d suggested" % (n, how, sug), log)
+        # Exactly at the bracket edges (stored^2 against 2, 8, 32 times sug^2)
+        self.assertEqual([over_warning(n, 100).split(", ")[1].rsplit(" the", 1)[0] for n in (141, 142, 282, 283, 565, 566)],
+                         ["more than", "about twice", "about twice", "about four times", "about four times",
+                          "over five times"])
 
     def test_suggestion_follows_square_root(self):
         # Four times the pixels, twice the suggestion (before the overhead)
@@ -2536,7 +2572,7 @@ class JpegTest(CliBase):
         self.assertNotIn("Warning", log)
         code, log = self.embed(noise(sug + 1), self.path("w.jpg"), src=self.jpeg)
         self.assertEqual(code, 0, log)
-        self.assertIn("Warning: %d bytes stored, more than the %d suggested" % (sug + 1, sug), log)
+        self.assertIn(over_warning(sug + 1, sug, jpeg=True), log)
         out = self.path("steg.jpg")
         code, log = self.embed(noise(n + 1), out, src=self.jpeg)
         self.assertEqual(code, 1, log)

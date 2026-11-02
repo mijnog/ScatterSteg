@@ -333,6 +333,13 @@ batches of pairs of the same image, flipped and rotated alike. Builds of
 | ScatterSteg JPEG, UERD, every AC coefficient | 0.05 bits per non-zero AC | **0.109** ± 0.007 | 0.957 | 83% |
 | ScatterSteg JPEG, J-UNIWARD, every AC coefficient (benchmark build) | 0.1 bits per non-zero AC | **0.109** ± 0.007 | 0.955 | 83% |
 
+`embed`'s warning past the suggested size quotes the last column, rounded:
+HILL 0.1 / 0.2 / 0.4 (29%, 42% and the ternary 44%, 76%) as "3 in 10", "4 in
+10", "3 in 4", and UERD every AC 0.05 / 0.1 / 0.2 (83%, 86%, 89%) as "8 in
+10", "9 in 10", "9 in 10", for about the suggestion, twice and four times it
+(`warn_over` in `main.c` and `rust/src/main.rs`, `over_warning` in
+`tests/test_cli.py`). Change them there too when these change.
+
 Every row after the first two was trained for 15 epochs, starting from the
 detector of a heavier payload of the same cost model (`hill_0.4`, then
 `hill_0.2`; `suniward_0.4`; `uerdall_0.2`, then `uerdall_0.1`;

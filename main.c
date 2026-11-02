@@ -206,7 +206,7 @@ static char *read_passphrase(const char *prompt) {
 
 /* The question embed asks before storing more than the image's suggested
    most (see do_embed) */
-#define CONTINUE_QUESTION "Are you sure you want to continue? (y/N) "
+#define CONTINUE_QUESTION "Proceed? (y/N) "
 
 /* Asks CONTINUE_QUESTION at the terminal, echo on: 1 for y or yes (any
    case), 0 for anything else (Enter alone, Ctrl+D), -1 if there's no
@@ -694,6 +694,34 @@ static int write_secret(FILE *fp, const void *ctx) {
     return fwrite(b->buf, 1, b->len, fp) == b->len ? 0 : -1;
 }
 
+/* embed's warning for a message over the image's suggested most: how far
+   over, and how often a trained detector caught that much. The figures are
+   SRNet's "caught at 5% false alarms" in benchmark/README.md (BOSSbase
+   256x256): PNG HILL 0.1 / 0.2 / 0.4 bits per pixel 29% / 42-44% / 76%,
+   JPEG UERD 0.05 / 0.1 / 0.2 bits per non-zero AC 83% / 86% / 89%, about
+   the suggestion, twice and four times it. The ratio is bracketed at
+   sqrt(2), 2 sqrt(2) and 4 sqrt(2), compared squared, in integers (as
+   rust/src/main.rs, word for word). */
+static void warn_over(uint64_t stored, uint64_t suggest, int jpeg) {
+    static const char *const how[4] = {"more than", "about twice", "about four times", "over five times"};
+    static const char *const caught[2][3] = {{"3 in 10", "4 in 10", "3 in 4"},
+                                             {"8 in 10", "9 in 10", "9 in 10"}};
+    uint64_t s2 = stored * stored, g2 = suggest * suggest;
+    int k = s2 < 2 * g2 ? 0 : s2 < 8 * g2 ? 1 : s2 < 32 * g2 ? 2 : 3;
+    const char *kind = jpeg ? "JPEGs" : "PNGs";
+    fprintf(stderr, "Warning: the message takes %llu bytes, %s the %llu suggested for this image.\n"
+                    "In our tests, a detector trained to find ScatterSteg flagged about %s %s\n",
+            (unsigned long long)stored, how[k], (unsigned long long)suggest, caught[jpeg][k > 2 ? 2 : k], kind);
+    if (k == 0)
+        fputs("at the suggested size, and more past it, while wrongly flagging 1 in 20\n", stderr);
+    else if (k == 3)
+        fputs("at four times the suggestion, the most we tested, while wrongly flagging 1 in 20\n", stderr);
+    else
+        fprintf(stderr, "carrying that much (%s%s at the suggested size), while wrongly flagging 1 in 20\n",
+                caught[jpeg][0], jpeg ? " even" : "");
+    fputs("clean images. Real-world checks are likely weaker, but that can't be counted on.\n", stderr);
+}
+
 /* embed's warning for an image with no suggested most (see info): any
    message is more than advised */
 static void warn_unsuited(int is_smooth) {
@@ -829,9 +857,7 @@ static int do_embed(const Options *o) {
         if (is_smooth || suggest == 0)
             warn_unsuited(is_smooth);
         else
-            fprintf(stderr, "Warning: the message takes %u bytes, more than the %zu suggested for this image;\n"
-                            "the more is hidden, the easier it is to detect (see `scattersteg info`)\n",
-                    stored.hidden - 1, suggest);
+            warn_over(stored.hidden - 1, suggest, cover.jpeg != NULL);
         int answer = ask_continue();
         if (answer == 0) {
             fprintf(stderr, "Nothing written\n");
@@ -875,9 +901,7 @@ static int do_embed(const Options *o) {
     else if (is_smooth || suggest == 0)
         warn_unsuited(is_smooth);
     else if (stored.hidden - 1 > suggest)
-        fprintf(stderr, "Warning: %u bytes stored, more than the %zu suggested for this image;\n"
-                        "the more is hidden, the easier it is to detect (see `scattersteg info`)\n",
-                stored.hidden - 1, suggest);
+        warn_over(stored.hidden - 1, suggest, !is_png);
     if (o->verbose)
         fprintf(stderr, "Stored %zu bytes%s%s%s as %u (%s), in an image that holds %zu as is\n",
                 message_len, name ? " from '" : "", name ? name : "", name ? "'" : "",

@@ -7,8 +7,9 @@ modest measurement. Read the limitations before quoting a number.
 **Current results** (HILL costs for PNG, UERD for JPEG) are in
 [HILL](#content-adaptive-costs-hill), [UERD](#content-adaptive-jpeg-costs-uerd),
 [BOSSbase](#second-cover-set-bossbase), [SRNet](#deep-learning-detector-srnet),
-[Off-the-shelf detectors](#off-the-shelf-detectors-aletheia-alaska2)
-and [Classic detectors](#classic-detectors). Every other figure in this
+[Off-the-shelf detectors](#off-the-shelf-detectors-aletheia-alaska2),
+[Classic detectors](#classic-detectors)
+and [Speed](#speed). Every other figure in this
 file, PNG and JPEG, was measured with the message length written straight
 into 32 samples, which that section shows was detectable on its own (in
 JPEG at least); the format now syndrome-codes it, so those figures, if
@@ -496,12 +497,54 @@ gains most where quantization is fine). One seed, and the pool caps differ
 (64 against 1,024; for JPEG, binary at 64 and 1,024 are within noise of each
 other in DCTR and in changes made, which hasn't been checked for PNG). So ternary replaces the exchange
 embedding for PNG too. The payload is now coded ternary in both builds, with
-the pool cap at 1,024 samples per bit (`FORMAT.md`); the merged coder differs
-from the prototype in picking the split from a sample of 65,536 costs (the
-decoder reads it, so it only has to be about right), and in giving layer A
-less where it can't carry its share (a half, a quarter, then none: a cover
+the pool cap at 1,024 samples per bit (`FORMAT.md`); the coder on `ternary`
+differs from the prototype in picking the split from a sample of 65,536 costs
+(the decoder reads it, so it only has to be about right), and in giving layer
+A less where it can't carry its share (a half, a quarter, then none: a cover
 of mostly 0s or 255s, which the prototype failed on, or a message near
-capacity).
+capacity). Against `69257f6` (the same trellis over every cost, before the
+sample and the cap of four tries), `count_changes.py` on 40 BOSSbase JPEGs
+counted 0.4% fewer changes at 0.05 bits per non-zero AC, the same at 0.2 and
+0.2% more at 0.4 (`results-count-changes-port.txt`), all within the about one
+percentage point by which a repeat of this script differs.
+
+## Speed
+
+Wall time and peak RSS of embed and extract (`run_speed.sh`,
+`results-speed.txt`), 2026-11-01, on an i5-12400F (12 threads, 31 GiB; load
+at the start of the run 1.94 1.80 3.93). The photo is Wikimedia Commons
+“2014 Nowy Aton, Widok ze szczytu Góry Iwerskiej (05).jpg” (4241×2827, about
+12 megapixels, CC BY-SA 4.0); the PNG is those pixels saved by Pillow at
+`compress_level` 6. `main` is the binary coder at `5f621dc`; `new` is the
+ternary port with the parallel trellis (at most 8 threads), the sampled
+split and at most four tries, before the decode-memory fix (which changes
+extract only). Sizes are what that build's `info` reported: JPEG 3,914 /
+3,909 bytes suggested (`main` / `new`) and 2,962,080 at capacity; PNG 10,349
+/ 10,344 suggested and 4,494,692 at capacity.
+
+Embed wall time, seconds (C / Rust):
+
+| | `main` | `new` |
+|---|---|---|
+| JPEG, suggested | 3.5 / 3.1 | 4.5 / 4.2 |
+| JPEG, capacity | 8.3 / 8.5 | 11.1 / 5.9 |
+| PNG, suggested | 9.5 / 8.6 | 11.5 / 10.8 |
+| PNG, capacity | 15.9 / 15.6 | 12.8 / 12.0 |
+
+Extract on the same files is 0.6–2.8 s. Peak RSS while embedding, `new`:
+622–978 MiB (`main`: 328–641 MiB). Before those speed changes, same machine,
+idle, C: JPEG 38.1 s at the suggested size, 174.9 s at capacity; Rust 27.5 s
+at the suggested size.
+
+A breakdown of the C PNG suggested-size embed (instrumented build, the test
+suite running alongside): load 0.2 s, Argon2id + order 1.05 s, HILL + coder
+4.55 s, zlib settings search 1.66 s, compression 4.01 s (level 6, memLevel 9,
+`Z_FILTERED`), read back 0.3 s.
+
+The owner's limits (2026-11-01) are at most 3–5 s for a small message and 15 s
+for a large one. JPEG meets them; a 12 MP PNG at the suggested size does not
+(11.5 / 10.8 s), and `main` did not either (9.5 / 8.6 s). That PNG figure is
+from this run, before any parallel zlib-settings or HILL work.
 
 ## Off-the-shelf detectors (Aletheia, ALASKA2)
 

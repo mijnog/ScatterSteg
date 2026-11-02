@@ -1,0 +1,10 @@
+count_changes.py, 2026-11-01
+covers: /home/max/bench/dl/jpg, first 40 sorted *.jpg (BOSSbase 256x256)
+old=/tmp/ss-69257f6/scattersteg (69257f6, ternary before sampled split and capped tries)
+new=/home/max/scattersteg/scattersteg (61cf515, same coder as 9261497)
+DUMPCOEF=/tmp/dumpcoef
+
+0.05 bits per non-zero AC, 40 covers: old 8369; new 8339 (0.4% fewer)
+0.20 bits per non-zero AC, 40 covers: old 28527; new 28521 (0.0% fewer)
+0.40 bits per non-zero AC, 40 covers: old 59649; new 59783 (-0.2% fewer)
+EXIT:0

@@ -3,9 +3,9 @@
 #include "stc.h"
 #include <math.h>
 #include <pthread.h>
+#include "parallel.h"
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /* Constraint height: the trellis has 2^STC_H states. 7 is the usual
    trade-off: within a few percent of the best possible embedding
@@ -22,7 +22,7 @@
 /* Message bits per trellis run. The trellis is run in independent chunks so
    the path memory (2^STC_H bits per carrier) stays bounded: a chunk spans at
    most about 2^20 carriers, i.e. 16 MiB of path bits, and up to
-   STC_THREADS_MAX run at once (stc_embed). */
+   PARALLEL_MAX run at once (stc_embed). */
 #define STC_CHUNK_CARRIERS ((size_t)1 << 20)
 
 size_t stc_carriers(size_t n_avail, size_t mlen) {
@@ -129,8 +129,9 @@ static int embed_chunk(const uint8_t *x, const float *costs, const uint8_t *m,
 
 /* The chunks are independent (each starts from state 0 and ends where it
    likes), so they can run on several threads at once and give the same y.
-   Workers take the next chunk in turn until none is left, or one fails. */
-#define STC_THREADS_MAX 8  /* each running chunk holds up to 16 MiB of path */
+   Workers take the next chunk in turn until none is left, or one fails.
+   At most PARALLEL_MAX threads: each running chunk holds up to 16 MiB of
+   path. */
 
 typedef struct {
     const uint8_t *x, *m;
@@ -160,22 +161,6 @@ static void *run_chunks(void *arg) {
     }
 }
 
-/* Threads to use: one per online CPU, at most STC_THREADS_MAX and one per
-   chunk. One in fault-injection builds, which count calls and must see
-   them in a fixed order, and in the codec fuzzer's (whose inputs are small:
-   threads would only cost time). */
-static size_t thread_count(size_t chunks) {
-#if defined(FAULT_H) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
-    (void)chunks;
-    return 1;
-#else
-    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    size_t t = cpus > 0 ? (size_t)cpus : 1;
-    if (t > STC_THREADS_MAX) t = STC_THREADS_MAX;
-    return t < chunks ? t : chunks;
-#endif
-}
-
 int stc_embed(const uint8_t *x, const float *costs, const uint8_t *m,
               size_t mlen, size_t n, uint8_t *y) {
     size_t widest = n / mlen + 1;
@@ -185,8 +170,8 @@ int stc_embed(const uint8_t *x, const float *costs, const uint8_t *m,
     size_t per = chunk_bits(mlen, n);
     Chunks j = {x, m, costs, cols, y, mlen, n, per, (mlen + per - 1) / per, 0, 0,
                 PTHREAD_MUTEX_INITIALIZER};
-    pthread_t workers[STC_THREADS_MAX - 1];
-    size_t extra = thread_count(j.chunks) - 1, started = 0;
+    pthread_t workers[PARALLEL_MAX - 1];
+    size_t extra = parallel_threads(j.chunks) - 1, started = 0;
     /* A thread that can't start leaves its share to the others */
     while (started < extra && pthread_create(&workers[started], NULL, run_chunks, &j) == 0) started++;
     run_chunks(&j);

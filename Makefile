@@ -37,7 +37,7 @@ TEST_DIR    = tests/build
 TEST_CFLAGS = $(CFLAGS) -I. -Itests -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_ENV    = ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 UNIT_TESTS  = $(TEST_DIR)/test_embed $(TEST_DIR)/test_stc $(TEST_DIR)/test_prng $(TEST_DIR)/test_png_io $(TEST_DIR)/test_jpeg_io $(TEST_DIR)/test_faults $(TEST_DIR)/test_distortion
-HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h distortion.h xmp.h
+HDRS        = codec.h png_io.h jpeg_io.h prng.h embed.h stc.h atomic_write.h distortion.h xmp.h parallel.h
 
 # Fault-injection build: the sources force-include tests/fault.h, so a test
 # can make the Nth malloc/fopen/fclose/rename/... fail (see tests/fault.c)
@@ -58,7 +58,7 @@ cli-test: $(TEST_DIR)/scattersteg $(TEST_DIR)/scattersteg-fault $(TEST_DIR)/jpeg
 $(TEST_DIR)/test_embed: tests/test_embed.c embed.c png_io.c atomic_write.c tests/test.h tests/embed_bytes.h $(HDRS) | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_embed.c embed.c png_io.c atomic_write.c -o $@ -lpng -lz -lsodium -lm
 
-$(TEST_DIR)/test_stc: tests/test_stc.c stc.c stc.h tests/test.h | $(TEST_DIR)
+$(TEST_DIR)/test_stc: tests/test_stc.c stc.c stc.h parallel.h tests/test.h | $(TEST_DIR)
 	$(CC) $(TEST_CFLAGS) tests/test_stc.c stc.c -o $@ -lm
 
 $(TEST_DIR)/test_prng: tests/test_prng.c prng.c tests/test.h $(HDRS) | $(TEST_DIR)

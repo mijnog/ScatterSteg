@@ -2,6 +2,7 @@
    Copyright (C) 2026 Maxime de Montbron */
 #include "test.h"
 #include "stc.h"
+#include "parallel.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -134,6 +135,29 @@ static void test_known_answer(void) {
         fprintf(stderr, "    (got packed 0x%08x, ones %u)\n", packed, ones);
 }
 
+/* parallel_for runs every index once, in ranges that join up, whatever n
+   and the range size (as rust/src/parallel.rs's test) */
+static void mark(void *ctx, size_t from, size_t to) {
+    unsigned char *seen = ctx;
+    for (size_t i = from; i < to; i++) seen[i]++;
+}
+
+static void test_parallel_for(void) {
+    static const size_t sizes[] = {0, 1, 7, 8, 9, 1000, 65537};
+    for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++)
+        for (size_t least = 1; least <= 4096; least *= 64) {
+            size_t n = sizes[s];
+            unsigned char *seen = calloc(n + 1, 1);
+            CHECK(seen != NULL);
+            if (!seen) return;
+            parallel_for(n, least, mark, seen);
+            int once = 1;
+            for (size_t i = 0; i < n; i++) once &= seen[i] == 1;
+            CHECK(once && seen[n] == 0);
+            free(seen);
+        }
+}
+
 int main(void) {
     RUN(test_roundtrips);
     RUN(test_chunk_boundaries);
@@ -142,5 +166,6 @@ int main(void) {
     RUN(test_already_there);
     RUN(test_carriers);
     RUN(test_known_answer);
+    RUN(test_parallel_for);
     return TEST_SUMMARY();
 }

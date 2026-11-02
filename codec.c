@@ -3,6 +3,7 @@
 #include "codec.h"
 #include "distortion.h"
 #include "embed.h"
+#include "parallel.h"
 #include "prng.h"
 #include "stc.h"
 #include <math.h>
@@ -378,6 +379,55 @@ static int read_payload(const Carrier *c, const uint32_t *order, uint32_t n,
    unless it has no other way, and embed_layers checks it didn't */
 #define TERNARY_WET 1e13f
 
+/* Samples per thread at least, for the loops below (see parallel.h): each
+   sample is computed on its own, so the result doesn't depend on the
+   threads */
+#define PER_THREAD 65536
+
+/* The layers' starting bits and costs (see embed_layers), samples from .. to-1 */
+typedef struct {
+    const int32_t *v;
+    const float *rho;
+    int32_t lo, hi;
+    double lambda;
+    const uint8_t *ya;  /* layer B: which samples layer A flipped */
+    size_t na;
+    uint8_t *x;
+    float *cost;
+} LayerCosts;
+
+/* Layer A: second bits; flipping one takes +1 from odd, -1 from even */
+static void layer_a_costs(void *ctx, size_t from, size_t to) {
+    const LayerCosts *L = ctx;
+    for (size_t i = from; i < to; i++) {
+        int32_t v = L->v[i], t = v + ((v & 1) ? 1 : -1);
+        double lr = L->lambda * L->rho[i];
+        double k = lr > 30 ? lr : log1p(exp(lr));  /* ln(1 + e^(lambda rho)) */
+        L->x[i] = second_bit(v);
+        L->cost[i] = t < L->lo || t > L->hi || k > TERNARY_WET ? TERNARY_WET : (float)k;
+    }
+}
+
+/* Layer B: LSBs. A sample layer A flipped must flip its LSB too (its
+   starting bit given as the flipped one, kept at a wet cost); any other
+   can flip it alone, the way that keeps its second bit (from an odd value
+   -1, from an even +1), or either way past layer A. */
+static void layer_b_costs(void *ctx, size_t from, size_t to) {
+    const LayerCosts *L = ctx;
+    for (size_t i = from; i < to; i++) {
+        int32_t v = L->v[i];
+        uint8_t lsb = (uint8_t)(v & 1);
+        if (i < L->na && L->ya[i]) {
+            L->x[i] = !lsb;
+            L->cost[i] = TERNARY_WET;
+        } else {
+            int32_t t = v + (lsb ? -1 : 1);
+            L->x[i] = lsb;
+            L->cost[i] = i < L->na && (t < L->lo || t > L->hi) ? TERNARY_WET : L->rho[i];
+        }
+    }
+}
+
 /* Both layers, with ma of the mlen bits in layer A: the changes into
    delta. 0, 1 if they can't be made by +-1 (the trellis had to pay a wet
    cost), or -2 if out of memory. The costs are finite (wet ones too), so
@@ -393,32 +443,11 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
     if (!cost || !x || !ya || !yb) goto out;
     memset(delta, 0, u);
 
-    /* Layer A: second bits; flipping one takes +1 from odd, -1 from even */
-    for (size_t i = 0; i < na; i++) {
-        int32_t t = v[i] + ((v[i] & 1) ? 1 : -1);
-        double lr = lambda * rho[i];
-        double k = lr > 30 ? lr : log1p(exp(lr));  /* ln(1 + e^(lambda rho)) */
-        x[i] = second_bit(v[i]);
-        cost[i] = t < lo || t > hi || k > TERNARY_WET ? TERNARY_WET : (float)k;
-    }
+    LayerCosts L = {v, rho, lo, hi, lambda, ya, na, x, cost};
+    parallel_for(na, PER_THREAD, layer_a_costs, &L);
     if (ma && stc_embed(x, cost, m, ma, na, ya) != 0) goto out;
     for (size_t i = 0; i < na; i++) ya[i] = ya[i] != x[i];  /* now: flipped */
-
-    /* Layer B: LSBs. A sample layer A flipped must flip its LSB too (its
-       starting bit given as the flipped one, kept at a wet cost); any
-       other can flip it alone, the way that keeps its second bit (from
-       an odd value -1, from an even +1), or either way past layer A. */
-    for (size_t i = 0; i < nb; i++) {
-        uint8_t lsb = (uint8_t)(v[i] & 1);
-        if (i < na && ya[i]) {
-            x[i] = !lsb;
-            cost[i] = TERNARY_WET;
-        } else {
-            int32_t t = v[i] + (lsb ? -1 : 1);
-            x[i] = lsb;
-            cost[i] = i < na && (t < lo || t > hi) ? TERNARY_WET : rho[i];
-        }
-    }
+    parallel_for(nb, PER_THREAD, layer_b_costs, &L);
     if (mb && stc_embed(x, cost, m + ma, mb, nb, yb) != 0) goto out;
 
     /* The changes; a wet cost the trellis had to pay means no +-1 change
@@ -440,6 +469,21 @@ static int embed_layers(const int32_t *v, const float *rho, size_t u, int32_t lo
 out:
     free(cost); free(x); free(ya); free(yb);
     return r;
+}
+
+/* Each sample's value and cost, read through the order (see embed_payload) */
+typedef struct {
+    const Carrier *c;
+    const uint32_t *order;
+    size_t start;
+    int32_t *v;
+    float *rho;
+} Gather;
+
+static void gather(void *ctx, size_t from, size_t to) {
+    const Gather *g = ctx;
+    embed_get_values(g->c, g->order, g->start + from, to - from, g->v + from);
+    embed_costs(g->c, g->order, g->start + from, to - from, g->rho + from);
 }
 
 /* Makes the payload's changes (see ternary_split) at once, and records
@@ -465,8 +509,8 @@ static int embed_payload(const Carrier *c, const uint32_t *order, uint32_t n,
     int r = -2;
     if (!v || !rho || !m || !delta) goto out;
     for (size_t i = 0; i < mlen; i++) m[i] = (payload[i / 8] >> (i % 8)) & 1;
-    embed_get_values(c, order, start, u, v);
-    embed_costs(c, order, start, u, rho);
+    Gather g = {c, order, start, v, rho};
+    parallel_for(u, PER_THREAD, gather, &g);
     embed_value_range(c, &lo, &hi);
 
     double lambda;

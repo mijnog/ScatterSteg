@@ -32,7 +32,7 @@
 use crate::embed::{self, Carrier, EmbedPlan};
 use crate::sodium::{self, Secret, PwhashStrength, MAC_BYTES, NONCE_BYTES, SALT_BYTES};
 use crate::compress::{self, Unpack};
-use crate::{prng, stc};
+use crate::{parallel, prng, stc};
 use zeroize::Zeroizing;
 
 /// The salt region, in samples, when the image allows
@@ -341,6 +341,11 @@ pub enum EmbedError {
 /// unless it has no other way, and embed_layers checks it didn't
 const TERNARY_WET: f32 = 1e13;
 
+/// Samples per thread at least, for the loops below (see parallel.rs): each
+/// sample is computed on its own, so the result doesn't depend on the
+/// threads. As C's PER_THREAD.
+const PER_THREAD: usize = 65536;
+
 /// Both layers, with ma of the mlen bits in layer A: the changes into delta.
 /// Ok(true), Ok(false) if they can't be made by +-1 (the trellis had to pay a
 /// wet cost), Err if the trellis failed. The costs are finite (wet ones too),
@@ -360,13 +365,16 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
     let mut yb = vec![0u8; u];
 
     // Layer A: second bits; flipping one takes +1 from odd, -1 from even
-    for i in 0..na {
-        let t = v[i] + if v[i] & 1 != 0 { 1 } else { -1 };
-        let lr = lambda * rho[i] as f64;
-        let k = if lr > 30.0 { lr } else { lr.exp().ln_1p() }; // ln(1 + e^(lambda rho))
-        x[i] = second_bit(v[i]);
-        cost[i] = if t < lo || t > hi || k > TERNARY_WET as f64 { TERNARY_WET } else { k as f32 };
-    }
+    parallel::pieces2(&mut x[..na], &mut cost[..na], PER_THREAD, |from, x, cost| {
+        for (j, (x, cost)) in x.iter_mut().zip(cost.iter_mut()).enumerate() {
+            let (v, rho) = (v[from + j], rho[from + j]);
+            let t = v + if v & 1 != 0 { 1 } else { -1 };
+            let lr = lambda * rho as f64;
+            let k = if lr > 30.0 { lr } else { lr.exp().ln_1p() }; // ln(1 + e^(lambda rho))
+            *x = second_bit(v);
+            *cost = if t < lo || t > hi || k > TERNARY_WET as f64 { TERNARY_WET } else { k as f32 };
+        }
+    });
     if ma > 0 { stc::embed(&x[..na], &cost[..na], &m[..ma], ma, na, &mut ya[..na])?; }
     for i in 0..na { ya[i] = (ya[i] != x[i]) as u8; } // now: flipped
 
@@ -374,17 +382,21 @@ fn embed_layers(v: &[i32], rho: &[f32], (lo, hi): (i32, i32), lambda: f64, m: &[
     // starting bit given as the flipped one, kept at a wet cost); any other
     // can flip it alone, the way that keeps its second bit (from an odd value
     // -1, from an even +1), or either way past layer A.
-    for i in 0..nb {
-        let lsb = (v[i] & 1) as u8;
-        if i < na && ya[i] != 0 {
-            x[i] = 1 - lsb;
-            cost[i] = TERNARY_WET;
-        } else {
-            let t = v[i] + if lsb != 0 { -1 } else { 1 };
-            x[i] = lsb;
-            cost[i] = if i < na && (t < lo || t > hi) { TERNARY_WET } else { rho[i] };
+    let ya_done = &ya;
+    parallel::pieces2(&mut x[..nb], &mut cost[..nb], PER_THREAD, |from, x, cost| {
+        for (j, (x, cost)) in x.iter_mut().zip(cost.iter_mut()).enumerate() {
+            let i = from + j;
+            let lsb = (v[i] & 1) as u8;
+            if i < na && ya_done[i] != 0 {
+                *x = 1 - lsb;
+                *cost = TERNARY_WET;
+            } else {
+                let t = v[i] + if lsb != 0 { -1 } else { 1 };
+                *x = lsb;
+                *cost = if i < na && (t < lo || t > hi) { TERNARY_WET } else { rho[i] };
+            }
         }
-    }
+    });
     if mb > 0 { stc::embed(&x[..nb], &cost[..nb], &m[ma..], mb, nb, &mut yb[..nb])?; }
 
     // The changes; a wet cost the trellis had to pay means no +-1 change
@@ -427,8 +439,11 @@ fn embed_payload(c: &mut Carrier, order: &[u32], n: u32, payload: &[u8], plan: &
     let m: Vec<u8> = (0..mlen).map(|i| (payload[i / 8] >> (i % 8)) & 1).collect();
     let mut v = vec![0i32; u];
     let mut rho = vec![0f32; u];
-    embed::get_values(c, order, start, &mut v);
-    embed::costs(c, order, start, &mut rho);
+    {
+        let c = &*c;
+        parallel::pieces(&mut v, 1, PER_THREAD, |from, v| embed::get_values(c, order, start + from, v));
+        parallel::pieces(&mut rho, 1, PER_THREAD, |from, rho| embed::costs(c, order, start + from, rho));
+    }
     let range = embed::value_range(c);
 
     let (mut ma, lambda) = ternary_split(&rho, mlen);

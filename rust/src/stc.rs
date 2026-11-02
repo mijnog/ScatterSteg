@@ -131,7 +131,8 @@ pub fn embed(x: &[u8], costs: &[f32], m: &[u8], mlen: usize, n: usize, y: &mut [
     // The chunks are independent (each starts from state 0 and ends where it
     // likes), so they can run on several threads at once and give the same
     // y: each gets its own slice of y, and workers take the next chunk in
-    // turn. As C's stc_embed.
+    // turn. At most parallel::MAX threads: each running chunk holds up to
+    // 16 MiB of path. As C's stc_embed.
     let mut jobs = Vec::new();
     let mut rest = &mut y[..n];
     let mut a = 0;
@@ -156,17 +157,13 @@ pub fn embed(x: &[u8], costs: &[f32], m: &[u8], mlen: usize, n: usize, y: &mut [
             }
         }
     };
-    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(THREADS_MAX).min(jobs.len());
+    let threads = crate::parallel::threads(jobs.len());
     std::thread::scope(|scope| {
         for _ in 1..threads { scope.spawn(work); }
         work();
     });
     if failed.into_inner() { Err(()) } else { Ok(()) }
 }
-
-/// Threads embed uses at most: each running chunk holds up to 16 MiB of path.
-/// As C's STC_THREADS_MAX.
-const THREADS_MAX: usize = 8;
 
 /// The syndrome of y (n carriers): the mlen message bits
 pub fn extract(y: &[u8], mlen: usize, n: usize, m: &mut [u8]) {

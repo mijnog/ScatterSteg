@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 #include "embed.h"
+#include "parallel.h"
 #include <sodium.h>
 #include <stdlib.h>
 #include <string.h>
@@ -247,25 +248,77 @@ void embed_costs(const Carrier *c, const uint32_t *indices, size_t start,
     }
 }
 
-/* Mean over 2r+1 samples along one line (n samples, `step` apart),
-   mirrored at the ends as MATLAB's 'symmetric' padding */
-static void box_line(const float *in, float *out, size_t n, size_t step, int r) {
-    for (size_t i = 0; i < n; i++) {
-        double sum = 0;
-        for (int k = -r; k <= r; k++) {
-            long j = (long)i + k;
-            while (j < 0 || j >= (long)n) j = j < 0 ? -j - 1 : 2 * (long)n - j - 1;
-            sum += in[(size_t)j * step];
+/* Where index i (which may be past either end of 0 .. n-1) reads from:
+   mirrored at the ends, as MATLAB's 'symmetric' padding */
+static long mirrored(long i, long n) {
+    while (i < 0 || i >= n) i = i < 0 ? -i - 1 : 2 * n - i - 1;
+    return i;
+}
+
+/* One channel of HILL in steps over rows, each step a parallel_for: a row
+   of a step needs only the step before it, which is done by then. Each
+   value is computed as a one-thread pass would, so the costs are the same
+   on any number of threads. */
+typedef struct {
+    const Image *img;
+    float *a, *tmp, *costs;
+    uint32_t c;
+    int r;  /* the box's radius */
+} Hill;
+
+/* |KB high-pass residual| into a, edges repeated */
+static void hill_residual(void *ctx, size_t from, size_t to) {
+    static const int kb[3][3] = {{-1, 2, -1}, {2, -4, 2}, {-1, 2, -1}};
+    const Hill *H = ctx;
+    const Image *img = H->img;
+    uint32_t w = img->width, h = img->height, ch = img->channels;
+    for (size_t y = from; y < to; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            int r = 0;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    long yy = (long)y + dy, xx = (long)x + dx;
+                    if (yy < 0) yy = 0; else if (yy >= (long)h) yy = h - 1;
+                    if (xx < 0) xx = 0; else if (xx >= (long)w) xx = w - 1;
+                    r += kb[dy + 1][dx + 1] * img->rows[yy][(size_t)xx * ch + H->c];
+                }
+            H->a[y * w + x] = (float)abs(r);
         }
-        out[i * step] = (float)(sum / (2 * r + 1));
+}
+
+/* The box's mean across each row, a into tmp */
+static void hill_across(void *ctx, size_t from, size_t to) {
+    const Hill *H = ctx;
+    long w = H->img->width;
+    for (size_t y = from; y < to; y++) {
+        const float *in = H->a + y * (size_t)w;
+        for (long x = 0; x < w; x++) {
+            double sum = 0;
+            for (int k = -H->r; k <= H->r; k++) sum += in[mirrored(x + k, w)];
+            H->tmp[y * (size_t)w + (size_t)x] = (float)(sum / (2 * H->r + 1));
+        }
     }
 }
 
-/* In place: the (2r+1) x (2r+1) mean of a w x h plane, using tmp */
-static void box(float *a, float *tmp, uint32_t w, uint32_t h, int r) {
-    for (uint32_t y = 0; y < h; y++) box_line(a + (size_t)y * w, tmp + (size_t)y * w, w, 1, r);
-    for (uint32_t x = 0; x < w; x++) box_line(tmp + x, a + x, h, w, r);
+/* The box's mean down each column, tmp into v, then: radius 1, a =
+   1 / (v + 1e-10); radius 7, the costs */
+static void hill_down(void *ctx, size_t from, size_t to) {
+    const Hill *H = ctx;
+    uint32_t w = H->img->width, ch = H->img->channels;
+    long h = H->img->height;
+    for (size_t y = from; y < to; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            double sum = 0;
+            for (int k = -H->r; k <= H->r; k++) sum += H->tmp[(size_t)mirrored((long)y + k, h) * w + x];
+            float v = (float)(sum / (2 * H->r + 1));
+            size_t i = y * w + x;
+            if (H->r == 1) H->a[i] = 1.0f / (v + 1e-10f);
+            else H->costs[i * ch + H->c] = v;
+        }
 }
+
+/* Rows per thread at least: below that, starting threads costs more */
+#define HILL_ROWS 16
 
 float *embed_hill_costs(const Image *img) {
     uint32_t w = img->width, h = img->height, ch = img->channels;
@@ -276,25 +329,14 @@ float *embed_hill_costs(const Image *img) {
         free(costs); free(a); free(tmp);
         return NULL;
     }
-    static const int kb[3][3] = {{-1, 2, -1}, {2, -4, 2}, {-1, 2, -1}};
     for (uint32_t c = 0; c < ch; c++) {
-        /* |KB high-pass residual|, edges repeated */
-        for (uint32_t y = 0; y < h; y++)
-            for (uint32_t x = 0; x < w; x++) {
-                int r = 0;
-                for (int dy = -1; dy <= 1; dy++)
-                    for (int dx = -1; dx <= 1; dx++) {
-                        long yy = (long)y + dy, xx = (long)x + dx;
-                        if (yy < 0) yy = 0; else if (yy >= (long)h) yy = h - 1;
-                        if (xx < 0) xx = 0; else if (xx >= (long)w) xx = w - 1;
-                        r += kb[dy + 1][dx + 1] * img->rows[yy][(size_t)xx * ch + c];
-                    }
-                a[(size_t)y * w + x] = (float)abs(r);
-            }
-        box(a, tmp, w, h, 1);
-        for (size_t i = 0; i < plane; i++) a[i] = 1.0f / (a[i] + 1e-10f);
-        box(a, tmp, w, h, 7);
-        for (size_t i = 0; i < plane; i++) costs[i * ch + c] = a[i];
+        Hill H = {img, a, tmp, costs, c, 1};
+        parallel_for(h, HILL_ROWS, hill_residual, &H);
+        parallel_for(h, HILL_ROWS, hill_across, &H);
+        parallel_for(h, HILL_ROWS, hill_down, &H);  /* a = 1 / (box + 1e-10) */
+        H.r = 7;
+        parallel_for(h, HILL_ROWS, hill_across, &H);
+        parallel_for(h, HILL_ROWS, hill_down, &H);  /* the costs */
     }
     free(a);
     free(tmp);

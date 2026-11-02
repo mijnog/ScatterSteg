@@ -36,4 +36,12 @@ int  png_save(const Image *img, const char *path);  /* returns 0 on success, -1 
 Image *png_read(FILE *fp);
 int    png_write(const Image *img, FILE *fp);
 
+/* Starts working out, on a thread of its own, how png_write will compress
+   the image data the way the cover was (zlib's settings, found by
+   reproducing the cover's data): it reads only the cover's compressed data,
+   not the pixels, so it can run while they are changed, and png_write (or
+   image_free) waits for it. Optional: without it png_write does the same
+   itself, with the same result. Not in fault-injection builds. */
+void   png_layout_start(Image *img);
+
 #endif /* PNG_IO_H */

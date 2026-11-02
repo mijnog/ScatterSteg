@@ -735,6 +735,8 @@ static int do_embed(const Options *o) {
     if (cover_load(o->cover_file, &cover) != 0 || cover_check(&cover, o->cover_file) != 0)
         goto done;
     suggest = suggested(&cover, &is_smooth);
+    /* How to write the output like the cover, worked out meanwhile */
+    if (cover.png) png_layout_start(cover.png);
     if (!o->quiet) fprintf(stderr, "Deriving keys...\n");
     prep = codec_prepare(&cover.carrier, passphrase);
     free_passphrase(passphrase);

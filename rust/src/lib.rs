@@ -18,6 +18,7 @@ pub mod cover;
 pub mod distortion;
 pub mod embed;
 pub mod fault;
+pub mod parallel;
 pub mod png_io;
 pub mod prng;
 pub mod sodium;

@@ -10,7 +10,7 @@
 //! change in a plan, and `apply` changes them all at once, pairing them up
 //! so the histogram is preserved.
 
-use crate::sodium;
+use crate::{parallel, sodium};
 use zeroize::Zeroize;
 
 pub enum Samples<'a> {
@@ -68,25 +68,32 @@ impl<'a> Carrier<'a> {
         let mut a = vec![0f32; plane];
         let mut tmp = vec![0f32; plane];
         const KB: [[i32; 3]; 3] = [[-1, 2, -1], [2, -4, 2], [-1, 2, -1]];
+        // In steps over rows, each on several threads: a row of a step needs
+        // only the step before it, which is done by then. Each value is
+        // computed as one thread would, so the costs don't depend on the
+        // threads. As C's embed_hill_costs.
         for c in 0..ch {
             // |KB high-pass residual|, edges repeated
-            for y in 0..h {
-                for x in 0..w {
-                    let mut r = 0;
-                    for (dy, row) in KB.iter().enumerate() {
-                        for (dx, k) in row.iter().enumerate() {
-                            let yy = (y + dy).saturating_sub(1).min(h - 1);
-                            let xx = (x + dx).saturating_sub(1).min(w - 1);
-                            r += k * px[(yy * w + xx) * ch + c] as i32;
+            parallel::pieces(&mut a, w, HILL_ROWS, |y0, rows| {
+                for (k, row) in rows.chunks_mut(w).enumerate() {
+                    let y = y0 + k;
+                    for (x, out) in row.iter_mut().enumerate() {
+                        let mut r = 0;
+                        for (dy, kb) in KB.iter().enumerate() {
+                            for (dx, k) in kb.iter().enumerate() {
+                                let yy = (y + dy).saturating_sub(1).min(h - 1);
+                                let xx = (x + dx).saturating_sub(1).min(w - 1);
+                                r += k * px[(yy * w + xx) * ch + c] as i32;
+                            }
                         }
+                        *out = r.abs() as f32;
                     }
-                    a[y * w + x] = r.abs() as f32;
                 }
-            }
-            box_mean(&mut a, &mut tmp, w, h, 1);
-            for v in a.iter_mut() { *v = 1.0 / (*v + 1e-10); }
-            box_mean(&mut a, &mut tmp, w, h, 7);
-            for (i, v) in a.iter().enumerate() { costs[i * ch + c] = *v; }
+            });
+            box_across(&a, &mut tmp, w, 1);
+            box_down(&tmp, &mut a, w, h, 1, 1, 0, |v| 1.0 / (v + 1e-10));
+            box_across(&a, &mut tmp, w, 7);
+            box_down(&tmp, &mut costs, w, h, 7, ch, c, |v| v);
         }
         costs
     }
@@ -359,24 +366,46 @@ pub fn costs(c: &Carrier, indices: &[u32], start: usize, out: &mut [f32]) {
     }
 }
 
-/// Mean over 2r+1 samples along one line (n samples, `step` apart),
-/// mirrored at the ends as MATLAB's 'symmetric' padding
-fn box_line(src: &[f32], dst: &mut [f32], n: usize, step: usize, r: isize) {
-    for i in 0..n {
-        let mut sum = 0f64;
-        for k in -r..=r {
-            let mut j = i as isize + k;
-            while j < 0 || j >= n as isize { j = if j < 0 { -j - 1 } else { 2 * n as isize - j - 1 }; }
-            sum += src[j as usize * step] as f64;
-        }
-        dst[i * step] = (sum / (2 * r + 1) as f64) as f32;
-    }
+/// Rows per thread at least, for HILL: below that, starting threads costs more
+const HILL_ROWS: usize = 16;
+
+/// Where index i (which may be past either end of 0 .. n-1) reads from:
+/// mirrored at the ends, as MATLAB's 'symmetric' padding
+fn mirrored(mut i: isize, n: usize) -> usize {
+    let n = n as isize;
+    while i < 0 || i >= n { i = if i < 0 { -i - 1 } else { 2 * n - i - 1 }; }
+    i as usize
 }
 
-/// In place: the (2r+1) x (2r+1) mean of a w x h plane, using tmp
-fn box_mean(a: &mut [f32], tmp: &mut [f32], w: usize, h: usize, r: isize) {
-    for y in 0..h { box_line(&a[y * w..], &mut tmp[y * w..], w, 1, r); }
-    for x in 0..w { box_line(&tmp[x..], &mut a[x..], h, w, r); }
+/// The (2r+1)-wide mean across each row of a w-wide plane, src into dst
+fn box_across(src: &[f32], dst: &mut [f32], w: usize, r: isize) {
+    parallel::pieces(dst, w, HILL_ROWS, |y0, rows| {
+        for (k, row) in rows.chunks_mut(w).enumerate() {
+            let line = &src[(y0 + k) * w..(y0 + k + 1) * w];
+            for (x, out) in row.iter_mut().enumerate() {
+                let mut sum = 0f64;
+                for d in -r..=r { sum += line[mirrored(x as isize + d, w)] as f64; }
+                *out = (sum / (2 * r + 1) as f64) as f32;
+            }
+        }
+    });
+}
+
+/// The (2r+1)-tall mean down each column of a w x h plane, src's, through
+/// `f` into channel c of dst (ch channels a pixel)
+#[allow(clippy::too_many_arguments)]
+fn box_down(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: isize, ch: usize, c: usize,
+            f: impl Fn(f32) -> f32 + Sync) {
+    parallel::pieces(dst, w * ch, HILL_ROWS, |y0, rows| {
+        for (k, row) in rows.chunks_mut(w * ch).enumerate() {
+            let y = (y0 + k) as isize;
+            for x in 0..w {
+                let mut sum = 0f64;
+                for d in -r..=r { sum += src[mirrored(y + d, h) * w + x] as f64; }
+                row[x * ch + c] = f((sum / (2 * r + 1) as f64) as f32);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

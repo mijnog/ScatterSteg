@@ -650,6 +650,8 @@ fn embed(o: &Options) -> ExitCode {
     };
     if !check_cover(&mut cover, input) { return ExitCode::FAILURE; }
     let (suggest, is_smooth) = suggested(&mut cover);
+    // How to write the output like the cover, worked out meanwhile
+    if let Cover::Png(img) = &cover { scattersteg::png_io::start_layout(img); }
     if !o.quiet { scattersteg::errln!("Deriving keys..."); }
     let prepared = match codec::prepare_encode(&cover.carrier(), &passphrase) {
         Ok(p) => p,

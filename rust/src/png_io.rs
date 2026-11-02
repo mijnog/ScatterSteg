@@ -9,6 +9,8 @@ use crate::zlib_sys as z;
 use std::io::{self, Cursor, Write};
 use std::os::raw::c_int;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 /// Largest decoded pixel buffer png_load will allocate (1 GiB)
 const MAX_PIXEL_BYTES: usize = 1 << 30;
@@ -51,7 +53,9 @@ pub struct PngMeta {
     interlaced: bool,
     chunks: Vec<Chunk>,
     /// None unless the cover is 8-bit gray or RGB, the only kind `save` writes
-    idat: Option<Idat>,
+    idat: Option<Arc<Idat>>,
+    /// start_layout's, until `encode` or `save` takes it
+    job: Mutex<Option<JoinHandle<Layout>>>,
 }
 
 pub struct Image {
@@ -362,7 +366,7 @@ pub fn from_bytes(mut file: Vec<u8>) -> Option<Image> {
 
     Some(Image {
         width, height, channels, pixels, unsuitable,
-        meta: Some(PngMeta { interlaced, chunks, idat }),
+        meta: Some(PngMeta { interlaced, chunks, idat: idat.map(Arc::new), job: Mutex::new(None) }),
     })
 }
 
@@ -628,9 +632,11 @@ fn compress(img: &Image) -> io::Result<(Vec<u8>, usize)> {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let interlaced = img.meta.as_ref().is_some_and(|m| m.interlaced); // like the cover
-    let layout = match img.meta.as_ref().and_then(|m| m.idat.as_ref()) {
-        Some(idat) => read_layout(idat, w, h, ch, interlaced),
-        None => Layout::default(),
+    let job = img.meta.as_ref().and_then(|m| m.job.lock().ok()?.take());
+    let layout = match (job.and_then(|j| j.join().ok()), img.meta.as_ref().and_then(|m| m.idat.as_ref())) {
+        (Some(layout), _) => layout,
+        (None, Some(idat)) => read_layout(idat, w, h, ch, interlaced),
+        (None, None) => Layout::default(),
     };
     let mut d = Deflater::new(layout.level, layout.window, layout.mem, layout.strategy)
         .ok_or(io::ErrorKind::OutOfMemory)?;
@@ -681,6 +687,22 @@ fn write_png(img: &Image, zlib: &[u8], chunk: usize, w: &mut impl Write) -> io::
         for c in m.chunks.iter().filter(|c| c.after_idat) { write_chunk(w, &c.name, &c.data)?; }
     }
     write_chunk(w, b"IEND", &[])
+}
+
+/// Starts working out, on a thread of its own, how `encode` and `save` will
+/// compress the image data the way the cover was (zlib's settings, found by
+/// reproducing the cover's data): it reads only the cover's compressed data,
+/// not the pixels, so it can run while they are changed, and `encode` waits
+/// for it. Optional: without it `encode` does the same itself, with the same
+/// result. Not in fault-injection or fuzzing builds. As C's png_layout_start.
+pub fn start_layout(img: &Image) {
+    if cfg!(feature = "fault-injection") || cfg!(fuzzing) { return; }
+    let (w, h, ch) = (img.width as usize, img.height as usize, img.channels as usize);
+    let Some(m) = &img.meta else { return };
+    let (Some(idat), Ok(mut job)) = (&m.idat, m.job.lock()) else { return };
+    if job.is_some() || w == 0 || h == 0 { return; }
+    let (idat, interlaced) = (Arc::clone(idat), m.interlaced);
+    *job = std::thread::Builder::new().spawn(move || read_layout(&idat, w, h, ch, interlaced)).ok();
 }
 
 /// The image as a PNG file's bytes

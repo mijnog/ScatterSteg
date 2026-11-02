@@ -4,6 +4,7 @@
 #include "xmp.h"
 #include "atomic_write.h"
 #include <png.h>
+#include <pthread.h>
 #include <zlib.h>
 #include <errno.h>
 #include <stddef.h>
@@ -80,6 +81,7 @@ struct PngMeta {
     size_t idat_len;
     uint32_t idat_first;  /* the first IDAT's size */
     uint32_t idat_count;  /* how many there were */
+    struct LayoutJob *job;  /* png_layout_start's, until png_write joins it */
 };
 
 /* Everything libpng reads, kept so png_read can find the cover's
@@ -594,6 +596,62 @@ static void read_layout(Layout *L, const PngMeta *m, uint32_t w, uint32_t h, uin
     free(scratch);
     free(trials);
 }
+
+/* libpng's defaults, for an image with no cover data to copy */
+static const Layout DEFAULT_LAYOUT = {NULL, 8192, 6, 15, 8, Z_FILTERED, {0}, 0};
+
+static int is_interlaced(const PngMeta *m) {
+    return png_get_interlace_type(m->png, m->info) == PNG_INTERLACE_ADAM7;
+}
+
+/* read_layout on a thread of its own (see png_layout_start) */
+struct LayoutJob {
+    pthread_t thread;
+    Layout L;
+    const PngMeta *m;
+    uint32_t w, h, ch;
+    int interlaced;
+};
+
+#if defined(FAULT_H) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
+/* Fault sweeps count calls and must see them in a fixed order */
+void png_layout_start(Image *img) {
+    (void)img;
+}
+#else
+static void *layout_thread(void *arg) {
+    struct LayoutJob *j = arg;
+    read_layout(&j->L, j->m, j->w, j->h, j->ch, j->interlaced);
+    return NULL;
+}
+
+void png_layout_start(Image *img) {
+    PngMeta *m = img->meta;
+    if (!m || !m->idat || m->job || !img->width || !img->height) return;
+    struct LayoutJob *j = malloc(sizeof(*j));
+    if (!j) return;  /* png_write does it */
+    *j = (struct LayoutJob){.L = DEFAULT_LAYOUT, .m = m, .w = img->width, .h = img->height,
+                            .ch = img->channels, .interlaced = is_interlaced(m)};
+    if (pthread_create(&j->thread, NULL, layout_thread, j) != 0) {
+        free(j);
+        return;
+    }
+    m->job = j;
+}
+#endif
+
+/* The layout png_layout_start found, once it is done (and the job freed);
+   0 if none was started */
+static int layout_join(PngMeta *m, Layout *L) {
+    struct LayoutJob *j = m ? m->job : NULL;
+    if (!j) return 0;
+    pthread_join(j->thread, NULL);
+    *L = j->L;
+    free(j);
+    m->job = NULL;
+    return 1;
+}
+
 /* Filters a row (n bytes, bpp per pixel; prev is the row above, zeros for
    the first) with PNG filter type t, into out[0] = t and the bytes after */
 static void filter_row(const uint8_t *row, const uint8_t *prev, size_t n, size_t bpp, int t, uint8_t *out) {
@@ -724,11 +782,10 @@ int png_write(const Image *img, FILE *fp) {
         return -1;
     }
     /* Interlaced like the cover, so the format doesn't change */
-    int interlaced = img->meta &&
-        png_get_interlace_type(img->meta->png, img->meta->info) == PNG_INTERLACE_ADAM7;
-    /* libpng's defaults, for an image with no cover data to copy */
-    Layout L = {NULL, 8192, 6, 15, 8, Z_FILTERED, {0}, 0};
-    if (img->meta && img->meta->idat) read_layout(&L, img->meta, w, h, img->channels, interlaced);
+    int interlaced = img->meta && is_interlaced(img->meta);
+    Layout L = DEFAULT_LAYOUT;
+    if (!layout_join(img->meta, &L) && img->meta && img->meta->idat)
+        read_layout(&L, img->meta, w, h, img->channels, interlaced);
     Buf z = {0};
     int r = compress_image(img, &L, interlaced, &z);
     free(L.filters);
@@ -773,6 +830,8 @@ int png_save(const Image *img, const char *path) {
 void image_free(Image *img) {
     if (!img) return;
     if (img->meta) {
+        Layout L;
+        if (layout_join(img->meta, &L)) free(L.filters);
         png_destroy_read_struct(&img->meta->png, &img->meta->info, NULL);
         free(img->meta->budget);
         free(img->meta->idat);

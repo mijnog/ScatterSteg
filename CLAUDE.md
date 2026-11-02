@@ -5,12 +5,12 @@
 ScatterSteg competes with steghide, so its command line uses steghide's commands and option names for every feature ScatterSteg has: a steghide user should only have to type `scattersteg` instead of `steghide`. The commands are `embed`, `extract`, `info`, `encinfo`, `version`, `license` and `help` (each also as `--embed` and so on); the options are `-ef`, `-cf`, `-sf`, `-xf`, `-z`, `-Z`, `-N`, `-f`, `-q`, `-v`, with steghide's long forms (`--embedfile`, ...).
 
 - **Syntax only, never steghide's text.** Messages, prompts and help text are ScatterSteg's own wording. Don't copy or paraphrase steghide's.
-- **New features:** if steghide has an option or command for the same thing, use its name and meaning. If not, pick a name that doesn't clash with one of steghide's. ScatterSteg's own extras so far: the `passphrase` command, `info`'s capacity and suggested-payload lines, and `embed`'s warning when a message is over the suggestion.
+- **New features:** if steghide has an option or command for the same thing, use its name and meaning. If not, pick a name that doesn't clash with one of steghide's. ScatterSteg's own extras so far: the `passphrase` command, `info`'s capacity and suggested-payload lines, and `embed`'s warning and question ("Are you sure you want to continue? (y/N)", Enter alone stops; `-f` skips it, `-q` doesn't) when a message is over the suggestion or the image has none (owner, 2026-11-02).
 - **Deliberate differences, not bugs** (the README's "Coming from steghide" lists them for users):
   - `-p <passphrase>` is refused, with an explanation: the passphrase is always typed at the prompt, never on the command line where `ps` and shell history would show it. The owner decided this; don't add `-p`.
   - `-e` and `-K` are refused: the encryption is fixed (XSalsa20-Poly1305) and every message is authenticated.
   - `-cf -` and `-sf -` (cover from stdin, output to stdout) aren't supported.
-  - An existing output file is refused unless `-f`; there is no yes/no prompt. `-f` doesn't replace a file named by the image (the sender chose it): only `-xf <name> -f` does.
+  - An existing output file is refused unless `-f`; there is no yes/no prompt for it (the only question is embed's, above). `-f` doesn't replace a file named by the image (the sender chose it): only `-xf <name> -f` does.
   - The stored file name must be UTF-8, not start with `.`, and hold no control or bidi characters (`-N` stores none). An extracted file is created 0600.
   - `info <image>` reports whether the image can be a cover, its capacity, and a suggested most to store (3 bytes per √pixels or 1 per √(non-zero AC coefficients), less the fixed overhead; none for a smooth cover). It doesn't look for a message: nothing can, without the passphrase.
   - Messages are always byte-exact (no newline added or removed).

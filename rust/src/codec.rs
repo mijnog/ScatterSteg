@@ -326,6 +326,7 @@ fn read_payload(c: &Carrier, order: &[u32], n: u32) -> Option<Vec<u8>> {
 }
 
 /// How a message was stored
+#[derive(Clone, Copy)]
 pub struct Embedded {
     /// Bytes stored: the record, compressed or not
     pub hidden: usize,
@@ -542,6 +543,25 @@ pub fn decode(c: &Carrier, passphrase: &[u8]) -> Result<Option<Decrypted>, Strin
 
 /// Everything encode needs once the passphrase is keyed, before the message
 /// is read, so the message limit is known
+/// A message compressed (if that makes it shorter) as `Prepared::embed` stores
+/// it, so the caller can see how it will be stored before the cover is
+/// changed. As C's CodecPacked.
+pub struct Packed {
+    data: Secret,
+    len: usize,
+    /// How it will be stored
+    pub stored: Embedded,
+}
+
+/// `Prepared::embed`'s first step: the message (non-empty) with its file name
+/// (empty for none), compressed at `level` 1-9 if that makes it shorter (0:
+/// never). As C's codec_pack.
+pub fn pack(name: &[u8], message: &[u8], level: u32) -> Result<Packed, EmbedError> {
+    let (data, len) = compress::pack(name, message, level).ok_or(EmbedError::Alloc)?;
+    let stored = Embedded { hidden: len - 1, compressed: data[0] != 0 };
+    Ok(Packed { data, len, stored })
+}
+
 pub struct Prepared {
     salt: [u8; SALT_BYTES],
     keys: Keys,
@@ -604,9 +624,20 @@ impl Prepared {
     /// shorter (0: never), encrypts it, and changes the cover to carry it.
     /// TooLong if it doesn't fit even compressed.
     pub fn embed(self, c: &mut Carrier, name: &[u8], message: &[u8], level: u32) -> Result<Embedded, EmbedError> {
+        let packed = pack(name, message, level)?;
+        let stored = packed.stored;
+        self.embed_packed(c, packed)?;
+        Ok(stored)
+    }
+
+    /// Whether a packed message fits. As C's codec_packed_fits.
+    pub fn fits(&self, k: &Packed) -> bool { k.len <= self.max_msg + 2 }
+
+    /// `embed`'s second step: stores a message `pack` made. TooLong if it
+    /// doesn't fit. As C's codec_embed_packed.
+    pub fn embed_packed(self, c: &mut Carrier, k: Packed) -> Result<(), EmbedError> {
         // payload = secretbox([encoding | body]), nonce ZERO_NONCE
-        let (packed, packed_len) = compress::pack(name, message, level).ok_or(EmbedError::Alloc)?;
-        let stored = Embedded { hidden: packed_len - 1, compressed: packed[0] != 0 };
+        let (packed, packed_len) = (k.data, k.len);
         if packed_len > self.max_msg + 2 { return Err(EmbedError::TooLong); }
         let mut payload = vec![0u8; BOX_OVERHEAD + packed_len];
         sodium::secretbox_easy(&mut payload, &packed[..packed_len], &ZERO_NONCE, self.keys.enc());
@@ -625,6 +656,6 @@ impl Prepared {
         embedded?;
         write_salt(c, &self.salt_px, self.k, &self.salt, &mut plan).map_err(|_| EmbedError::Alloc)?;
         embed::apply(c, &mut plan);
-        Ok(stored)
+        Ok(())
     }
 }

@@ -149,8 +149,10 @@ def wait_or_kill(pid, timeout=None):
 
 
 def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
-        stdin_path=None, stdout_path=None, memlock=None, cwd=None):
-    """Run scattersteg, answer each passphrase prompt in order. The message
+        stdin_path=None, stdout_path=None, memlock=None, cwd=None, confirm="y"):
+    """Run scattersteg, answer each passphrase prompt in order, and embed's
+    question before storing more than suggested with `confirm` (None: Ctrl+D)
+    and Enter. The message
     goes in on stdin (from the file stdin_path, if given), or with `typed`,
     is typed at the terminal instead. stdout goes to the terminal, or to
     the file stdout_path. It runs in cwd, if given (where extract restores
@@ -180,7 +182,7 @@ def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
 
     answers = list(passphrases)
     out = b""
-    answered = 0
+    answered = confirmed = 0
     typed_done = False
     deadline = time.monotonic() + TIMEOUT
     while True:
@@ -207,6 +209,9 @@ def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
                 os.write(master, answers.pop(0).encode() + b"\n")
             else:
                 os.write(master, b"\x04")  # EOF: no more passphrases to give
+        if out.count(b"(y/N) ") > confirmed:
+            confirmed += 1
+            os.write(master, b"\x04" if confirm is None else confirm.encode() + b"\n")
         if typed is not None and not typed_done and b"Ctrl+D when done" in out:
             typed_done = True
             os.write(master, typed + b"\n\x04")
@@ -1139,8 +1144,9 @@ class CliTest(CliBase):
             self.assertIn("Capacity:  %d bytes" % capacity(64, 64), f.read())
 
     def test_suggested_payload_warning(self):
-        # Advice, not a limit: past the suggestion embed still works, with a
-        # warning; within it, or with -q, nothing extra
+        # Advice, not a limit: past the suggestion, with -f (which skips the
+        # question, see test_asks_before_storing_more_than_suggested), embed
+        # still works, with a warning; within it, or with -q, nothing extra
         write_png(self.cover, 200, 160, cover_pixel)
         sug = suggested(200, 160)
         self.assertEqual(sug, 492)  # 3 * isqrt(32000 pixels) - 42 of fixed overhead
@@ -1161,6 +1167,60 @@ class CliTest(CliBase):
         code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f"], text, ["correct horse"] * 2)
         self.assertEqual(code, 0, log)
         self.assertNotIn("Warning", log)
+
+    def test_asks_before_storing_more_than_suggested(self):
+        # Past the suggestion embed warns and asks first, unless -f; only y or
+        # yes goes ahead, and the warning then isn't repeated after writing
+        write_png(self.cover, 200, 160, cover_pixel)
+        sug = suggested(200, 160)
+        out = self.path("steg.png")
+        warning = ("Warning: the message takes %d bytes, more than the %d suggested for this image;\n"
+                   "the more is hidden, the easier it is to detect (see `scattersteg info`)\n"
+                   "Are you sure you want to continue? (y/N) " % (sug + 1, sug))
+
+        def embed(message, *flags, confirm="y"):
+            return run(["embed", "-cf", self.cover, "-sf", out, "-Z"] + list(flags), message,
+                       ["correct horse"] * 2, confirm=confirm)
+
+        for answer in ("n", "", "no", "yess", " y", None):
+            with self.subTest(answer=answer):
+                code, log = embed(noise(sug + 1), confirm=answer)
+                self.assertEqual(code, 1, log)
+                self.assertIn(warning, log)
+                self.assertTrue(log.endswith("Nothing written\n"), log)
+                self.assertNotIn("Embedding", log)
+                self.assertFalse(os.path.exists(out))
+        for answer in ("y", "Y", "yes", "YeS"):
+            with self.subTest(answer=answer):
+                code, log = embed(noise(sug + 1), confirm=answer)
+                self.assertEqual(code, 0, log)
+                self.assertIn(warning, log)
+                self.assertEqual(log.count("Warning"), 1, log)
+                self.assertEqual(self.extract_bytes(out), noise(sug + 1))
+                os.remove(out)
+        # -q still asks, with the warning the question needs
+        code, log = embed(noise(sug + 1), "-q", confirm="n")
+        self.assertEqual((code, log), (1, "Passphrase: \nConfirm passphrase: \n" + warning + "n\nNothing written\n"))
+        # Within the suggestion, or with -f, it doesn't ask
+        for message, flags in ((noise(sug), []), (noise(sug + 1), ["-f"])):
+            code, log = embed(message, *flags, confirm=None)
+            self.assertEqual(code, 0, log)
+            self.assertNotIn("(y/N)", log)
+            self.assertEqual(self.extract_bytes(out), message)
+            os.remove(out)
+        # An image with no suggestion asks for any message
+        write_png(self.cover, 120, 90, lambda x, y: (120, 130, 140))  # smooth
+        code, log = embed(b"hi", confirm="n")
+        self.assertEqual(code, 1, log)
+        self.assertIn("Warning: this image is smooth, and a trained detector finds almost any message in it;\n"
+                      "a busier photo hides one better (see `scattersteg info`)\n"
+                      "Are you sure you want to continue? (y/N) ", log)
+        self.assertFalse(os.path.exists(out))
+        # A message too long for the image is refused before any question
+        code, log = embed(noise(capacity(120, 90) + 1), confirm=None)
+        self.assertEqual(code, 1, log)
+        self.assertIn("message too long", log)
+        self.assertNotIn("(y/N)", log)
 
     def test_suggestion_follows_square_root(self):
         # Four times the pixels, twice the suggestion (before the overhead)

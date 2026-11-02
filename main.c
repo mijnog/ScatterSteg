@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0
    Copyright (C) 2026 Maxime de Montbron */
 #define _POSIX_C_SOURCE 200809L
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -201,6 +202,40 @@ static char *read_passphrase(const char *prompt) {
         return NULL;
     }
     return buf;
+}
+
+/* The question embed asks before storing more than the image's suggested
+   most (see do_embed) */
+#define CONTINUE_QUESTION "Are you sure you want to continue? (y/N) "
+
+/* Asks CONTINUE_QUESTION at the terminal, echo on: 1 for y or yes (any
+   case), 0 for anything else (Enter alone, Ctrl+D), -1 if there's no
+   terminal to ask. */
+static int ask_continue(void) {
+    FILE *tty = fopen("/dev/tty", "r+");
+    if (!tty) return -1;
+    setvbuf(tty, NULL, _IONBF, 0);
+    fputs(CONTINUE_QUESTION, tty);
+    char answer[8];
+    size_t len = 0;
+    int ended = 0;
+    for (;;) {
+        char ch;
+        ssize_t n = read(fileno(tty), &ch, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;  /* error, hangup, or Ctrl+D: no */
+        if (ch == '\n') {
+            ended = 1;
+            break;
+        }
+        if (len < sizeof(answer)) answer[len] = ch;
+        len++;  /* past the buffer, too long for y or yes: no */
+    }
+    if (!ended) fputs("\n", tty);
+    fclose(tty);
+    if (!ended || len > 3) return 0;
+    for (size_t i = 0; i < len; i++) answer[i] = (char)tolower((unsigned char)answer[i]);
+    return (len == 1 && answer[0] == 'y') || (len == 3 && memcmp(answer, "yes", 3) == 0);
 }
 
 
@@ -534,7 +569,8 @@ static void usage(FILE *out, const char *prog) {
                  "  -z, --compress [1-9]   compression level, 9 (the default) smallest\n"
                  "  -Z, --dontcompress     store the file as is\n"
                  "  -N, --dontembedname    don't store the file's name\n"
-                 "  -f, --force            replace existing files (not one named by the image)\n"
+                 "  -f, --force            replace existing files (not one named by the image),\n"
+                 "                         and embed past the suggested size without asking\n"
                  "  -q, --quiet            print only prompts, warnings and errors\n"
                  "  -v, --verbose          say what was stored, and how\n"
                  "Long forms of the others: --embedfile, --coverfile, --stegofile, --extractfile.\n");
@@ -658,6 +694,16 @@ static int write_secret(FILE *fp, const void *ctx) {
     return fwrite(b->buf, 1, b->len, fp) == b->len ? 0 : -1;
 }
 
+/* embed's warning for an image with no suggested most (see info): any
+   message is more than advised */
+static void warn_unsuited(int is_smooth) {
+    if (is_smooth)
+        fprintf(stderr, "Warning: this image is smooth, and a trained detector finds almost any message in it;\n"
+                        "a busier photo hides one better (see `scattersteg info`)\n");
+    else
+        fprintf(stderr, "Warning: this image is too small to hide a message well (see `scattersteg info`)\n");
+}
+
 static int do_embed(const Options *o) {
     if (!o->cover_file) {
         fprintf(stderr, "Error: embed needs a cover image: -cf <cover.png|jpg>\n");
@@ -715,6 +761,7 @@ static int do_embed(const Options *o) {
     size_t holds = 0, suggest = 0, message_len = 0;
     int too_long = 0, read_err = 0, is_smooth = 0;
     CodecEmbedded stored;
+    CodecPacked packed = {0};
 
     passphrase = read_passphrase("Passphrase: ");
     if (!passphrase) goto done;
@@ -760,13 +807,43 @@ static int do_embed(const Options *o) {
         goto done;
     }
 
-    /* The slow step on a big image: say so, so it doesn't look hung */
-    if (!o->quiet) fprintf(stderr, "Embedding...\n");
-    int embedded = codec_embed(prep, &cover.carrier, name, (const uint8_t *)message,
-                               (uint32_t)message_len, o->level, &stored);
-    prep = NULL;  /* codec_embed freed it */
+    if (codec_pack(name, (const uint8_t *)message, (uint32_t)message_len, o->level, &packed) != 0) {
+        fprintf(stderr, "Error: allocation failed\n");
+        goto done;
+    }
     sodium_free(message);
     message = NULL;
+    stored = packed.stored;
+    if (!codec_packed_fits(prep, &packed)) {
+        fprintf(stderr, "Error: message too long for this image, which holds %zu bytes "
+                        "(more if the message compresses well%s)\n",
+                holds, name ? ", less the file name's length" : "");
+        goto done;
+    }
+
+    /* Over the suggestion (or none for this image): ask first, unless -f.
+       Asked, the warning comes now, even with -q, as the question needs
+       it; not asked (-f, or no terminal), after writing, as advice. */
+    int over = is_smooth || suggest == 0 || stored.hidden - 1 > suggest, asked = 0;
+    if (over && !o->force) {
+        if (is_smooth || suggest == 0)
+            warn_unsuited(is_smooth);
+        else
+            fprintf(stderr, "Warning: the message takes %u bytes, more than the %zu suggested for this image;\n"
+                            "the more is hidden, the easier it is to detect (see `scattersteg info`)\n",
+                    stored.hidden - 1, suggest);
+        int answer = ask_continue();
+        if (answer == 0) {
+            fprintf(stderr, "Nothing written\n");
+            goto done;
+        }
+        asked = answer == 1;
+    }
+
+    /* The slow step on a big image: say so, so it doesn't look hung */
+    if (!o->quiet) fprintf(stderr, "Embedding...\n");
+    int embedded = codec_embed_packed(prep, &cover.carrier, &packed);
+    prep = NULL;  /* codec_embed_packed freed it, and packed's data */
     if (embedded == -1) {
         fprintf(stderr, "Error: message too long for this image, which holds %zu bytes "
                         "(more if the message compresses well%s)\n",
@@ -793,12 +870,11 @@ static int do_embed(const Options *o) {
         goto done;
     }
     /* Advice, not a limit: lighter payloads are harder to detect */
-    if (!o->quiet && is_smooth)
-        fprintf(stderr, "Warning: this image is smooth, and a trained detector finds almost any message in it;\n"
-                        "a busier photo hides one better (see `scattersteg info`)\n");
-    else if (!o->quiet && suggest == 0)
-        fprintf(stderr, "Warning: this image is too small to hide a message well (see `scattersteg info`)\n");
-    else if (!o->quiet && stored.hidden - 1 > suggest)
+    if (asked || o->quiet)
+        ;  /* said before asking, or not wanted */
+    else if (is_smooth || suggest == 0)
+        warn_unsuited(is_smooth);
+    else if (stored.hidden - 1 > suggest)
         fprintf(stderr, "Warning: %u bytes stored, more than the %zu suggested for this image;\n"
                         "the more is hidden, the easier it is to detect (see `scattersteg info`)\n",
                 stored.hidden - 1, suggest);
@@ -813,6 +889,7 @@ done:
     if (fd != STDIN_FILENO) close(fd);
     free_passphrase(passphrase);
     sodium_free(message);
+    codec_packed_free(&packed);
     codec_prepared_free(prep);
     cover_free(&cover);
     return status;

@@ -880,19 +880,44 @@ void codec_prepared_free(CodecPrepared *p) {
     free(p);
 }
 
+int codec_pack(const char *name, const uint8_t *message, uint32_t msg_len, int level,
+               CodecPacked *out) {
+    out->data = pack_message(name, message, msg_len, level, &out->len);
+    if (!out->data) return -2;
+    out->stored.hidden = out->len - 1;
+    out->stored.compressed = out->data[0] == DEFLATED;
+    return 0;
+}
+
+int codec_packed_fits(const CodecPrepared *p, const CodecPacked *k) {
+    return k->len <= p->max_msg + 2;
+}
+
+void codec_packed_free(CodecPacked *k) {
+    sodium_free(k->data);  /* NULL is fine */
+    k->data = NULL;
+}
+
 int codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
                 const uint8_t *message, uint32_t msg_len, int level, CodecEmbedded *info) {
-    /* payload = secretbox([encoding | body]), nonce ZERO_NONCE */
-    uint32_t packed_len = 0;
-    uint8_t *packed = pack_message(name, message, msg_len, level, &packed_len);
-    if (packed && info) {
-        info->hidden = packed_len - 1;
-        info->compressed = packed[0] == DEFLATED;
+    CodecPacked k;
+    if (codec_pack(name, message, msg_len, level, &k) != 0) {
+        codec_prepared_free(p);
+        return -2;
     }
+    if (info) *info = k.stored;
+    return codec_embed_packed(p, c, &k);
+}
+
+int codec_embed_packed(CodecPrepared *p, const Carrier *c, CodecPacked *k) {
+    /* payload = secretbox([encoding | body]), nonce ZERO_NONCE */
+    uint8_t *packed = k->data;
+    uint32_t packed_len = k->len;
+    k->data = NULL;  /* freed here */
     uint32_t payload_len = BOX_OVERHEAD + packed_len;
-    uint8_t *payload = packed && packed_len <= p->max_msg + 2 ? malloc(payload_len) : NULL;
+    uint8_t *payload = packed_len <= p->max_msg + 2 ? malloc(payload_len) : NULL;
     if (!payload) {
-        int too_long = packed && packed_len > p->max_msg + 2;
+        int too_long = packed_len > p->max_msg + 2;
         sodium_free(packed);
         codec_prepared_free(p);
         return too_long ? -1 : -2;

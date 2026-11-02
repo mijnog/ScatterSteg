@@ -84,6 +84,22 @@ CodecPrepared *codec_prepare(const Carrier *c, const char *passphrase);
 size_t codec_max_message(const CodecPrepared *p);
 int  codec_embed(CodecPrepared *p, const Carrier *c, const char *name,
                  const uint8_t *message, uint32_t msg_len, int level, CodecEmbedded *info);
+/* codec_embed in two steps, so the caller can see how the message will be
+   stored before the cover is changed: codec_pack compresses it (as
+   codec_embed would) into k, 0 or -2 if out of memory; codec_packed_fits
+   says whether it fits; codec_embed_packed stores it, frees p and k's
+   data, and returns as codec_embed does. codec_packed_free frees k's data
+   if it isn't stored after all. */
+typedef struct {
+    uint8_t *data;  /* sodium_malloc memory */
+    uint32_t len;
+    CodecEmbedded stored;
+} CodecPacked;
+int  codec_pack(const char *name, const uint8_t *message, uint32_t msg_len, int level,
+                CodecPacked *k);
+int  codec_packed_fits(const CodecPrepared *p, const CodecPacked *k);
+int  codec_embed_packed(CodecPrepared *p, const Carrier *c, CodecPacked *k);
+void codec_packed_free(CodecPacked *k);
 void codec_prepared_free(CodecPrepared *p);  /* NULL is fine */
 
 #endif /* CODEC_H */

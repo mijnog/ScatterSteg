@@ -179,6 +179,45 @@ fn prompt_once(fd: RawFd, prompt: &str) -> Prompt {
 /// prints why and returns None. One with a NUL byte (typed as Ctrl+@, or
 /// pasted) is refused: the C version would end it there, silently cutting it
 /// short.
+/// The question embed asks before storing more than the image's suggested
+/// most (see `embed`). As C's CONTINUE_QUESTION.
+const CONTINUE_QUESTION: &str = "Are you sure you want to continue? (y/N) ";
+
+/// Asks CONTINUE_QUESTION at the terminal, echo on: Some(true) for y or yes
+/// (any case), Some(false) for anything else (Enter alone, Ctrl+D), None if
+/// there's no terminal to ask. As C's ask_continue.
+fn ask_continue() -> Option<bool> {
+    if scattersteg::fault::should_fail("fopen") { return None; }
+    let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
+    if fd < 0 { return None; }
+    let write = |s: &[u8]| { let _ = unsafe { libc::write(fd, s.as_ptr().cast(), s.len()) }; };
+    write(CONTINUE_QUESTION.as_bytes());
+    let (mut answer, mut ended) = (Vec::new(), false);
+    loop {
+        let mut ch = 0u8;
+        let n = unsafe { libc::read(fd, (&raw mut ch).cast(), 1) };
+        if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue; }
+        if n <= 0 { break; } // error, hangup, or Ctrl+D: no
+        if ch == b'\n' { ended = true; break; }
+        if answer.len() < 8 { answer.push(ch); } else { answer.push(0); } // too long for y or yes: no
+    }
+    if !ended { write(b"\n"); }
+    unsafe { libc::close(fd) };
+    let answer = answer.to_ascii_lowercase();
+    Some(ended && (answer == b"y" || answer == b"yes"))
+}
+
+/// embed's warning for an image with no suggested most (see info): any
+/// message is more than advised. As C's warn_unsuited.
+fn warn_unsuited(is_smooth: bool) {
+    if is_smooth {
+        scattersteg::errln!("Warning: this image is smooth, and a trained detector finds almost any message in it;\n\
+                   a busier photo hides one better (see `scattersteg info`)");
+    } else {
+        scattersteg::errln!("Warning: this image is too small to hide a message well (see `scattersteg info`)");
+    }
+}
+
 fn read_passphrase(prompt: &str) -> Option<Secret> {
     let fail = || { scattersteg::errln!("Error: could not read passphrase"); None };
     if scattersteg::fault::should_fail("fopen") { return fail(); }
@@ -327,7 +366,8 @@ fn usage(prog: &str, to_stdout: bool) -> io::Result<()> {
         \x20 -z, --compress [1-9]   compression level, 9 (the default) smallest\n\
         \x20 -Z, --dontcompress     store the file as is\n\
         \x20 -N, --dontembedname    don't store the file's name\n\
-        \x20 -f, --force            replace existing files (not one named by the image)\n\
+        \x20 -f, --force            replace existing files (not one named by the image),\n\
+        \x20                        and embed past the suggested size without asking\n\
         \x20 -q, --quiet            print only prompts, warnings and errors\n\
         \x20 -v, --verbose          say what was stored, and how\n\
         Long forms of the others: --embedfile, --coverfile, --stegofile, --extractfile.\n");
@@ -689,21 +729,50 @@ fn embed(o: &Options) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let too_long = || {
+        scattersteg::errln!("Error: message too long for this image, which holds {holds} bytes (more if the \
+                   message compresses well{})", if name.is_empty() { "" } else { ", less the file name's length" });
+        ExitCode::FAILURE
+    };
+    let Ok(packed) = codec::pack(name, &message, o.level) else {
+        scattersteg::errln!("Error: allocation failed");
+        return ExitCode::FAILURE;
+    };
+    drop(message);
+    let stored = packed.stored;
+    if !prepared.fits(&packed) { return too_long(); }
+
+    // Over the suggestion (or none for this image): ask first, unless -f.
+    // Asked, the warning comes now, even with -q, as the question needs it;
+    // not asked (-f, or no terminal), after writing, as advice.
+    let over = is_smooth || suggest == 0 || stored.hidden - 1 > suggest;
+    let mut asked = false;
+    if over && !o.force {
+        if is_smooth || suggest == 0 {
+            warn_unsuited(is_smooth);
+        } else {
+            scattersteg::errln!("Warning: the message takes {} bytes, more than the {suggest} suggested for this image;\n\
+                       the more is hidden, the easier it is to detect (see `scattersteg info`)", stored.hidden - 1);
+        }
+        match ask_continue() {
+            Some(false) => {
+                scattersteg::errln!("Nothing written");
+                return ExitCode::FAILURE;
+            }
+            answer => asked = answer.is_some(),
+        }
+    }
+
     // The slow step on a big image: say so, so it doesn't look hung
     if !o.quiet { scattersteg::errln!("Embedding..."); }
-    let stored = match prepared.embed(&mut cover.carrier(), name, &message, o.level) {
-        Ok(s) => s,
-        Err(EmbedError::TooLong) => {
-            scattersteg::errln!("Error: message too long for this image, which holds {holds} bytes (more if the \
-                       message compresses well{})", if name.is_empty() { "" } else { ", less the file name's length" });
-            return ExitCode::FAILURE;
-        }
+    match prepared.embed_packed(&mut cover.carrier(), packed) {
+        Ok(()) => {}
+        Err(EmbedError::TooLong) => return too_long(),
         Err(EmbedError::Alloc) => {
             scattersteg::errln!("Error: allocation failed");
             return ExitCode::FAILURE;
         }
-    };
-    drop(message);
+    }
 
     let is_jpeg = cover.is_jpeg();
     match cover.save(output) {
@@ -727,12 +796,11 @@ fn embed(o: &Options) -> ExitCode {
         }
     }
     // Advice, not a limit: lighter payloads are harder to detect
-    if !o.quiet && is_smooth {
-        scattersteg::errln!("Warning: this image is smooth, and a trained detector finds almost any message in it;\n\
-                   a busier photo hides one better (see `scattersteg info`)");
-    } else if !o.quiet && suggest == 0 {
-        scattersteg::errln!("Warning: this image is too small to hide a message well (see `scattersteg info`)");
-    } else if !o.quiet && stored.hidden - 1 > suggest {
+    if asked || o.quiet {
+        // said before asking, or not wanted
+    } else if is_smooth || suggest == 0 {
+        warn_unsuited(is_smooth);
+    } else if stored.hidden - 1 > suggest {
         scattersteg::errln!("Warning: {} bytes stored, more than the {suggest} suggested for this image;\n\
                    the more is hidden, the easier it is to detect (see `scattersteg info`)", stored.hidden - 1);
     }

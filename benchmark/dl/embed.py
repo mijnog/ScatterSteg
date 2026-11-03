@@ -15,7 +15,8 @@ takes UTF-8 text only and compresses it, so each cover gets random base64
 text, its length searched for the longest whose compressed size (phasm's
 "payload: N B") is at most that target. phasm doesn't enforce its own
 "max" (nzAC/5 frame bits); the target can pass it by up to the difference.
-The log line per cover is "BASE TARGET PAYLOAD"."""
+The log line per cover is "BASE TARGET PAYLOAD", also printed as "ok BASE
+TARGET PAYLOAD" when each cover is done."""
 import base64, json, os, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,7 +106,9 @@ def phasm_job(base):
         else: hi = mid - 1
     if best is None or phasm_try(cover, text[:best[0]], tmp) != best[1]:
         print("FAIL", base, "no fit", flush=True); return base, None
-    os.rename(tmp, dst); return base, f"{target} {best[1]}"
+    os.rename(tmp, dst)
+    print("ok", base, target, best[1], flush=True)  # as it goes: a run stopped early keeps them
+    return base, f"{target} {best[1]}"
 
 
 if SS == "hstego":

@@ -117,7 +117,9 @@ jobs:
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: C with WOW and J-UNIWARD
-        run: make test PNG_COSTS=wow JPEG_COSTS=juniward JOBS=4
+        # Four shards on four cores, each embed with its own threads, under the
+        # sanitizers: a camera-file embed once passed the 60 s hang limit
+        run: SCATTERSTEG_TIMEOUT=180 make test PNG_COSTS=wow JPEG_COSTS=juniward JOBS=4
 
   models-rust:
     runs-on: ubuntu-24.04

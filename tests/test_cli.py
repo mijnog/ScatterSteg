@@ -30,7 +30,11 @@ import zlib
 BINARY = os.environ.get(
     "SCATTERSTEG",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scattersteg"))
-TIMEOUT = 60  # seconds per run; Argon2id takes a fraction of that
+# Seconds per run before a test calls it hung; Argon2id takes a fraction of
+# that. SCATTERSTEG_TIMEOUT raises it where runs are slow but not hung
+# (CI's sanitizer build in parallel shards, where each embed's threads
+# compete with the other shards for 4 cores).
+TIMEOUT = int(os.environ.get("SCATTERSTEG_TIMEOUT", "60"))
 
 
 FAULT_BINARY = os.environ.get("SCATTERSTEG_FAULT")  # built with tests/fault.h

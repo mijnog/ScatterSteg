@@ -6,7 +6,12 @@ alike (the paper's pairing; it keeps the image content from being a cue).
 The checkpoint kept is the one with the best validation accuracy, and the
 test images are touched only once, at the end. OUT gets the checkpoint,
 a JSON summary (P_E, AUC, detection at 5% false positives, accuracy) and
-the raw test scores."""
+the raw test scores.
+--resume continues a run that was stopped: after each epoch OUT/state.pt
+holds everything the next epoch needs (weights, optimizer, schedule, loss
+scaler, random states, best so far), so a stopped run loses at most the
+epoch it was in, and a resumed run trains as an uninterrupted one would
+(up to the GPU's own non-determinism)."""
 import argparse, json, os, sys, time
 import numpy as np
 import torch
@@ -21,6 +26,7 @@ ap.add_argument("--init"); ap.add_argument("--epochs", type=int, default=60)
 ap.add_argument("--lr", type=float, default=1e-3); ap.add_argument("--pairs", type=int, default=16)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--limit", type=int, help="use only this many images per set (a smoke test)")
+ap.add_argument("--resume", action="store_true", help="continue from OUT/state.pt if there is one")
 a = ap.parse_args()
 torch.manual_seed(a.seed); rng = np.random.default_rng(a.seed)
 os.makedirs(a.out, exist_ok=True)
@@ -87,8 +93,17 @@ def metrics(sc, ss):
                 acc=float(0.5 * ((sc < 0).mean() + (ss >= 0).mean())))
 
 
-best = -1; c, s = X["train"]; n = len(c); t0 = time.time()
-for ep in range(a.epochs):
+best = -1; c, s = X["train"]; n = len(c); t0 = time.time(); start = 0
+state = f"{a.out}/state.pt"
+if a.resume and os.path.exists(state):
+    st = torch.load(state, map_location=dev, weights_only=False)
+    assert st["args"] == {k: v for k, v in vars(a).items() if k != "resume"}, "state.pt is from other arguments"
+    model.load_state_dict(st["model"]); opt.load_state_dict(st["opt"]); sched.load_state_dict(st["sched"])
+    scaler.load_state_dict(st["scaler"]); rng.bit_generator.state = st["rng"]
+    torch.set_rng_state(st["torch_rng"].cpu()); torch.cuda.set_rng_state(st["cuda_rng"].cpu())  # map_location moved them
+    start, best = st["epoch"], st["best"]; t0 -= st["elapsed"]
+    say("resume after epoch", start)
+for ep in range(start, a.epochs):
     perm = rng.permutation(n); tot = 0.0
     for i in range(0, n - a.pairs + 1, a.pairs):
         idx = np.sort(perm[i:i + a.pairs])
@@ -105,7 +120,12 @@ for ep in range(a.epochs):
     say(f"epoch {ep + 1} loss {tot / (n // a.pairs):.4f} val acc {m['acc']:.4f} PE {m['PE']:.4f} "
         f"lr {opt.param_groups[0]['lr']:.0e} {time.time() - t0:.0f}s")
     if m["acc"] > best:
-        best = m["acc"]; torch.save(model.state_dict(), f"{a.out}/best.pt")
+        best = m["acc"]; torch.save(model.state_dict(), f"{a.out}/best.pt.tmp"); os.replace(f"{a.out}/best.pt.tmp", f"{a.out}/best.pt")
+    torch.save(dict(args={k: v for k, v in vars(a).items() if k != "resume"}, epoch=ep + 1, best=best,
+                    model=model.state_dict(), opt=opt.state_dict(), sched=sched.state_dict(),
+                    scaler=scaler.state_dict(), rng=rng.bit_generator.state, torch_rng=torch.get_rng_state(),
+                    cuda_rng=torch.cuda.get_rng_state(), elapsed=time.time() - t0), state + ".tmp")
+    os.replace(state + ".tmp", state)  # a stop mid-write leaves the last good one
 
 model.load_state_dict(torch.load(f"{a.out}/best.pt", map_location=dev))
 sc, ss = scores("test")

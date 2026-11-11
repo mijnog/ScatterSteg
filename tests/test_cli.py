@@ -18,6 +18,7 @@ import re
 import resource
 import select
 import signal
+import threading
 import stat
 import struct
 import sys
@@ -170,6 +171,9 @@ def run(args, message=b"", passphrases=(), env=None, binary=None, typed=None,
         pid, master = pty.fork()
         if pid == 0:
             try:
+                # As a shell starts it: Python ignores SIGPIPE, and an
+                # ignored signal stays ignored across exec
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
                 if stdin_path is not None:
                     os.dup2(os.open(stdin_path, os.O_RDONLY), 0)
                 elif typed is None:
@@ -2276,6 +2280,30 @@ class CliTest(CliBase):
         code, log = run(["passphrase"], stdout_path="/dev/full")
         self.assertEqual(code, 1, log)
         self.assertIn("could not write the passphrase", log)
+
+    def test_output_reader_gone(self):
+        # extract -xf - | head -c1: the reader leaves mid-message. Reported
+        # as a failed write, as a full disk is, not a silent death by
+        # SIGPIPE (exit 141 with no message); the same in both builds.
+        # A megabyte of zeros: compresses to fit, and is far more than a
+        # pipe holds, so the write is still going when the reader leaves.
+        out = self.path("steg.png")
+        code, log = run(["embed", "-cf", self.cover, "-sf", out, "-f"], bytes(1 << 20),
+                        ["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        fifo = self.path("pipe")
+        os.mkfifo(fifo)
+
+        def read_one_byte():
+            with open(fifo, "rb") as f:
+                f.read(1)
+        reader = threading.Thread(target=read_one_byte)
+        reader.start()
+        code, log = run(["extract", "-sf", out, "-xf", "-"], passphrases=["correct horse"],
+                        stdout_path=fifo)
+        reader.join()
+        self.assertEqual(code, 1, log)
+        self.assertIn("Error: could not write the message: Broken pipe", log)
 
     def test_failed_encode_keeps_existing_output(self):
         out = self.path("steg.png")

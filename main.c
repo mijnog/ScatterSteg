@@ -1050,6 +1050,10 @@ static int show_info(const char *input) {
 }
 
 int main(int argc, char *argv[]) {
+    /* A reader that goes away (extract -xf - | head) is a write error like
+       any other, reported as one rather than a silent death: as the Rust
+       build, whose runtime ignores SIGPIPE */
+    signal(SIGPIPE, SIG_IGN);
     protect_process();
     if (sodium_init() < 0) {
         fprintf(stderr, "Error: failed to initialise libsodium\n");

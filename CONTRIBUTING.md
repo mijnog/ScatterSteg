@@ -15,7 +15,7 @@ make fuzz            # builds the libFuzzer targets (needs clang)
 
 The CLI tests run in parallel: `tests/run_sharded.py` splits them into `JOBS` shards (6 by default; `make test JOBS=4`), each a separate `tests/test_cli.py` process, so every test still runs once with its own temp directory and terminal. Tests go to shards longest first, by the times in `tests/durations.json`; after adding slow tests, refresh them with `python3 tests/run_sharded.py --record --profile c` (or `rust`, with `SCATTERSTEG` and the rest set as `make rust-cli-test` sets them). `JOBS=1` runs the suite as one process. On an i5-12400F (6 cores, 12 threads; 2026-11-02, idle), the CLI tests took 268.5 s for C (sanitizer builds) and 121.4 s for Rust as one process, and 61.9–62.2 s and 26.6–26.7 s in 6 shards (five runs each, all passing); the C suite can't go much lower, as its longest test, a fault sweep, takes about 50 s. 8 shards gave 67.9 s and 24.6 s, 4 gave 78.7 s and 36.4 s.
 
-The Rust port builds with `cd rust && cargo build --release`. Its tests are `cargo test --release`, then `make rust-cli-test` (or `SCATTERSTEG=../rust/target/release/scattersteg python3 ../tests/test_cli.py`) and `python3 ../tests/differential.py` (C and Rust must agree on which files load). See [`rust/README.md`](rust/README.md).
+The Rust port builds with `cd rust && cargo build --release`. Its tests are `cargo test --release`, then `make rust-cli-test` (or `SCATTERSTEG=../rust/target/release/scattersteg python3 ../tests/test_cli.py`) and `python3 ../tests/differential.py` (an image either build writes must decode with the other, and both must agree on which files load). See [`rust/README.md`](rust/README.md).
 
 CI runs all of this on every push and pull request. A change should pass it.
 

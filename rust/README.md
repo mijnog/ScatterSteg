@@ -23,14 +23,20 @@ On purpose:
   JPEG's coefficients are held twice (libjpeg's and a copy), so its working
   memory is up to about double the 1 GiB cap. Checking the output, embed
   holds its bytes twice while it reads them back (C holds them once).
-- **SIGPIPE is ignored** (the Rust runtime does it): a closed stdout is an
-  error message and exit 1, not death by signal.
 - **A bad zlib checksum (Adler-32) in the image data is not an error.** The
   `png` crate doesn't check it; libpng refuses the file. The output is valid.
 - **Damaged compressed data after the last row fails the load.** libpng stops
   reading once the image is complete; the `png` crate reads the zlib stream to
   its end. (C-written images are never like this.)
 - **No libpng width/height cap** (1,000,000). Only the 2^28-pixel cap applies.
+
+Not on purpose, without effect on the output:
+
+- **CPUs are counted differently.** C uses the online CPUs
+  (`sysconf(_SC_NPROCESSORS_ONLN)`); Rust's `available_parallelism` also
+  honours CPU affinity and cgroup quotas. Under `taskset` or in a container the
+  two can use different thread counts (at most 8 either way): the same output,
+  a different speed and peak memory.
 
 Needed for compatibility:
 
@@ -62,7 +68,7 @@ Needed for compatibility:
     cargo test --release                      # unit tests, and every stored fuzz regression
     python3 ../tests/test_cli.py              # with SCATTERSTEG=target/release/scattersteg
     make -C .. rust-cli-test                  # the same, with the fault build, in parallel shards
-    python3 ../tests/differential.py          # C and Rust agree on which files load (needs ../scattersteg)
+    python3 ../tests/differential.py          # what each writes the other decodes; both load the same files (needs ../scattersteg)
 
 Fuzzing (needs `cargo install cargo-fuzz` and a nightly toolchain):
 

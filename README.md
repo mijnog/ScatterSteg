@@ -101,7 +101,7 @@ The commands are the same: `embed`, `extract`, `info`, `encinfo`, `version`, `li
 | `-cf -` or `-sf -` (cover from standard input, output to standard output) | not supported: the cover and the output are files |
 | an existing output file | refused unless `-f`; there is no yes/no question about it |
 | `extract -f` without `-xf` | doesn't replace a file named by the image: the sender chose that name; `-xf <name> -f` does |
-| the stored file name | can't start with `.` or hold control characters (`-N` stores none) |
+| the stored file name | can't start with `.` or hold control or bidirectional-control characters (`-N` stores none) |
 | `info` | says whether the image can be a cover, its capacity, and a suggested most to store. It doesn't offer to look for a message: without the passphrase, nothing can tell. |
 | `passphrase` | an extra command: prints a strong random passphrase |
 | `embed` past the suggested size | an extra question, "Proceed? (y/N)", before anything changes (Enter alone stops); `-f` skips it |

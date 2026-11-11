@@ -3,7 +3,9 @@
 # Copyright (C) 2026 Maxime de Montbron
 """Runs the C and Rust binaries on the same odd covers and checks they agree
 on whether each loads. An image written by one must decode with the other,
-and that starts with both reading the same files.
+and that starts with both reading the same files. First it checks that
+directly: images each build writes (PNG and JPEG, light and at capacity)
+decode with the other.
 
     SCATTERSTEG_C=./scattersteg SCATTERSTEG_RUST=rust/target/release/scattersteg \\
         JPEG_FIXTURE=tests/build/jpeg_fixture python3 tests/differential.py
@@ -239,8 +241,92 @@ def encoded(binary, path):
     return tuple(c for c in T.png_chunks(out) if c[0] != b"IDAT")
 
 
+def capacity_of(binary, path):
+    _, log = T.run(["info", path], binary=binary)
+    m = re.search(r"Capacity:  (\d+) bytes", log)
+    return int(m.group(1)) if m else None
+
+
+def cross_covers(tmp):
+    """Covers for cross_decode: PNG RGB and gray, and JPEG baseline,
+    progressive, with restart intervals, and gray"""
+    fixture = os.environ.get("JPEG_FIXTURE", os.path.join(HERE, "build", "jpeg_fixture"))
+    covers = {}
+    p = os.path.join(tmp, "x_rgb.png")
+    T.write_png(p, 64, 64, T.cover_pixel)
+    covers["png_rgb"] = p
+    p = os.path.join(tmp, "x_gray.png")
+    T.write_png(p, 72, 72, lambda x, y: T.cover_pixel(x, y)[:1], channels=1)
+    covers["png_gray"] = p
+    for nm, comps, opts in (("base", "3", []), ("progressive", "3", ["progressive"]),
+                            ("restart", "3", ["restart"]), ("gray", "1", [])):
+        p = os.path.join(tmp, f"x_{nm}.jpg")
+        subprocess.run([fixture, p, "200", "150", comps, "90", *opts], check=True)
+        covers["jpeg_" + nm] = p
+    return covers
+
+
+def cross_one(tmp, cover_name, cover, size, writer, reader, seed):
+    """Embed `size` random bytes with `writer`, extract with `reader`: None,
+    or what went wrong. The light message is stored with a file name, which
+    the reader must restore; the one at capacity is read with -xf."""
+    names = {C: "C", RUST: "Rust"}
+    tag = f"{cover_name}, {size} bytes, {names[writer]} -> {names[reader]}"
+    work = tempfile.mkdtemp(dir=tmp)
+    msg = random.Random(seed).randbytes(size)
+    out = os.path.join(work, "steg" + os.path.splitext(cover)[1])
+    named = size <= 200
+    if named:
+        src = os.path.join(work, "note.txt")
+        with open(src, "wb") as f:
+            f.write(msg)
+        args = ["embed", "-cf", cover, "-ef", src, "-sf", out, "-f"]
+        code, log = T.run(args, passphrases=["correct horse"] * 2, binary=writer)
+    else:
+        code, log = T.run(["embed", "-cf", cover, "-sf", out, "-f"], msg,
+                          ["correct horse"] * 2, binary=writer)
+    if code != 0:
+        return f"{tag}: embed failed: {log.strip()}"
+    restore = os.path.join(work, "restore")
+    os.mkdir(restore)
+    got = os.path.join(restore, "note.txt" if named else "got.bin")
+    args = ["extract", "-sf", out] + ([] if named else ["-xf", got])
+    code, log = T.run(args, passphrases=["correct horse"], binary=reader, cwd=restore)
+    if code != 0:
+        return f"{tag}: extract failed: {log.strip()}"
+    if os.listdir(restore) != [os.path.basename(got)]:
+        return f"{tag}: extract wrote {os.listdir(restore)}"
+    with open(got, "rb") as f:
+        if f.read() != msg:
+            return f"{tag}: extracted the wrong bytes"
+    return None
+
+
+def cross_decode(tmp):
+    """An image written by either build decodes with the other, for every
+    cover kind, at a light payload and at capacity (where the coder may
+    retry). Both builds also report the same capacity."""
+    covers = cross_covers(tmp)
+    problems, jobs = [], []
+    for k, (cover_name, cover) in enumerate(covers.items()):
+        cap_c, cap_r = capacity_of(C, cover), capacity_of(RUST, cover)
+        if cap_c != cap_r or not cap_c:
+            problems.append(f"{cover_name}: capacity C={cap_c} Rust={cap_r}")
+            continue
+        for size in (100, cap_c):
+            for writer, reader in ((C, RUST), (RUST, C)):
+                jobs.append((cover_name, cover, size, writer, reader, 1000 * k + size))
+    with ThreadPoolExecutor(4) as ex:
+        problems += [p for p in ex.map(lambda j: cross_one(tmp, *j), jobs) if p]
+    for p in problems:
+        print(f"CROSS     {p}")
+    print(f"{len(jobs)} cross-build decodes, {len(problems)} problems")
+    return len(problems)
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
+        cross = cross_decode(tmp)
         cases = {**png_cases(), **mutated_pngs(), **png_fuzz_regressions(), **jpeg_cases(tmp)}
         files = {}
         for name, data in cases.items():
@@ -267,7 +353,7 @@ def main():
                         bad.append(name)
                         print(f"MISMATCH  {name}: C={c} Rust={r}")
         print(f"{len(files)} files, {len(bad)} unexpected differences")
-        return 1 if bad else 0
+        return 1 if bad or cross else 0
 
 
 if __name__ == "__main__":

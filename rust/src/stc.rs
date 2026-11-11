@@ -121,7 +121,8 @@ fn embed_chunk(x: &[u8], costs: &[f32], m: &[u8], a: usize, b: usize, mlen: usiz
 
 /// Finds stego bits y (n of them, from `carriers`) with syndrome m,
 /// minimizing the sum of costs[i] over the i where y[i] != x[i]. Costs must
-/// be positive. Err if out of memory.
+/// be positive. Err if out of memory or if every y with syndrome m costs
+/// infinity.
 #[allow(clippy::result_unit_err)] // one way to fail, which the caller knows
 pub fn embed(x: &[u8], costs: &[f32], m: &[u8], mlen: usize, n: usize, y: &mut [u8]) -> Result<(), ()> {
     let widest = n / mlen + 1;
@@ -186,5 +187,75 @@ pub fn extract(y: &[u8], mlen: usize, n: usize, m: &mut [u8]) {
         }
         m[i] = (state & 1) as u8;
         state >>= 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(1469598103934665603u64, |h, &b| (h ^ b as u64).wrapping_mul(1099511628211))
+    }
+
+    #[test]
+    fn carriers_bounds() {
+        // As tests/test_stc.c's test_carriers
+        assert_eq!(carriers(10239, 10), 10239);
+        assert_eq!(carriers(10245, 10), 10240); // exactly 1024 per bit, and some over
+        assert_eq!(carriers(1000000, 10), 10240);
+        #[cfg(target_pointer_width = "64")]
+        {
+            let max = u32::MAX as usize;
+            assert_eq!(carriers(max, max), max); // the largest mlen
+            assert_eq!(carriers(max + 1, max + 1), 0);
+        }
+    }
+
+    #[test]
+    fn edge_embeds() {
+        // As tests/test_stc.c's test_edge_embeds
+        let mut y = [9u8];
+        assert!(embed(&[0], &[1.0], &[0], 1, 1, &mut y).is_ok() && y[0] == 0);
+        let mut y = [9u8];
+        assert!(embed(&[0], &[1.0], &[1], 1, 1, &mut y).is_ok() && y[0] == 1);
+        let (n, mlen) = (5000, 500);
+        let mut yy = vec![9u8; n];
+        embed(&vec![0; n], &vec![1.0; n], &vec![0; mlen], mlen, n, &mut yy).unwrap();
+        assert!(yy.iter().all(|&b| b == 0));
+        let mut y = [9u8];
+        assert!(embed(&[0], &[f32::INFINITY], &[1], 1, 1, &mut y).is_err());
+    }
+
+    #[test]
+    fn many_chunks() {
+        // More runs than parallel::MAX threads: width 2, 524288 bits per run,
+        // 9 runs (as tests/test_stc.c's test_many_chunks)
+        let (navail, mlen) = (4500000, 4300000);
+        let n = carriers(navail, mlen);
+        let mut r: u32 = 12345;
+        let mut bit = || { r ^= r << 13; r ^= r >> 17; r ^= r << 5; (r & 1) as u8 };
+        let x: Vec<u8> = (0..n).map(|_| bit()).collect();
+        let m: Vec<u8> = (0..mlen).map(|_| bit()).collect();
+        let mut y = vec![0u8; n];
+        embed(&x, &vec![1.0; n], &m, mlen, n, &mut y).unwrap();
+        let mut back = vec![0u8; mlen];
+        extract(&y, mlen, n, &mut back);
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn known_answer_runs() {
+        // Three runs (2^20 / 31 = 33825 bits each); values from test_cli.py's
+        // stc_extract, as tests/test_stc.c's test_known_answer_runs
+        let (n, mlen) = (3000000, 100000);
+        let mut s: u32 = 7;
+        let y: Vec<u8> = (0..n).map(|_| { s = s.wrapping_mul(1103515245).wrapping_add(12345); ((s >> 16) & 1) as u8 }).collect();
+        let mut m = vec![0u8; mlen];
+        extract(&y, mlen, n, &mut m);
+        let pack = |from: usize| (0..32).fold(0u32, |p, i| p | (m[from + i] as u32) << i);
+        assert_eq!((pack(0), pack(33825)), (0xb27e28d5, 0x80cd8639));
+        assert_eq!(m.iter().map(|&b| b as u32).sum::<u32>(), 49962);
+        assert_eq!(fnv(&m), 6591896953287329387);
     }
 }

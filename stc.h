@@ -29,7 +29,8 @@ size_t stc_carriers(size_t n_avail, size_t mlen);
 
 /* Finds stego bits y (n of them, from stc_carriers) with syndrome m,
    minimizing the sum of costs[i] over the i where y[i] != x[i]. Costs must
-   be positive. Returns 0, or -1 if out of memory. */
+   be positive. Returns 0, or -1 if out of memory or if every y with
+   syndrome m costs infinity. */
 int stc_embed(const uint8_t *x, const float *costs, const uint8_t *m,
               size_t mlen, size_t n, uint8_t *y);
 

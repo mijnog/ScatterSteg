@@ -5,8 +5,9 @@
 #include <errno.h>
 #include <sodium.h>
 
-/* Argon2id allocates its memory (64 MiB here) inside libsodium, out of
-   reach of the malloc wrapper; failing it as a whole covers that case. */
+/* Argon2id allocates its memory (256 MiB, crypto_pwhash_MEMLIMIT_MODERATE)
+   inside libsodium, out of reach of the malloc wrapper; failing it as a
+   whole covers that case. */
 int fault_crypto_pwhash(unsigned char *out, unsigned long long outlen,
                         const char *passwd, unsigned long long passwdlen,
                         const unsigned char *salt, unsigned long long opslimit,

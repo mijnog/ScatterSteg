@@ -104,7 +104,7 @@ The commands are the same: `embed`, `extract`, `info`, `encinfo`, `version`, `li
 | the stored file name | can't start with `.` or hold control or bidirectional-control characters (`-N` stores none) |
 | `info` | says whether the image can be a cover, its capacity, and a suggested most to store. It doesn't offer to look for a message: without the passphrase, nothing can tell. |
 | `passphrase` | an extra command: prints a strong random passphrase |
-| `embed` past the suggested size | an extra question, "Proceed? (y/N)", before anything changes (Enter alone stops); `-f` skips it |
+| `embed` past the suggested size | an extra question, "Proceed? (y/N)", before anything changes (Enter alone stops); `-f` skips it. With no terminal to ask on (a script), it goes ahead and prints the warning after |
 
 ScatterSteg reads PNG and JPEG, not BMP, WAV or AU, and neither tool can read the other's images. Every `embed` and `extract` spends about 0.2 s deriving the keys, on purpose: that is the cost that slows down passphrase guessing. A large image takes longer to embed in: on a 12-megapixel photo, about 4 s as a JPEG and 7–8 s as a PNG at the suggested size, more near capacity ([benchmark/README.md, "Speed"](benchmark/README.md#speed)).
 

@@ -54,7 +54,7 @@ Format quantities written as literals where they could be computed (found by rea
 - `codec.h` (`CODEC_FIXED_BYTES 42`) and `rust/src/codec.rs` (`FIXED_BYTES: u64 = 42`): each written as a literal, not summed from the pieces it stands for.
 - `FORMAT.md` doesn't define the payload suggestion (3 bytes per √pixels, 1 per √non-zero ACs), so a computed test of it has no spec to follow.
 
-`tests/test_embed.c`'s "32-bit header" was checked and is right: it tests the test-only raw-LSB layer in `tests/embed_bytes.h`, not the format.
+Checked 2026-11-11: `1332` is what the Python model and the C binary's `info` both give for a 64×64 RGB cover; 42 is salt 16 + length region 8 + MAC 16 + encoding 1 + name length 1, as both builds' comments and FORMAT.md's layout give. `tests/test_embed.c`'s "32-bit header" was checked and is right: it tests the test-only raw-LSB layer in `tests/embed_bytes.h`, not the format.
 
 ## 3. Comments and docs with checkable claims but no test
 
@@ -62,7 +62,7 @@ Not done.
 
 ## 4. Edge cases not covered
 
-A read-only survey of all the tests found the cases below; a case is "untested" if a search of the tests for its values, functions and messages found nothing. Rows 7 and 16 were confirmed and fixed; rows 2–4 were addressed; the rest are the survey's findings, **not checked** one by one.
+A read-only survey of all the tests found the cases below; a case is "untested" if a search of the tests for its values, functions and messages found nothing. Rows 7 and 16 were confirmed and fixed; rows 2–4 were addressed. The open rows were then checked one by one against the tests (searching `tests/` and `rust/` for each case's values, functions and messages); rows 6, 8, 9 and 12 are corrected below from what the survey said.
 
 | # | Area | Case | Status |
 |---|---|---|---|
@@ -71,13 +71,13 @@ A read-only survey of all the tests found the cases below; a case is "untested" 
 | 3 | Retries | The near-capacity retry paths run only by chance (fresh salt) | **checked**: coverage (`make coverage`) shows the existing suite reaches every branch of the retry loop in `codec.c`; not traced to which test decodes each |
 | 4 | Threads | Output the same on 1 thread and many | **done** (`7dece5c`): the coder's known answers on one thread too, in both builds |
 | 5 | Content credentials | JPEG extended XMP; PNG XMP in compressed iTXt or zTXt; PNG `caBX` | open; whether in scope is the owner's call |
-| 6 | Proceed? question | Type-ahead answering it; `/dev/tty` failing to open there | open |
+| 6 | Proceed? question | Input typed before the question answers it (`ask_continue` doesn't flush the terminal first, unlike the passphrase prompt); with no terminal it goes ahead and warns after, as intended (`main.c` comment), but untested: the harness always runs on a terminal | open |
 | 7 | Names | A stored or output name of 249–255 bytes failed (temp name too long) | **fixed** (`b65c28d`) |
-| 8 | PNG | Adam7-interlaced covers, especially under 5 pixels wide or high | open |
-| 9 | PNG (Rust) | Huge declared dimensions; exactly 2^28 pixels in either build | open |
+| 8 | PNG | Adam7-interlaced covers: C's unit tests load and save them (`test_load_interlaced`, `test_save_keeps_interlacing`); untested end to end (the Python model reads non-interlaced PNG only), in Rust, and under 5 pixels wide or high | open |
+| 9 | PNG (Rust) | Huge declared dimensions (C has `test_load_huge_dimensions` and `test_load_too_many_pixels`; Rust's `png_io.rs` has no tests) | open |
 | 10 | JPEG | CMYK/YCCK, 12-bit, lossless, 4:2:2 and 4:4:0 | open |
 | 11 | JPEG | A truncated JPEG as a cover | open; intended behaviour to decide |
-| 12 | JPEG | AC coefficients at ±1023 | open |
+| 12 | JPEG | AC coefficients at ±1023 in an embed round trip (only their cost is tested; the extreme DC, −1024, has `test_extreme_dc_accepted`) | open |
 | 13 | Capacity | The smallest usable image (capacity 0 → 1) | open |
 | 14 | Capacity | Gray covers big enough for the salt and length regions' caps | open |
 | 15 | Names | The exact Unicode ranges refused and allowed; 4-byte UTF-8; a name `-` | open |
@@ -88,7 +88,9 @@ A read-only survey of all the tests found the cases below; a case is "untested" 
 | 20 | Format | Splits other than 0 written by an independent encoder (`forge()` only writes 0) | open |
 | 21 | Rust | `codec.rs`, `compress.rs`, `png_io.rs`, `prng.rs` have no unit tests | open |
 
-Found on the way, not changed: C counts CPUs with `sysconf(_SC_NPROCESSORS_ONLN)`, which ignores affinity; Rust's `available_parallelism` honours affinity and cgroup quotas. Under `taskset` or in a container the builds may use different thread counts: same output, different speed and peak memory.
+Found on the way: `tests/fault_sodium.c` said Argon2 used 64 MiB; it uses 256 MiB (`crypto_pwhash_MEMLIMIT_MODERATE`, as FORMAT.md says): comment fixed. Measured: one Argon2id run with these settings takes 0.205 s (5 runs, i5-12400F, idle), as the README's "about 0.2 s" says.
+
+Also found, not changed: C counts CPUs with `sysconf(_SC_NPROCESSORS_ONLN)`, which ignores affinity; Rust's `available_parallelism` honours affinity and cgroup quotas. Under `taskset` or in a container the builds may use different thread counts: same output, different speed and peak memory.
 
 ## 5. A self-check before writing (proposed, not decided)
 

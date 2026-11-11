@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define TEMP_NAME "scattersteg-XXXXXX"
+
 /* Make the rename itself durable: until the directory is synced, a crash
    can lose it even though the file's data was synced. Best effort: the file
    is already in place, and some filesystems can't sync a directory. */
@@ -40,17 +42,21 @@ static int write_and_rename(const char *path, int (*write)(FILE *fp, const void 
         return -1;
     }
 
+    /* The temp file goes in dest's directory (so the rename is atomic) under
+       a fixed short name: dest's own name plus a suffix would be too long for
+       a name of 249 to 255 bytes, the most a file name can have */
     errno = 0;
-    size_t len = strlen(dest);
-    char *tmp = malloc(len + sizeof(".XXXXXX"));
+    const char *slash = strrchr(dest, '/');
+    size_t dir_len = slash ? (size_t)(slash - dest) + 1 : 0;
+    char *tmp = malloc(dir_len + sizeof(TEMP_NAME));
     if (!tmp) {
         int err = errno;
         free(target);
         errno = err;
         return -1;
     }
-    memcpy(tmp, dest, len);
-    memcpy(tmp + len, ".XXXXXX", sizeof(".XXXXXX"));
+    memcpy(tmp, dest, dir_len);
+    memcpy(tmp + dir_len, TEMP_NAME, sizeof(TEMP_NAME));
 
     FILE *fp = NULL;
 

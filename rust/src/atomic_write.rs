@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 fn os_error(errno: i32) -> io::Error { io::Error::from_raw_os_error(errno) }
 
+const TEMP_NAME: &[u8] = b"scattersteg-XXXXXX";
+
 /// `write` gets the temp file; an Err from it is returned as is. It must
 /// flush anything it buffers itself.
 ///
@@ -86,8 +88,13 @@ where
     // root) with a regular file, rather than write to it: refuse
     if existing.as_ref().is_some_and(|m| !m.is_file()) { return Err(os_error(libc::EINVAL)); }
 
-    let mut template = dest.as_os_str().as_bytes().to_vec();
-    template.extend_from_slice(b".XXXXXX");
+    // The temp file goes in dest's directory (so the rename is atomic) under
+    // a fixed short name: dest's own name plus a suffix would be too long for
+    // a name of 249 to 255 bytes, the most a file name can have. As C's.
+    let bytes = dest.as_os_str().as_bytes();
+    let dir_len = bytes.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1);
+    let mut template = bytes[..dir_len].to_vec();
+    template.extend_from_slice(TEMP_NAME);
     let mut tmp = CString::new(template).map_err(|_| os_error(libc::EINVAL))?.into_bytes_with_nul();
     if should_fail("mkstemp") { return Err(os_error(libc::EEXIST)); }
     // SAFETY: tmp is a writable NUL-terminated buffer

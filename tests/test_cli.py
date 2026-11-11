@@ -997,6 +997,29 @@ class CliTest(CliBase):
         self.assertDecodes(target, "no -sf")
 
     @unittest.skipUnless(sodium, "libsodium not loadable via ctypes")
+    def test_longest_file_name_restored(self):
+        # A name of 255 bytes, the most a file name can have (and name_ok
+        # allows), multi-byte UTF-8 included: stored, restored, and usable as
+        # the output's own name. The temp file beside it mustn't add to it.
+        name = ("é" * 100 + "x" * 55).encode()
+        self.assertEqual(len(name), 255)
+        secret = os.path.join(os.fsencode(self.dir), name)
+        with open(secret, "wb") as f:
+            f.write(b"long name\n")
+        out = os.path.join(self.dir, ("o" * 251) + ".png")
+        self.assertEqual(len(os.path.basename(out)), 255)
+        code, log = run(["embed", "-cf", self.cover, "-ef", os.fsdecode(secret), "-sf", out, "-f"],
+                        passphrases=["correct horse"] * 2)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(reveal(out, "correct horse", name=True), (name, b"long name\n"))
+        here = self.path("restore")
+        os.mkdir(here)
+        code, log = run(["extract", "-sf", out], passphrases=["correct horse"], cwd=here)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(os.listdir(os.fsencode(here)), [name])  # and no temp file left
+        with open(os.path.join(os.fsencode(here), name), "rb") as f:
+            self.assertEqual(f.read(), b"long name\n")
+
     def test_file_name_restored(self):
         # -ef's name is stored with it, encrypted; extract without -xf
         # restores the file under that name, in the current directory

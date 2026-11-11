@@ -18,10 +18,11 @@
 
 /* Threads for `jobs` independent jobs: one per online CPU, at most
    PARALLEL_MAX and one per job. One in fault-injection builds, which count
-   calls and must see them in a fixed order, and in the codec fuzzer's
-   (whose inputs are small: threads would only cost time). */
+   calls and must see them in a fixed order, in the codec fuzzer's (whose
+   inputs are small: threads would only cost time), and with
+   PARALLEL_ONE_THREAD (test_stc_one: the same output on one thread). */
 static inline size_t parallel_threads(size_t jobs) {
-#if defined(FAULT_H) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
+#if defined(FAULT_H) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) || defined(PARALLEL_ONE_THREAD)
     (void)jobs;
     return 1;
 #else

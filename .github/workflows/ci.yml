@@ -85,6 +85,12 @@ jobs:
         working-directory: rust
         run: cargo test --release --locked
 
+      # fault-injection runs every loop on one thread: the coder's known
+      # answers must still hold (the output doesn't depend on the count)
+      - name: Rust coder tests on one thread
+        working-directory: rust
+        run: cargo test --release --locked --features fault-injection --target-dir target/fault stc
+
       # Pinned, so a new Rust release's new lints can't turn CI red by
       # themselves; move it up together with whatever clippy then says
       - name: Clippy, with every warning an error
